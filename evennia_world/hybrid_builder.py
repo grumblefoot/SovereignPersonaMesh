@@ -4,6 +4,7 @@ Matches SillyTavern Lorebooks/character cards to rigid, pre-tested Evennia room 
 Supports dynamic character management, score-based template matching, and room creation.
 """
 
+import copy
 import logging
 from typing import Dict, Any, List, Optional, Set
 from .models import RoomMetadata
@@ -191,7 +192,11 @@ class HybridWorldBuilder:
     """Builds and manages world state from room templates, with dynamic character and room management."""
 
     def __init__(self, templates: Dict[str, Dict[str, RoomMetadata]] | None = None):
-        self.templates: Dict[str, Dict[str, RoomMetadata]] = templates if templates is not None else dict(DEFAULT_ROOM_TEMPLATES)
+        # Deep copy to prevent shared state mutations across instances
+        if templates is not None:
+            self.templates: Dict[str, Dict[str, RoomMetadata]] = copy.deepcopy(templates)
+        else:
+            self.templates: Dict[str, Dict[str, RoomMetadata]] = copy.deepcopy(DEFAULT_ROOM_TEMPLATES)
 
     # ── Template matching ─────────────────────────────────────────────
 

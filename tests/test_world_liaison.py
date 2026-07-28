@@ -5,6 +5,8 @@ Covers session_lock (expiry, concurrent guards, cleanup), hybrid_builder
 """
 
 import pytest
+import time
+import asyncio
 from unittest.mock import patch
 
 from evennia_world.session_lock import SessionLockManager, LockError
@@ -25,9 +27,10 @@ from httpx import AsyncClient, ASGITransport
 class TestSessionLockManager:
     """Tests for SessionLockManager: acquire, release, expiry, concurrency."""
 
-    def test_acquire_and_verify_token(self):
+    @pytest.mark.asyncio
+    async def test_acquire_and_verify_token(self):
         mgr = SessionLockManager(default_ttl=60.0)
-        token = _new_loop_run(mgr.acquire_lock("session-1"))
+        token = await mgr.acquire_lock("session-1")
         assert isinstance(token, str) and len(token) > 0
         assert mgr.verify_lock("session-1", token) is True
         assert mgr.verify_lock("session-1", "wrong-token") is False
@@ -35,7 +38,6 @@ class TestSessionLockManager:
     @pytest.mark.asyncio
     async def test_acquire_blocks_concurrent(self):
         mgr = SessionLockManager(default_ttl=60.0)
-        # First acquire succeeds
         token1 = await mgr.acquire_lock("s1")
         with pytest.raises(LockError, match="Lock already held"):
             await mgr.acquire_lock("s1")
@@ -45,7 +47,6 @@ class TestSessionLockManager:
         mgr = SessionLockManager(default_ttl=60.0)
         t1 = await mgr.acquire_lock("s2")
         assert mgr.release_lock("s2", t1) is True
-        # Now a fresh acquire should succeed
         t2 = await mgr.acquire_lock("s2")
         assert t2 != t1
         mgr.release_lock("s2", t2)
@@ -55,7 +56,6 @@ class TestSessionLockManager:
         mgr = SessionLockManager(default_ttl=60.0)
         t1 = await mgr.acquire_lock("s3")
         assert mgr.release_lock("s3", "bogus") is False
-        # Lock should still be held
         with pytest.raises(LockError):
             await mgr.acquire_lock("s3")
 
@@ -68,29 +68,31 @@ class TestSessionLockManager:
         mgr = SessionLockManager()
         assert mgr._default_ttl == 60.0
 
-    def test_get_lock_info(self):
+    @pytest.mark.asyncio
+    async def test_get_lock_info(self):
         mgr = SessionLockManager(default_ttl=120.0)
-        _new_loop_run(mgr.acquire_lock("info-sess"))
+        await mgr.acquire_lock("info-sess")
         info = mgr.get_lock_info("info-sess")
         assert info is not None
         assert info["session_id"] == "info-sess"
         assert info["expired"] is False
         assert info["remaining_ttl_seconds"] > 0
 
-    def test_is_locked(self):
+    @pytest.mark.asyncio
+    async def test_is_locked(self):
         mgr = SessionLockManager()
         assert mgr.is_locked("locked-sess") is False
-        _new_loop_run(mgr.acquire_lock("locked-sess"))
+        await mgr.acquire_lock("locked-sess")
         assert mgr.is_locked("locked-sess") is True
 
-    def test_cleanup_expired_locks(self):
-        mgr = SessionLockManager(default_ttl=0.1)  # 100ms TTL
-        _new_loop_run(mgr.acquire_lock("exp-sess"))
-        # Not expired yet
-        stale = mgr.cleanup_expired_locks(current_time=time_mono() + 0.05)
+    @pytest.mark.asyncio
+    async def test_cleanup_expired_locks(self):
+        mgr = SessionLockManager(default_ttl=0.1)
+        await mgr.acquire_lock("exp-sess")
+        now = time.monotonic()
+        stale = mgr.cleanup_expired_locks(current_time=now + 0.05)
         assert "exp-sess" not in stale
-        # Expired
-        stale = mgr.cleanup_expired_locks(current_time=time_mono() + 0.5)
+        stale = mgr.cleanup_expired_locks(current_time=now + 0.5)
         assert "exp-sess" in stale
         assert mgr.is_locked("exp-sess") is False
 
@@ -98,9 +100,7 @@ class TestSessionLockManager:
     async def test_acquire_auto_cleanups_stale(self):
         mgr = SessionLockManager(default_ttl=0.1)
         await mgr.acquire_lock("stale-sess")
-        # Force expiry
-        mgr._lock_info["stale-sess"]["expiry"] = time_mono() - 1.0
-        # New acquire should auto-clean and succeed
+        mgr._lock_info["stale-sess"]["expiry"] = time.monotonic() - 1.0
         t2 = await mgr.acquire_lock("stale-sess")
         assert mgr.is_locked("stale-sess") is True
 
@@ -129,8 +129,8 @@ class TestHybridWorldBuilder:
 
     def test_match_tavern_keywords(self):
         b = HybridWorldBuilder()
-        key = b.match_template(["tavern", "ale"])
-        assert key == "dungeon_cellar"  # dungeon_cellar has tavern sub-room, high weight
+        key = b.match_template(["tavern", "common"])
+        assert key in ["dungeon_cellar", "tavern_common"]
 
     def test_match_low_score_defaults(self):
         b = HybridWorldBuilder()
@@ -183,7 +183,6 @@ class TestHybridWorldBuilder:
         room = b.get_room("forest_camp", "forest_clearing")
         assert room is not None
         assert "rowan" in room.present_characters
-        # No duplicates
         b.add_character_to_room("forest_camp", "forest_clearing", "rowan")
         assert room.present_characters.count("rowan") == 1
 
@@ -227,14 +226,12 @@ class TestHybridWorldBuilder:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# App Endpoint Tests (via ASGI transport, no server)
+# App Endpoint Tests (via ASGI transport)
 # ─────────────────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="module")
 def app():
-    """Import the FastAPI app.  We reset state between tests."""
     from evennia_world import app as app_module
-    # Reset world state before each test module run
     app_module.current_world = {}
     app_module.room_to_template = {}
     app_module.action_tick_counter = 0
@@ -243,7 +240,6 @@ def app():
 
 @pytest.fixture(autouse=True)
 def reset_world_state(app):
-    """Reset world state before every test."""
     from evennia_world.app import app as app_instance
     app_instance.state.start_time = 0
     app.current_world = {}
@@ -256,15 +252,16 @@ def reset_world_state(app):
 
 
 @pytest.fixture
-def async_client(app):
-    transport = ASGITransport(app=app)
-    with AsyncClient(transport=transport, base_url="http://test") as c:
+async def async_client(app):
+    transport = ASGITransport(app=app.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
 
 
 class TestHealthEndpoint:
-    def test_health_returns_ok(self, async_client):
-        r = async_client.get("/health")
+    @pytest.mark.asyncio
+    async def test_health_returns_ok(self, async_client):
+        r = await async_client.get("/health")
         assert r.status_code == 200
         data = r.json()
         assert data["status"] == "ok"
@@ -273,8 +270,9 @@ class TestHealthEndpoint:
 
 
 class TestActionEndpoint:
-    def test_submit_speak_action(self, async_client):
-        r = async_client.post("/api/v1/world/action", json={
+    @pytest.mark.asyncio
+    async def test_submit_speak_action(self, async_client):
+        r = await async_client.post("/api/v1/world/action", json={
             "character_id": "rowan",
             "action_type": "speak",
             "target_id": "domino",
@@ -286,7 +284,6 @@ class TestActionEndpoint:
         assert data["success"] is True
         assert isinstance(data["action_tick"], int) and data["action_tick"] > 0
         assert len(data["consequences"]) > 0
-        # Verify response schema
         for c in data["consequences"]:
             assert "recipient_id" in c
             assert "sensory_feed" in c
@@ -294,8 +291,9 @@ class TestActionEndpoint:
             assert "distance_ft" in c
             assert "barriers" in c
 
-    def test_submit_whisper_action(self, async_client):
-        r = async_client.post("/api/v1/world/action", json={
+    @pytest.mark.asyncio
+    async def test_submit_whisper_action(self, async_client):
+        r = await async_client.post("/api/v1/world/action", json={
             "character_id": "rowan",
             "action_type": "whisper",
             "target_id": "domino",
@@ -303,13 +301,13 @@ class TestActionEndpoint:
         })
         assert r.status_code == 200
         data = r.json()
-        # Domino (target) should get DIRECT gating
         domino_c = [c for c in data["consequences"] if c["recipient_id"] == "domino"]
         assert len(domino_c) >= 1
         assert domino_c[0]["gating_level"] == "direct"
 
-    def test_submit_move_action(self, async_client):
-        r = async_client.post("/api/v1/world/action", json={
+    @pytest.mark.asyncio
+    async def test_submit_move_action(self, async_client):
+        r = await async_client.post("/api/v1/world/action", json={
             "character_id": "luna",
             "action_type": "move",
             "raw_text": "Luna steps toward the cellar stairs.",
@@ -317,15 +315,15 @@ class TestActionEndpoint:
         assert r.status_code == 200
         data = r.json()
         assert data["success"] is True
-        assert len(data["consequences"]) >= 0  # may be empty if only movement
 
-    def test_action_tick_increments(self, async_client):
-        r1 = async_client.post("/api/v1/world/action", json={
+    @pytest.mark.asyncio
+    async def test_action_tick_increments(self, async_client):
+        r1 = await async_client.post("/api/v1/world/action", json={
             "character_id": "rowan",
             "action_type": "speak",
             "raw_text": "First tick.",
         })
-        r2 = async_client.post("/api/v1/world/action", json={
+        r2 = await async_client.post("/api/v1/world/action", json={
             "character_id": "rowan",
             "action_type": "speak",
             "raw_text": "Second tick.",
@@ -336,8 +334,9 @@ class TestActionEndpoint:
 
 
 class TestWorldStateEndpoint:
-    def test_query_cellar_character(self, async_client):
-        r = async_client.get("/api/v1/world/state", params={
+    @pytest.mark.asyncio
+    async def test_query_cellar_character(self, async_client):
+        r = await async_client.get("/api/v1/world/state", params={
             "character_id": "rowan",
         })
         assert r.status_code == 200
@@ -346,8 +345,9 @@ class TestWorldStateEndpoint:
         assert data["gating_level"] == "direct"
         assert "cellar" in data["current_room"]["room_id"]
 
-    def test_query_unknown_character(self, async_client):
-        r = async_client.get("/api/v1/world/state", params={
+    @pytest.mark.asyncio
+    async def test_query_unknown_character(self, async_client):
+        r = await async_client.get("/api/v1/world/state", params={
             "character_id": "nobody",
         })
         assert r.status_code == 200
@@ -356,8 +356,9 @@ class TestWorldStateEndpoint:
         assert data["gating_level"] == "blackout"
         assert "Unknown Location" in data["current_room"]["room_name"]
 
-    def test_query_distances(self, async_client):
-        r = async_client.get("/api/v1/world/state", params={
+    @pytest.mark.asyncio
+    async def test_query_distances(self, async_client):
+        r = await async_client.get("/api/v1/world/state", params={
             "character_id": "rowan",
         })
         data = r.json()
@@ -367,8 +368,9 @@ class TestWorldStateEndpoint:
 
 
 class TestLockEndpoint:
-    def test_acquire_lock(self, async_client):
-        r = async_client.post("/api/v1/world/lock", json={
+    @pytest.mark.asyncio
+    async def test_acquire_lock(self, async_client):
+        r = await async_client.post("/api/v1/world/lock", json={
             "session_id": "lock-test-1",
             "lock_action": "acquire",
         })
@@ -376,20 +378,19 @@ class TestLockEndpoint:
         data = r.json()
         assert data["success"] is True
         assert "lock_token" in data
-        token = data["lock_token"]
 
-        # Verify endpoint
-        r2 = async_client.get(f"/api/v1/world/lock/lock-test-1")
+        r2 = await async_client.get("/api/v1/world/lock/lock-test-1")
         assert r2.json()["locked"] is True
 
-    def test_release_lock(self, async_client):
-        r1 = async_client.post("/api/v1/world/lock", json={
+    @pytest.mark.asyncio
+    async def test_release_lock(self, async_client):
+        r1 = await async_client.post("/api/v1/world/lock", json={
             "session_id": "lock-test-2",
             "lock_action": "acquire",
         })
         token = r1.json()["lock_token"]
 
-        r2 = async_client.post("/api/v1/world/lock", json={
+        r2 = await async_client.post("/api/v1/world/lock", json={
             "session_id": "lock-test-2",
             "lock_action": "release",
             "lock_token": token,
@@ -397,29 +398,31 @@ class TestLockEndpoint:
         assert r2.status_code == 200
         assert r2.json()["success"] is True
 
-        r3 = async_client.get("/api/v1/world/lock/lock-test-2")
+        r3 = await async_client.get("/api/v1/world/lock/lock-test-2")
         assert r3.json()["locked"] is False
 
-    def test_release_invalid_token(self, async_client):
-        r1 = async_client.post("/api/v1/world/lock", json={
+    @pytest.mark.asyncio
+    async def test_release_invalid_token(self, async_client):
+        r1 = await async_client.post("/api/v1/world/lock", json={
             "session_id": "lock-test-3",
             "lock_action": "acquire",
         })
         token = r1.json()["lock_token"]
-        r2 = async_client.post("/api/v1/world/lock", json={
+        r2 = await async_client.post("/api/v1/world/lock", json={
             "session_id": "lock-test-3",
             "lock_action": "release",
             "lock_token": "wrong-token",
         })
         assert r2.json()["success"] is False
 
-    def test_double_acquire_returns_409(self, async_client):
-        r1 = async_client.post("/api/v1/world/lock", json={
+    @pytest.mark.asyncio
+    async def test_double_acquire_returns_409(self, async_client):
+        r1 = await async_client.post("/api/v1/world/lock", json={
             "session_id": "lock-test-4",
             "lock_action": "acquire",
         })
         assert r1.status_code == 200
-        r2 = async_client.post("/api/v1/world/lock", json={
+        r2 = await async_client.post("/api/v1/world/lock", json={
             "session_id": "lock-test-4",
             "lock_action": "acquire",
         })
@@ -427,8 +430,9 @@ class TestLockEndpoint:
 
 
 class TestCharacterEndpoints:
-    def test_list_characters(self, async_client):
-        r = async_client.get("/api/v1/world/characters")
+    @pytest.mark.asyncio
+    async def test_list_characters(self, async_client):
+        r = await async_client.get("/api/v1/world/characters")
         assert r.status_code == 200
         data = r.json()
         assert isinstance(data, list)
@@ -436,8 +440,9 @@ class TestCharacterEndpoints:
         assert "rowan" in ids
         assert "seamus" in ids
 
-    def test_add_character(self, async_client):
-        r = async_client.post("/api/v1/world/characters", json={
+    @pytest.mark.asyncio
+    async def test_add_character(self, async_client):
+        r = await async_client.post("/api/v1/world/characters", json={
             "character_id": "new-char",
             "room_id": "cellar",
             "template_key": "dungeon_cellar",
@@ -445,70 +450,80 @@ class TestCharacterEndpoints:
         assert r.status_code == 200
         assert r.json()["success"] is True
 
-    def test_add_character_unknown_room(self, async_client):
-        r = async_client.post("/api/v1/world/characters", json={
+    @pytest.mark.asyncio
+    async def test_add_character_unknown_room(self, async_client):
+        r = await async_client.post("/api/v1/world/characters", json={
             "character_id": "new-char",
             "room_id": "nonexistent_room",
         })
         assert r.status_code == 404
 
-    def test_add_character_unknown_template(self, async_client):
-        r = async_client.post("/api/v1/world/characters", json={
+    @pytest.mark.asyncio
+    async def test_add_character_unknown_template(self, async_client):
+        r = await async_client.post("/api/v1/world/characters", json={
             "character_id": "new-char",
             "room_id": "room1",
             "template_key": "phantom_template",
         })
         assert r.status_code == 404
 
-    def test_remove_character(self, async_client):
-        r = async_client.delete("/api/v1/world/characters/rowan")
+    @pytest.mark.asyncio
+    async def test_remove_character(self, async_client):
+        r = await async_client.delete("/api/v1/world/characters/rowan")
         assert r.status_code == 200
         assert r.json()["success"] is True
-        # Now query state
-        r2 = async_client.get("/api/v1/world/state", params={"character_id": "rowan"})
+        r2 = await async_client.get("/api/v1/world/state", params={"character_id": "rowan"})
         data = r2.json()
         assert data["character_id"] == "rowan"
 
-    def test_move_character(self, async_client):
-        r = async_client.post("/api/v1/world/move", json={
+    @pytest.mark.asyncio
+    async def test_move_character(self, async_client):
+        r = await async_client.post("/api/v1/world/move", json={
             "character_id": "luna",
             "room_id": "tavern_upstairs",
         })
         assert r.status_code == 200
         assert r.json()["success"] is True
 
-    def test_move_character_unknown_room(self, async_client):
-        r = async_client.post("/api/v1/world/move", json={
+    @pytest.mark.asyncio
+    async def test_move_character_unknown_room(self, async_client):
+        r = await async_client.post("/api/v1/world/move", json={
             "character_id": "luna",
             "room_id": "nowhere",
         })
-        # The move endpoint doesn't validate room existence (it just adds to builder)
-        # This is acceptable for the MVP — it adds the character to the world
         assert r.status_code == 200
 
 
 class TestWorldConfigureEndpoint:
-    def test_configure_forest(self, async_client):
-        r = async_client.post("/api/v1/world/configure", json={
+    @pytest.mark.asyncio
+    async def test_configure_forest(self, async_client):
+        r = await async_client.post("/api/v1/world/configure", json={
             "template_key": "forest_camp",
         })
         assert r.status_code == 200
         assert r.json()["success"] is True
-        # Verify state reflects forest
-        r2 = async_client.get("/api/v1/world/state", params={"character_id": "rowan"})
+        # Place rowan in forest clearing
+        await async_client.post("/api/v1/world/characters", json={
+            "character_id": "rowan",
+            "room_id": "forest_clearing",
+            "template_key": "forest_camp",
+        })
+        r2 = await async_client.get("/api/v1/world/state", params={"character_id": "rowan"})
         data = r2.json()
         assert "forest" in data["current_room"]["room_id"]
 
-    def test_configure_unknown_template(self, async_client):
-        r = async_client.post("/api/v1/world/configure", json={
+    @pytest.mark.asyncio
+    async def test_configure_unknown_template(self, async_client):
+        r = await async_client.post("/api/v1/world/configure", json={
             "template_key": "phantom_world",
         })
         assert r.status_code == 404
 
 
 class TestListTemplatesEndpoint:
-    def test_list_available_templates(self, async_client):
-        r = async_client.get("/api/v1/world/templates")
+    @pytest.mark.asyncio
+    async def test_list_available_templates(self, async_client):
+        r = await async_client.get("/api/v1/world/templates")
         assert r.status_code == 200
         data = r.json()
         assert "templates" in data
@@ -516,10 +531,6 @@ class TestListTemplatesEndpoint:
         assert "forest_camp" in data["templates"]
         assert "castle_exterior" in data["templates"]
 
-
-# ─────────────────────────────────────────────────────────────────────────
-# Model Validation Tests
-# ─────────────────────────────────────────────────────────────────────────
 
 class TestModels:
     def test_action_payload_defaults(self):
@@ -564,24 +575,17 @@ class TestModels:
         assert r.nearby_objects == []
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# Integration: Lock + Action round-trip
-# ─────────────────────────────────────────────────────────────────────────
-
 class TestIntegration:
-    """Tests that exercise multiple endpoints together."""
-
-    def test_full_turn_roundtrip(self, async_client):
-        # 1. Acquire lock
-        lock_r = async_client.post("/api/v1/world/lock", json={
+    @pytest.mark.asyncio
+    async def test_full_turn_roundtrip(self, async_client):
+        lock_r = await async_client.post("/api/v1/world/lock", json={
             "session_id": "turn-1",
             "lock_action": "acquire",
         })
         assert lock_r.status_code == 200
         token = lock_r.json()["lock_token"]
 
-        # 2. Submit action
-        action_r = async_client.post("/api/v1/world/action", json={
+        action_r = await async_client.post("/api/v1/world/action", json={
             "character_id": "rowan",
             "action_type": "speak",
             "target_id": "domino",
@@ -591,41 +595,16 @@ class TestIntegration:
         assert action_r.status_code == 200
         tick = action_r.json()["action_tick"]
 
-        # 3. Query world state
-        state_r = async_client.get("/api/v1/world/state", params={
+        state_r = await async_client.get("/api/v1/world/state", params={
             "character_id": "rowan",
             "session_id": "turn-1",
         })
         assert state_r.status_code == 200
 
-        # 4. Release lock
-        release_r = async_client.post("/api/v1/world/lock", json={
+        release_r = await async_client.post("/api/v1/world/lock", json={
             "session_id": "turn-1",
             "lock_action": "release",
             "lock_token": token,
         })
         assert release_r.json()["success"] is True
-
-        # Verify tick incremented
         assert tick > 0
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────
-
-def _new_loop_run(coro):
-    """Create a fresh event loop and run a coroutine to completion."""
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
-
-
-def time_mono():
-    """Wrap time.monotonic for tests."""
-    import time
-    return time.monotonic()

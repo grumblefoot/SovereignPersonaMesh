@@ -188,6 +188,16 @@ class SessionLockManager:
     # ------------------------------------------------------------------
 
     def _cleanup_session(self, session_id: str) -> None:
-        """Remove all tracked state for a session."""
+        """Remove all tracked state for a session.
+        
+        Also force-releases the asyncio.Lock if it's still locked
+        (e.g. stale expiry without proper release).
+        """
+        lock = self._locks.get(session_id)
+        if lock is not None and lock.locked():
+            try:
+                lock.release()
+            except RuntimeError:
+                pass  # already released or in invalid state
         self._tokens.pop(session_id, None)
         self._lock_info.pop(session_id, None)
