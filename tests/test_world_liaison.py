@@ -240,8 +240,8 @@ def app():
 
 @pytest.fixture(autouse=True)
 def reset_world_state(app):
-    from evennia_world.app import app as app_instance
-    app_instance.state.start_time = 0
+    from evennia_world.app import app as fa_app
+    fa_app.state.start_time = 0
     app.current_world = {}
     app.room_to_template = {}
     app.action_tick_counter = 0
