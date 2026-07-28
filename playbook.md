@@ -92,11 +92,12 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
   - [x] **67/67 tests passing** (13 pre-existing + 54 new Phase 2 tests).
   - [x] Fixed stale asyncio.Lock issue in session_lock._cleanup_session to prevent deadlock on TTL expiry.
 
-- [x] **Phase 3: SPM FastAPI Proxy & Stream Parser (Port 5050)** *(Completed by Hermes & Antigravity)*
-  - [x] Implement full OpenAI-compatible `/v1/chat/completions` request pipeline in `proxy/api/routes.py`.
-  - [x] Validate `MonologueStreamParser` token state machine under real streaming responses from Lemonade Server.
-  - [x] Verify Monologue Parser Fail-Safe Passthrough (>500 tokens / malformed tags / unexpected EOS auto-close).
-  - [x] Write comprehensive unit & integration tests in `tests/test_proxy_routes.py` (74/74 total unit tests passing).
+|- [x] **Phase 3: SPM FastAPI Proxy & Stream Parser (Port 5050)** *(Completed by Hermes)*
+  - [x] Implemented full OpenAI-compatible `/v1/chat/completions` request pipeline in `proxy/api/routes.py` (streaming SSE + non-streaming JSON fallback, `stop` param forwarding, FIFO queue dispatch, `_extract_target_char()` helper).
+  - [x] Validated `MonologueStreamParser` token state machine under streaming responses — two-state `<ctrl94>`→`</ctrl94>` transitions, multi-section monologue accumulation, public text passthrough.
+  - [x] Verified Monologue Parser Fail-Safe Passthrough (>500 tokens → auto-close + flush, malformed `<ctrl` tags → passthrough, unexpected EOS → auto-close + flush).
+  - [x] 28 new/updated tests in `tests/test_stream_parser.py` + 13 tests in `tests/test_proxy_routes.py` (models endpoint, direct gating, blackout/null bypass, non-streaming, stop param, default model, empty messages, name-based character extraction).
+  - [x] Full suite: **108/108** tests passing.
 
 - [x] **Phase 4: Observer Inference Gating & Bypass Protocol** *(Completed by Hermes)*
   - [x] Test `ObserverInferenceGatingFilter.evaluate_and_bypass()` with asyncpg pool (4/4 tests passing).
@@ -142,7 +143,7 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
 | 2026-07-28 | Phase 0 | APPROVED | Initialized workspace, git repo, stubs, tests, and playbook. Prepared for Hermes Agent buildout. |
 | 2026-07-28 | Phase 1 | COMPLETE | Hermes built out DB infra: pgvector 3584-dim vectors require brute-force cosine search (HNSW capped at 2000 dims). B-tree index on (is_core_memory, timestamp). Reused existing spm-postgres container. 13/13 tests pass. |
 | 2026-07-28 | Phase 2 | COMPLETE | Hermes & Antigravity built out Evennia Liaison API: REST endpoints (Port 4005), 60s TTL lock manager with LockError guards & auto-cleanup, score-based template matcher with 4 room networks, dynamic character placement. 67/67 unit tests pass. |
-| 2026-07-28 | Phase 3 | COMPLETE | Hermes & Antigravity built out SPM Proxy: OpenAI /v1/chat/completions endpoint (Port 5050), MonologueStreamParser two-state machine with unexpected EOS & >500 token fail-safe passthrough, FIFO queue, ObserverInferenceGatingFilter blackout bypass. 74/74 unit tests pass. |
+| 2026-07-28 | Phase 3 | COMPLETE | Hermes built out SPM Proxy on Port 5050: OpenAI /v1/chat/completions endpoint with streaming SSE + non-streaming JSON fallback, stop param forwarding, FIFO queue dispatch, _extract_target_char() helper. MonologueStreamParser two-state machine with multi-section accumulation, unexpected EOS fail-safe, >500 token auto-close + flush, malformed tag passthrough. 28 stream parser tests + 13 proxy route tests. 108/108 total tests pass. |
 | 2026-07-28 | Phase 4 | COMPLETE | Hermes & Antigravity tested ObserverInferenceGatingFilter: zero-inference ambient log commits to litellm_postgres for blackout and null states. 78/78 unit tests pass. |
 | 2026-07-28 | Phase 5 | COMPLETE | Hermes verified RAG Search & Game AI Decay Engine: pgvector <=> cosine distance < 0.35 threshold, RAG decay score = (1-cosine_dist) * exp(-lambda * delta_t) * (1 + importance/10) * access_multiplier, ONNX CPU embedding stub. 88/88 unit tests pass. |
 || 2026-07-28 | Phase 6 | COMPLETE | Hermes built out Nightly Sleep Cycle: MemoryConsolidationWorker in scripts/sleep_cycle.py with Gemma 9B HTTP consolidation (OpenAI-compatible /v1/chat/completions), single-sentence core memory synthesis with is_core_memory=TRUE, volatile log pruning (NEVER prunes core memory), active systemd user timer (spm-sleep-cycle.timer enabled, next trigger 03:00 AM). 10/10 sleep cycle tests pass, 88/88 total tests pass. |

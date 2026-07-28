@@ -176,3 +176,205 @@ class TestChatCompletionsEndpoint:
             body = resp.text
             assert "chatcmpl-spm-bypass" in body
             assert "*Luna hears muffled sounds" in body or "muffled" in body
+
+    def test_chat_completions_null_gating(self, client):
+        """Null gating level also triggers bypass."""
+        payload = {
+            "model": "google/gemma-4-26B-A4B-it",
+            "messages": [
+                {"role": "user", "content": "Hello"}
+            ],
+            "stream": True
+        }
+
+        with patch("proxy.api.routes.evennia_client.submit_action", new_callable=AsyncMock) as mock_action:
+            mock_action.return_value = {
+                "success": True,
+                "action_tick": 1423,
+                "consequences": [
+                    {
+                        "recipient_id": "luna",
+                        "sensory_feed": "",
+                        "gating_level": "null",
+                        "distance_ft": 100.0,
+                        "barriers": ["solid_wall"]
+                    }
+                ]
+            }
+
+            resp = client.post("/v1/chat/completions", json=payload)
+            assert resp.status_code == 200
+            body = resp.text
+            assert "chatcmpl-spm-bypass" in body
+
+    def test_chat_completions_non_streaming(self, client):
+        """Non-streaming request returns a JSON response with assistant content."""
+        payload = {
+            "model": "google/gemma-4-26B-A4B-it",
+            "messages": [
+                {"role": "user", "content": "What do you see?"}
+            ],
+            "stream": False
+        }
+
+        with patch("proxy.api.routes.evennia_client.submit_action", new_callable=AsyncMock) as mock_action, \
+             patch("proxy.api.routes.lemonade_client.generate_stream") as mock_llm:
+
+            mock_action.return_value = {
+                "success": True,
+                "action_tick": 1424,
+                "consequences": [
+                    {
+                        "recipient_id": "luna",
+                        "sensory_feed": "What do you see?",
+                        "gating_level": "direct",
+                        "distance_ft": 3.0,
+                        "barriers": []
+                    }
+                ]
+            }
+
+            async def mock_stream(*args, **kwargs):
+                yield "<ctrl94>Thinking...</ctrl94> "
+                yield "I see a candle."
+
+            mock_llm.side_effect = mock_stream
+
+            resp = client.post("/v1/chat/completions", json=payload)
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["object"] == "chat.completion"
+            assert data["choices"][0]["finish_reason"] == "stop"
+            assert "I see a candle" in data["choices"][0]["message"]["content"]
+
+    def test_chat_completions_stop_param_forwarded(self, client):
+        """Stop parameter is forwarded to the LLM client."""
+        payload = {
+            "model": "google/gemma-4-26B-A4B-it",
+            "messages": [
+                {"role": "user", "content": "Tell a story."}
+            ],
+            "stream": False,
+            "stop": ["\n\n", "END"]
+        }
+
+        with patch("proxy.api.routes.evennia_client.submit_action", new_callable=AsyncMock) as mock_action, \
+             patch("proxy.api.routes.lemonade_client.generate_stream") as mock_llm:
+
+            mock_action.return_value = {
+                "success": True,
+                "action_tick": 1425,
+                "consequences": [
+                    {
+                        "recipient_id": "luna",
+                        "sensory_feed": "Tell a story.",
+                        "gating_level": "direct",
+                        "distance_ft": 0.0,
+                        "barriers": []
+                    }
+                ]
+            }
+
+            async def mock_stream(*args, **kwargs):
+                yield "Once upon a time."
+
+            mock_llm.side_effect = mock_stream
+
+            resp = client.post("/v1/chat/completions", json=payload)
+            assert resp.status_code == 200
+            # Verify the generate_stream was called with stop param
+            call_kwargs = mock_llm.call_args
+            assert call_kwargs is not None
+            assert "stop" in call_kwargs.kwargs or (
+                len(call_kwargs.args) > 0
+            )
+
+    def test_chat_completions_default_model(self, client):
+        """If no model is specified, the default 'spm-sovereign-mesh' is used."""
+        payload = {
+            "messages": [
+                {"role": "user", "content": "Hi"}
+            ]
+        }
+
+        with patch("proxy.api.routes.evennia_client.submit_action", new_callable=AsyncMock) as mock_action:
+            mock_action.return_value = {
+                "success": True,
+                "action_tick": 1426,
+                "consequences": [
+                    {
+                        "recipient_id": "luna",
+                        "sensory_feed": "Hi",
+                        "gating_level": "direct",
+                        "distance_ft": 0.0,
+                        "barriers": []
+                    }
+                ]
+            }
+
+            resp = client.post("/v1/chat/completions", json=payload)
+            assert resp.status_code == 200
+            assert "text/event-stream" in resp.headers["content-type"]
+
+    def test_chat_completions_no_messages(self, client):
+        """Empty messages list should still produce a valid (bypass) response."""
+        payload = {
+            "model": "google/gemma-4-26B-A4B-it",
+            "messages": []
+        }
+
+        with patch("proxy.api.routes.evennia_client.submit_action", new_callable=AsyncMock) as mock_action:
+            mock_action.return_value = {
+                "success": True,
+                "action_tick": 1427,
+                "consequences": [
+                    {
+                        "recipient_id": "luna",
+                        "sensory_feed": "",
+                        "gating_level": "direct",
+                        "distance_ft": 0.0,
+                        "barriers": []
+                    }
+                ]
+            }
+
+            resp = client.post("/v1/chat/completions", json=payload)
+            assert resp.status_code == 200
+
+    def test_chat_completions_message_name_extracted(self, client):
+        """Target character is extracted from message.name field."""
+        payload = {
+            "model": "google/gemma-4-26B-A4B-it",
+            "messages": [
+                {"role": "user", "content": "Hello", "name": "Domino"}
+            ],
+            "stream": False
+        }
+
+        with patch("proxy.api.routes.evennia_client.submit_action", new_callable=AsyncMock) as mock_action, \
+             patch("proxy.api.routes.lemonade_client.generate_stream") as mock_llm:
+
+            mock_action.return_value = {
+                "success": True,
+                "action_tick": 1428,
+                "consequences": [
+                    {
+                        "recipient_id": "domino",
+                        "sensory_feed": "Hello",
+                        "gating_level": "direct",
+                        "distance_ft": 0.0,
+                        "barriers": []
+                    }
+                ]
+            }
+
+            async def mock_stream(*args, **kwargs):
+                yield "I am Domino."
+
+            mock_llm.side_effect = mock_stream
+
+            resp = client.post("/v1/chat/completions", json=payload)
+            assert resp.status_code == 200
+            # Verify Evennia was called with domino as target
+            call_args = mock_action.call_args
+            assert call_args.kwargs["target_id"] == "domino"

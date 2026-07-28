@@ -8,7 +8,7 @@ import json
 import time
 import logging
 from fastapi import APIRouter, Request, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 
@@ -41,7 +41,7 @@ class ChatCompletionMessage(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    model: str
+    model: str = "google/gemma-4-26B-A4B-it"
     messages: List[ChatCompletionMessage]
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 4096
@@ -60,30 +60,47 @@ async def list_models():
     }
 
 
+def _extract_target_char(messages: List[ChatCompletionMessage]) -> str:
+    """Extract the target character identifier from messages."""
+    for msg in reversed(messages):
+        if msg.role == "system" and "Character:" in msg.content:
+            target_char = msg.content.split("Character:")[1].split("\n")[0].strip().lower()
+            return target_char
+        elif msg.name:
+            return msg.name.lower()
+    return "luna"
+
+
+async def _gather_public_response(prompt: str, model: str, temperature: float,
+                                   max_tokens: int, stop: Optional[list]) -> str:
+    """Non-streaming helper: gather all public tokens into a single response string."""
+    parser = MonologueStreamParser()
+    raw_stream = lemonade_client.generate_stream(
+        prompt=prompt, model=model, temperature=temperature,
+        max_tokens=max_tokens, stop=stop
+    )
+    public_chunks = []
+    async for chunk in parser.process_token_stream(raw_stream):
+        public_chunks.append(chunk)
+    inner_mono, public_resp = parser.get_final_buffers()
+    logger.info(f"[SPMProxy] Non-streaming turn finished. Public chars: {len(public_resp)}")
+    return public_resp
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest, req: Request):
     """
     OpenAI-compatible chat completions endpoint intercepted by SPM Proxy.
     """
-    logger.info(f"[SPMProxy] Received chat completion request ({len(request.messages)} messages)...")
+    logger.info(f"[SPMProxy] Received chat completion request ({len(request.messages)} messages) ...")
 
     # Extract target character identifier
+    target_char = _extract_target_char(request.messages)
     last_msg = request.messages[-1] if request.messages else ChatCompletionMessage(role="user", content="")
     user_text = last_msg.content
-    target_char = "luna"  # Default fallback character
-
-    # Check last user message for target character mention or system prompt identity
-    for msg in reversed(request.messages):
-        if msg.role == "system" and "Character:" in msg.content:
-            target_char = msg.content.split("Character:")[1].split("\n")[0].strip().lower()
-            break
-        elif msg.name:
-            target_char = msg.name.lower()
-            break
-
     session_id = "session_abc123"
 
-    # Step 1: Submit action to Evennia World Engine
+    # --- Step 1: spatial routing via Evennia ---
     world_res = await evennia_client.submit_action(
         character_id="user",
         action_type="speak",
@@ -102,26 +119,26 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             gating_level = c.get("gating_level", "direct")
             break
 
-    # Check Observer Inference Gating & Bypass Protocol (Null/Blackout)
+    # --- Step 2: Observer Inference Gating & Bypass Protocol ---
     if gating_level.lower() in ["null", "blackout"]:
         logger.info(f"[SPMProxy] Character {target_char} turn bypassed (gating={gating_level}). Zero inference cost.")
-        # Return empty streaming response or ambient status chunk
         async def empty_generator():
             chunk = {
                 "id": "chatcmpl-spm-bypass",
                 "object": "chat.completion.chunk",
                 "created": int(time.time()),
                 "model": request.model,
-                "choices": [{"index": 0, "delta": {"content": "*Luna hears muffled sounds from another room...*"}, "finish_reason": "stop"}]
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "*Luna hears muffled sounds from another room...*"},
+                    "finish_reason": "stop"
+                }]
             }
             yield f"data: {json.dumps(chunk)}\n\n"
             yield "data: [DONE]\n\n"
         return StreamingResponse(empty_generator(), media_type="text/event-stream")
 
-    # Step 2: Generate query vector on CPU threads (AVX-512 offloading)
-    query_vector = await embedder.generate_embedding(user_text)
-
-    # Step 3: Build Cognitive Prompt
+    # --- Step 3: Build cognitive prompt ---
     system_prompt = "You are Luna, an intelligent character inside the Sovereign Persona Mesh."
     for m in request.messages:
         if m.role == "system":
@@ -136,14 +153,39 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         spatial_context="Location: The Cellar"
     )
 
-    # Step 4: Stream turn execution via FIFO Queue & Monologue Parser
+    stop = request.stop or ["</ctrl94>", "\nUser:"]
+
+    # --- Step 4: Routing by stream flag ---
+    if not request.stream:
+        public_resp = await fifo_queue.enqueue_and_execute(
+            _gather_public_response,
+            prompt=formatted_prompt,
+            model=request.model,
+            temperature=request.temperature or 0.7,
+            max_tokens=request.max_tokens or 4096,
+            stop=stop,
+        )
+        return JSONResponse(content={
+            "id": "chatcmpl-spm-turn",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": request.model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": public_resp},
+                "finish_reason": "stop"
+            }]
+        })
+
+    # ---- Streaming path ----
     async def sse_event_generator():
         parser = MonologueStreamParser()
         raw_stream = lemonade_client.generate_stream(
             prompt=formatted_prompt,
             model=request.model,
             temperature=request.temperature or 0.7,
-            max_tokens=request.max_tokens or 4096
+            max_tokens=request.max_tokens or 4096,
+            stop=stop,
         )
 
         async for public_chunk in parser.process_token_stream(raw_stream):
@@ -167,6 +209,9 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         yield "data: [DONE]\n\n"
 
         inner_monologue, public_resp = parser.get_final_buffers()
-        logger.info(f"[SPMProxy] Turn finished for {target_char}. Monologue chars: {len(inner_monologue)}, Public chars: {len(public_resp)}")
+        logger.info(
+            f"[SPMProxy] Turn finished for {target_char}. "
+            f"Monologue chars: {len(inner_monologue)}, Public chars: {len(public_resp)}"
+        )
 
     return StreamingResponse(sse_event_generator(), media_type="text/event-stream")
