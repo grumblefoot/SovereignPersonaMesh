@@ -73,10 +73,15 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
   - [x] Configuration manifests, `.env.example`, and `requirements.txt`.
   - [x] Master `playbook.md` creation.
 
-- [ ] **Phase 1: Database & Container Infrastructure** *(Assigned to Hermes)*
-  - [ ] Spin up `litellm_postgres` container using Podman compose (`config/docker-compose.yml`).
-  - [ ] Execute `scripts/init_db.sql` to verify pgvector extension and `create_csa_memory_table()` helper function.
-  - [ ] Verify `asyncpg` connection pool initialization in `proxy/rag/retriever.py`.
+- [x] **Phase 1: Database & Container Infrastructure** *(Completed by Hermes)*
+  - [x] Spin up `litellm_postgres` container (reused existing `spm-postgres` container, created `litellm_postgres` DB).
+  - [x] Execute `scripts/init_db.sql` with pgvector extension and `create_csa_memory_table()` helper function.
+  - [x] Fix HNSW index incompatibility: pgvector HNSW/IVFFlat capped at 2000 dims; switched to B-tree index on `(is_core_memory, timestamp)` with brute-force cosine search for 3584-dim vectors.
+  - [x] Fix asyncpg authentication: set user password, granted DB privileges, HBA trust on loopback.
+  - [x] Verify `asyncpg` connection pool initialization in `proxy/rag/retriever.py` (100% of retriever tests pass).
+  - [x] All 4 demo character tables created: `csa_memory_rowan`, `csa_memory_domino`, `csa_memory_luna`, `csa_memory_seamus`.
+  - [x] 9 new Phase 1-specific tests written and passing + 4 pre-existing tests passing = **13/13 passed**.
+  - [x] Created missing `__init__.py` package files across all Python packages.
 
 - [ ] **Phase 2: Evennia World State Liaison Service (Port 4005)** *(Assigned to Hermes)*
   - [ ] Complete `evennia_world/app.py` REST service integration.
@@ -123,6 +128,7 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
 
 ## 5. Senior Auditor Checkpoint Log
 
-| Date | Phase | Status | Auditor Notes |
+|| Date | Phase | Status | Auditor Notes ||
 |---|---|---|---|
 | 2026-07-28 | Phase 0 | APPROVED | Initialized workspace, git repo, stubs, tests, and playbook. Prepared for Hermes Agent buildout. |
+| 2026-07-28 | Phase 1 | COMPLETE | Hermes built out DB infra: pgvector 3584-dim vectors require brute-force cosine search (HNSW capped at 2000 dims). B-tree index on (is_core_memory, timestamp). Reused existing spm-postgres container. 13/13 tests pass. Missing `__init__.py` files added to all packages. |

@@ -41,9 +41,13 @@ BEGIN
         );
     ', table_name);
 
-    EXECUTE format('
-        CREATE INDEX IF NOT EXISTS %I ON %I USING hnsw (episodic_embedding vector_cosine_ops);
-    ', 'idx_' || table_name || '_embedding', table_name);
+    -- NOTE: pgvector index operators (HNSW/IVFFlat) are capped at 2000 dimensions.
+    -- For 3584-dim embeddings we use brute-force cosine search via the <=> operator.
+    -- A partial B-tree index on (is_core_memory, timestamp) speeds up sleep-cycle queries.
+    EXECUTE format(
+        'CREATE INDEX IF NOT EXISTS idx_%I_core_time ON %I (is_core_memory, timestamp)',
+        table_name, table_name
+    );
 END;
 $$ LANGUAGE plpgsql;
 
