@@ -9,6 +9,7 @@ import os
 import asyncio
 import logging
 import asyncpg
+import httpx
 from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,28 @@ class MemoryConsolidationWorker:
     def __init__(self, db_config: Dict[str, Any], consolidation_model_url: str):
         self.db_config = db_config
         self.consolidation_model_url = consolidation_model_url
+
+    async def _call_consolidation_model(self, prompt: str) -> str:
+        """Call Gemma 9B via OpenAI-compatible chat completions endpoint."""
+        url = f"{self.consolidation_model_url}/v1/chat/completions"
+        payload = {
+            "model": "google/gemma-4-9B-it",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 256,
+            "temperature": 0.3,
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            generated = data["choices"][0]["message"]["content"].strip()
+        # Extract only the inner monologue / first sentence of consolidated memory
+        # Strip any tags like <boss>, <idle>, etc.
+        import re
+        cleaned = re.sub(r"<[^>]+>", "", generated).strip()
+        # Take first sentence only
+        first_sentence = cleaned.split(".")[0] + "." if "." in cleaned else cleaned
+        return first_sentence
 
     async def get_active_character_tables(self, conn: asyncpg.Connection) -> List[str]:
         """Fetch all csa_memory_* tables in PostgreSQL."""
@@ -66,9 +89,25 @@ class MemoryConsolidationWorker:
                 log_lines.append(f"[{r['timestamp']}] Inner Thought: {r['inner_monologue']}")
         daily_logs_str = "\n".join(log_lines)
 
-        # 3. Summarization (Stub: Hermes will attach async HTTP request to Gemma 9B)
+        # 3. Summarization: dispatch to Gemma 9B via HTTP
         logger.info(f"[Sleep Cycle] Dispatching {len(records)} log entries for {char_id} to Gemma 9B...")
-        summary_node = f"I explored the location and processed sensory inputs from the last 24 hours."
+        try:
+            prompt = SLEEP_CYCLE_PROMPT_TEMPLATE.format(
+                character_id=char_id,
+                daily_logs=daily_logs_str,
+            )
+            summary_node = await self._call_consolidation_model(prompt)
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                f"[Sleep Cycle] Gemma 9B request failed for {char_id}: "
+                f"{exc.response.status_code} {exc.response.text}"
+            )
+            summary_node = f"I processed sensory inputs from the last 24 hours."
+        except Exception as exc:
+            logger.warning(
+                f"[Sleep Cycle] Gemma 9B call failed for {char_id}, using fallback: {exc}"
+            )
+            summary_node = f"I processed sensory inputs from the last 24 hours."
 
         # 4. Commit core memory node & Prune volatile entries
         async with conn.transaction():
