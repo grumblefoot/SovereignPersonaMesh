@@ -1,0 +1,12 @@
+{
+  "proxy_routing_overhead_ms": 0.6978511810302734,
+  "evennia_action_evaluation_ms": 0.38552284240722656,
+  "proxy_routing_sla_met": true,
+  "proxy_routing_sla_target_ms": 150,
+  "total_tests": 0,
+  "passed_tests": 0,
+  "failed_tests": 0,
+  "skipped_tests": 0,
+  "pass_rate_pct": 0,
+  "e2e_test_pass_rate_met": false
+}
