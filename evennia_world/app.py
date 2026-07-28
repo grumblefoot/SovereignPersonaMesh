@@ -232,14 +232,11 @@ async def add_character_to_world(payload: CharacterMovePayload):
         payload.template_key, payload.room_id, payload.character_id,
     )
 
-    # Also update the active world if it uses this template
-    if payload.template_key == list(world_builder.templates.keys())[0] and current_world:
-        # Remove from old room if character was in another room
+    # Also update the active world if the room is in current_world
+    if current_world and payload.room_id in current_world:
         _remove_character_from_all_rooms(payload.character_id)
-        world_builder.add_character_to_room(payload.template_key, payload.room_id, payload.character_id)
-        room = world_builder.get_room(payload.template_key, payload.room_id)
-        if room:
-            current_world[payload.room_id] = room
+        if payload.character_id not in current_world[payload.room_id].present_characters:
+            current_world[payload.room_id].present_characters.append(payload.character_id)
 
     return CharacterResponse(
         success=True,
