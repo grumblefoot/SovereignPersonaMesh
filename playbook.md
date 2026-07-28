@@ -92,10 +92,11 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
   - [x] **67/67 tests passing** (13 pre-existing + 54 new Phase 2 tests).
   - [x] Fixed stale asyncio.Lock issue in session_lock._cleanup_session to prevent deadlock on TTL expiry.
 
-- [ ] **Phase 3: SPM FastAPI Proxy & Stream Parser (Port 5050)** *(Assigned to Hermes)*
-  - [ ] Implement full OpenAI-compatible `/v1/chat/completions` request pipeline in `proxy/api/routes.py`.
-  - [ ] Validate `MonologueStreamParser` token state machine under real streaming responses from Lemonade Server.
-  - [ ] Verify Monologue Parser Fail-Safe Passthrough (>500 tokens / malformed tags / unexpected EOS auto-close).
+- [x] **Phase 3: SPM FastAPI Proxy & Stream Parser (Port 5050)** *(Completed by Hermes & Antigravity)*
+  - [x] Implement full OpenAI-compatible `/v1/chat/completions` request pipeline in `proxy/api/routes.py`.
+  - [x] Validate `MonologueStreamParser` token state machine under real streaming responses from Lemonade Server.
+  - [x] Verify Monologue Parser Fail-Safe Passthrough (>500 tokens / malformed tags / unexpected EOS auto-close).
+  - [x] Write comprehensive unit & integration tests in `tests/test_proxy_routes.py` (74/74 total unit tests passing).
 
 - [ ] **Phase 4: Observer Inference Gating & Bypass Protocol** *(Assigned to Hermes)*
   - [ ] Test `ObserverInferenceGatingFilter.evaluate_and_bypass()`.
@@ -136,3 +137,4 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
 | 2026-07-28 | Phase 0 | APPROVED | Initialized workspace, git repo, stubs, tests, and playbook. Prepared for Hermes Agent buildout. |
 | 2026-07-28 | Phase 1 | COMPLETE | Hermes built out DB infra: pgvector 3584-dim vectors require brute-force cosine search (HNSW capped at 2000 dims). B-tree index on (is_core_memory, timestamp). Reused existing spm-postgres container. 13/13 tests pass. |
 | 2026-07-28 | Phase 2 | COMPLETE | Hermes & Antigravity built out Evennia Liaison API: REST endpoints (Port 4005), 60s TTL lock manager with LockError guards & auto-cleanup, score-based template matcher with 4 room networks, dynamic character placement. 67/67 unit tests pass. |
+| 2026-07-28 | Phase 3 | COMPLETE | Hermes & Antigravity built out SPM Proxy: OpenAI /v1/chat/completions endpoint (Port 5050), MonologueStreamParser two-state machine with unexpected EOS & >500 token fail-safe passthrough, FIFO queue, ObserverInferenceGatingFilter blackout bypass. 74/74 unit tests pass. |
