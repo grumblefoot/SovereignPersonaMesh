@@ -5,7 +5,7 @@ and validates core memory node insertion, volatile log pruning, and
 Gemma 9B HTTP consolidation stub.
 """
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import asyncpg
 import pytest
@@ -55,7 +55,10 @@ async def test_call_consolidation_model_success():
     worker = MemoryConsolidationWorker(DB_CONFIG, "http://localhost:13305/v1")
 
     mock_response = AsyncMock()
-    mock_response.json.return_value = AsyncMock(return_value={
+    # response.raise_for_status() is sync in httpx, so use Mock
+    mock_response.raise_for_status = Mock()
+    # response.json() is sync in httpx, so use Mock
+    mock_response.json = Mock(return_value={
         "choices": [
             {
                 "message": {
@@ -64,11 +67,10 @@ async def test_call_consolidation_model_success():
             }
         ]
     })
-    mock_response.raise_for_status = AsyncMock()
 
     with patch("httpx.AsyncClient") as MockClient:
-        instance = AsyncMock()
-        instance.post.return_value = mock_response
+        instance = Mock()
+        instance.post = AsyncMock(return_value=mock_response)
         instance.__aenter__ = AsyncMock(return_value=instance)
         instance.__aexit__ = AsyncMock(return_value=False)
         MockClient.return_value = instance
@@ -85,14 +87,14 @@ async def test_call_consolidation_model_no_period():
     worker = MemoryConsolidationWorker(DB_CONFIG, "http://localhost:13305/v1")
 
     mock_response = AsyncMock()
-    mock_response.json.return_value = AsyncMock(return_value={
+    mock_response.raise_for_status = Mock()
+    mock_response.json = Mock(return_value={
         "choices": [{"message": {"content": "no period here"}}]
     })
-    mock_response.raise_for_status = AsyncMock()
 
     with patch("httpx.AsyncClient") as MockClient:
-        instance = AsyncMock()
-        instance.post.return_value = mock_response
+        instance = Mock()
+        instance.post = AsyncMock(return_value=mock_response)
         instance.__aenter__ = AsyncMock(return_value=instance)
         instance.__aexit__ = AsyncMock(return_value=False)
         MockClient.return_value = instance
@@ -188,6 +190,8 @@ async def test_volatile_log_pruning():
     conn = await asyncpg.connect(**DB_CONFIG)
     try:
         await conn.execute("SELECT create_csa_memory_table($1);", "test_prune")
+        # Clean up stale data from previous test runs
+        await conn.execute("DELETE FROM csa_memory_test_prune WHERE session_id = 'test';")
 
         # Insert old volatile log (48h ago — should be pruned)
         await conn.execute(
@@ -281,15 +285,17 @@ async def test_synthesis_is_first_person_sentence():
     worker = MemoryConsolidationWorker(DB_CONFIG, "http://localhost:13305/v1")
 
     mock_response = AsyncMock()
-    mock_response.json.return_value = {
+    mock_response.raise_for_status = Mock()
+    mock_response.json = Mock(return_value={
         "choices": [{"message": {"content": "<boss>I saw the dragon at dawn.</boss>"}}]
-    }
+    })
 
     with patch("httpx.AsyncClient") as MockClient:
-        instance = AsyncMock()
-        instance.post.return_value = mock_response
-        MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
-        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+        instance = Mock()
+        instance.post = AsyncMock(return_value=mock_response)
+        instance.__aenter__ = AsyncMock(return_value=instance)
+        instance.__aexit__ = AsyncMock(return_value=False)
+        MockClient.return_value = instance
 
         result = await worker._call_consolidation_model("test")
 
