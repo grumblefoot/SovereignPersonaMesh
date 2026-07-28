@@ -1,33 +1,33 @@
-# Phase 3 Handoff: SPM FastAPI Proxy & Stream Parser (Port 5050)
+# Phase 4 & Phase 5 Handoff: Observer Gating & RAG Decay Engine
 
 ## Current Progress & Status
 - **Phase 0** ✅: Workspace, git repo, stubs, config, tests, playbook by Antigravity.
 - **Phase 1** ✅: DB & Container Infrastructure by Hermes (`13/13` tests passing, commit `ec4e46c`).
 - **Phase 2** ✅: Evennia World State Liaison Service by Hermes & Antigravity (`67/67` total unit tests passing, commit `2d92f03`).
-  - Implemented REST API on Port 4005 (`/api/v1/world/action`, `/api/v1/world/state`, `/api/v1/world/lock`, `/api/v1/world/characters`, `/api/v1/world/configure`, `/api/v1/world/templates`).
-  - Added 60s TTL lock manager with auto-stale cleanup and `LockError` guards in `evennia_world/session_lock.py`.
-  - Expanded `evennia_world/hybrid_builder.py` with 4 room network templates (`dungeon_cellar`, `forest_camp`, `castle_exterior`, `tavern_common`), keyword scoring matcher, and dynamic character APIs.
-  - Created 647 lines of unit tests in `tests/test_world_liaison.py`.
+- **Phase 3** ✅: SPM FastAPI Proxy & Stream Parser by Hermes & Antigravity (`74/74` total unit tests passing, commit `2ae76a8`).
+  - Implemented `/v1/models` and `/v1/chat/completions` OpenAI emulation endpoints in `proxy/api/routes.py`.
+  - Validated `MonologueStreamParser` token state machine with Fail-Safe Passthrough (>500 tokens / unexpected EOS).
+  - Validated `InferenceFIFOQueue` sequential turn dispatch.
+  - Validated `ObserverInferenceGatingFilter` zero-inference blackout bypass.
+  - Created 7 integration tests in `tests/test_proxy_routes.py`.
 
 ---
 
-## Phase 3 Goals: SPM FastAPI Proxy & Stream Parser (Port 5050)
+## Phase 4 & 5 Goals: Observer Gating, RAG Search & Game AI Decay Engine
 Playbook checklist:
-- [ ] Complete `proxy/api/routes.py` OpenAI-compatible `/v1/chat/completions` pipeline.
-- [ ] Validate `MonologueStreamParser` token state machine under streaming responses.
-- [ ] Verify Monologue Parser Fail-Safe Passthrough (>500 tokens / malformed tags / unexpected EOS auto-close).
-- [ ] Write comprehensive unit tests in `tests/test_proxy_routes.py`.
-- [ ] Run full `pytest` suite.
+- [ ] Test `ObserverInferenceGatingFilter.evaluate_and_bypass()` with asyncpg pool.
+- [ ] Verify zero-inference ambient log commits to `csa_memory_{id}` for characters in `Blackout` or `Null` sensory state.
+- [ ] Verify cosine distance search using pgvector `<=>` operator (< 0.35 threshold).
+- [ ] Verify mathematical decay scoring algorithm in `proxy/rag/retriever.py`:
+  $$\text{RAG Score} = (1 - \text{cosine\_distance}) \times e^{-\lambda \Delta t} \times \left(1 + \frac{\text{importance}}{10}\right) \times \text{access\_multiplier}$$
+- [ ] Connect `scripts/onnx_embedder.py` for CPU-offloaded AVX-512 vectorization.
+- [ ] Write tests in `tests/test_sensory_filter.py` and run full `pytest` suite.
 
-### Existing Code Inventory & Target Files
-- **`proxy/main.py`**: FastAPI entry point on Port 5050.
-- **`proxy/api/routes.py`**: OpenAI emulation routes (`/v1/models`, `/v1/chat/completions`).
-- **`proxy/core/fifo_queue.py`**: `InferenceFIFOQueue` for sequential turn execution.
-- **`proxy/core/stream_parser.py`**: `MonologueStreamParser` for two-state monologue token stripping.
-- **`proxy/core/sensory_filter.py`**: `ObserverInferenceGatingFilter` for Null/Blackout bypass.
-- **`proxy/rag/prompt_builder.py`**: `CognitivePromptBuilder` for 32K token budget assembly.
-- **`proxy/backend_client/lemonade_client.py`**: `LemonadeLLMClient` (Port 13305).
-- **`proxy/backend_client/evennia_client.py`**: `EvenniaWorldClient` (Port 4005).
+### Target Files
+- `proxy/core/sensory_filter.py`
+- `proxy/rag/retriever.py`
+- `scripts/onnx_embedder.py`
+- `tests/test_sensory_filter.py`
 
 ### Test Commands
 ```bash
@@ -37,5 +37,5 @@ python -m pytest tests/ -v
 
 ### Git Status
 - Branch: `main`
-- Latest commit: `65f767d` (Phase 2 complete)
+- Latest commit: `4393911` (Phase 3 complete)
 - Tracking `origin/main` on GitHub
