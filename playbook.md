@@ -83,12 +83,14 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
   - [x] 9 new Phase 1-specific tests written and passing + 4 pre-existing tests passing = **13/13 passed**.
   - [x] Created missing `__init__.py` package files across all Python packages.
 
-- [x] **Phase 2: Evennia World State Liaison Service (Port 4005)** *(Completed by Hermes & Antigravity)*
-  - [x] Complete `evennia_world/app.py` REST service integration.
-  - [x] Verify `POST /api/v1/world/action` response structure against SRD payload schema.
-  - [x] Validate session tick locking (`evennia_world/session_lock.py`) with TTL auto-cleanup and concurrent guards.
-  - [x] Expand room templates in `evennia_world/hybrid_builder.py` with 4 room networks, score-based matching, and character management.
-  - [x] Write comprehensive unit test suite in `tests/test_world_liaison.py` (67/67 total unit tests passing).
+- [x] **Phase 2: Evennia World State Liaison Service (Port 4005)** *(Completed by Hermes)*
+  - [x] Completed `evennia_world/app.py` REST service integration: health endpoint, action evaluation, world state query, lock management, character management, world configuration, template listing.
+  - [x] Verified `POST /api/v1/world/action` response structure against SBD payload schema (consequences with gating levels, sensory feeds, distances).
+  - [x] Validated session tick locking (`evennia_world/session_lock.py`) under concurrent requests: TTL expiry, stale lock auto-cleanup, concurrent request guards (409 on double-acquire), token verification.
+  - [x] Expanded room templates in `evennia_world/hybrid_builder.py`: dungeon_cellar (2 rooms), forest_camp (4 rooms), castle_exterior (6 rooms), tavern_common (4 rooms). Score-based keyword matching, dynamic character/room management, deep-copy isolation.
+  - [x] 54 new unit tests in `tests/test_world_liaison.py`: session lock (10), hybrid builder (23), app endpoints (21), models (4), integration (1).
+  - [x] **67/67 tests passing** (13 pre-existing + 54 new Phase 2 tests).
+  - [x] Fixed stale asyncio.Lock issue in session_lock._cleanup_session to prevent deadlock on TTL expiry.
 
 - [ ] **Phase 3: SPM FastAPI Proxy & Stream Parser (Port 5050)** *(Assigned to Hermes)*
   - [ ] Implement full OpenAI-compatible `/v1/chat/completions` request pipeline in `proxy/api/routes.py`.
