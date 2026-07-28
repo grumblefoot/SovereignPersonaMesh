@@ -98,9 +98,9 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
   - [x] Verify Monologue Parser Fail-Safe Passthrough (>500 tokens / malformed tags / unexpected EOS auto-close).
   - [x] Write comprehensive unit & integration tests in `tests/test_proxy_routes.py` (74/74 total unit tests passing).
 
-- [ ] **Phase 4: Observer Inference Gating & Bypass Protocol** *(Assigned to Hermes)*
-  - [ ] Test `ObserverInferenceGatingFilter.evaluate_and_bypass()`.
-  - [ ] Verify zero-inference ambient log commits for characters in `Blackout` or `Null` sensory state.
+- [x] **Phase 4: Observer Inference Gating & Bypass Protocol** *(Completed by Hermes & Antigravity)*
+  - [x] Test `ObserverInferenceGatingFilter.evaluate_and_bypass()` with asyncpg pool.
+  - [x] Verify zero-inference ambient log commits for characters in `Blackout` or `Null` sensory state (78/78 total unit tests passing).
 
 - [ ] **Phase 5: RAG Search & Game AI Decay Engine** *(Assigned to Hermes)*
   - [ ] Verify cosine distance search using pgvector `<=>` operator (< 0.35 limit).
@@ -138,3 +138,4 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
 | 2026-07-28 | Phase 1 | COMPLETE | Hermes built out DB infra: pgvector 3584-dim vectors require brute-force cosine search (HNSW capped at 2000 dims). B-tree index on (is_core_memory, timestamp). Reused existing spm-postgres container. 13/13 tests pass. |
 | 2026-07-28 | Phase 2 | COMPLETE | Hermes & Antigravity built out Evennia Liaison API: REST endpoints (Port 4005), 60s TTL lock manager with LockError guards & auto-cleanup, score-based template matcher with 4 room networks, dynamic character placement. 67/67 unit tests pass. |
 | 2026-07-28 | Phase 3 | COMPLETE | Hermes & Antigravity built out SPM Proxy: OpenAI /v1/chat/completions endpoint (Port 5050), MonologueStreamParser two-state machine with unexpected EOS & >500 token fail-safe passthrough, FIFO queue, ObserverInferenceGatingFilter blackout bypass. 74/74 unit tests pass. |
+| 2026-07-28 | Phase 4 | COMPLETE | Hermes & Antigravity tested ObserverInferenceGatingFilter: zero-inference ambient log commits to litellm_postgres for blackout and null states. 78/78 unit tests pass. |
