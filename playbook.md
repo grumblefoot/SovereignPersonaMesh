@@ -21,43 +21,46 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
 ## 2. Directory Structure & Workspace Map
 
 ```
-/home/osmon/Desktop/Experiments/SillyTavern/SovereignPersistanceMesh/
-├── config/
-│   ├── Containerfile             # Rootless Podman container manifest
-│   ├── docker-compose.yml        # PostgreSQL + pgvector (litellm_postgres) service
-│   └── hardware_tiers.py         # Sovereign (96GB GTT), Performance, & Experimental configs
-├── proxy/
-│   ├── main.py                   # FastAPI Proxy entry point (Port 5050)
-│   ├── api/
-│   │   └── routes.py             # OpenAI-compatible /v1/chat/completions endpoint
-│   ├── core/
-│   │   ├── fifo_queue.py         # Asyncio FIFO request queue (100% GPU safety margin)
-│   │   ├── stream_parser.py      # Two-state monologue parser with fail-safe passthrough
-│   │   └── sensory_filter.py     # Observer Inference Gating & Bypass Protocol
-│   ├── rag/
-│   │   ├── prompt_builder.py     # 32,768 Token Budget Partitioning Matrix
-│   │   └── retriever.py          # pgvector search & Game AI decay scoring engine
-│   └── backend_client/
-│       ├── lemonade_client.py    # Async SSE client for Lemonade Server (Port 13305)
-│       └── evennia_client.py     # Async REST client for Evennia (Port 4005)
-├── evennia_world/
-│   ├── app.py                    # Evennia REST API service (Port 4005)
-│   ├── models.py                 # Pydantic & Django ORM data models
-│   ├── spatial_matrix.py         # Deterministic Spatial & Acoustic Constraints Matrix
-│   ├── session_lock.py           # Tick & Session Lock manager
-│   └── hybrid_builder.py         # Hybrid Semantic-Template World Builder
-├── scripts/
-│   ├── init_db.sql               # Database schema & pgvector initialization DDL
-│   ├── sleep_cycle.py            # Daily 3:00 AM memory consolidation worker
-│   ├── onnx_embedder.py          # CPU offloaded embedding worker (AVX-512)
-│   └── setup_systemd_timer.sh    # Systemd timer installer script
-├── tests/
-│   ├── test_spatial_matrix.py    # Unit tests for spatial gating rules
-│   └── test_stream_parser.py     # Unit tests for monologue token stream parser
-├── README.md
-├── playbook.md                   # Master engineering playbook
-├── requirements.txt
-└── .env.example
+/home/osmon/Desktop/Experiments/SillyTavern/
+├── SillyTavern/                  # Cloned SillyTavern frontend repository
+├── evennia/                      # Cloned Evennia text-game engine repository
+└── SovereignPersistanceMesh/     # Core SPM project workspace
+    ├── config/
+    │   ├── Containerfile             # Rootless Podman container manifest
+    │   ├── docker-compose.yml        # PostgreSQL + pgvector (litellm_postgres) service
+    │   └── hardware_tiers.py         # Sovereign (96GB GTT), Performance, & Experimental configs
+    ├── proxy/
+    │   ├── main.py                   # FastAPI Proxy entry point (Port 5050)
+    │   ├── api/
+    │   │   └── routes.py             # OpenAI-compatible /v1/chat/completions endpoint
+    │   ├── core/
+    │   │   ├── fifo_queue.py         # Asyncio FIFO request queue (100% GPU safety margin)
+    │   │   ├── stream_parser.py      # Two-state monologue parser with fail-safe passthrough
+    │   │   └── sensory_filter.py     # Observer Inference Gating & Bypass Protocol
+    │   ├── rag/
+    │   │   ├── prompt_builder.py     # 32,768 Token Budget Partitioning Matrix
+    │   │   └── retriever.py          # pgvector search & Game AI decay scoring engine
+    │   └── backend_client/
+    │       ├── lemonade_client.py    # Async SSE client for Lemonade Server (Port 13305)
+    │       └── evennia_client.py     # Async REST client for Evennia (Port 4005)
+    ├── evennia_world/
+    │   ├── app.py                    # Evennia REST API service (Port 4005)
+    │   ├── models.py                 # Pydantic & Django ORM data models
+    │   ├── spatial_matrix.py         # Deterministic Spatial & Acoustic Constraints Matrix
+    │   ├── session_lock.py           # Tick & Session Lock manager
+    │   └── hybrid_builder.py         # Hybrid Semantic-Template World Builder
+    ├── scripts/
+    │   ├── init_db.sql               # Database schema & pgvector initialization DDL
+    │   ├── sleep_cycle.py            # Daily 3:00 AM memory consolidation worker
+    │   ├── onnx_embedder.py          # CPU offloaded embedding worker (AVX-512)
+    │   └── setup_systemd_timer.sh    # Systemd timer installer script
+    ├── tests/
+    │   ├── test_spatial_matrix.py    # Unit tests for spatial gating rules
+    │   └── test_stream_parser.py     # Unit tests for monologue token stream parser
+    ├── README.md
+    ├── playbook.md                   # Master engineering playbook
+    ├── requirements.txt
+    └── .env.example
 ```
 
 ---
