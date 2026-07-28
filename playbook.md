@@ -83,11 +83,12 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
   - [x] 9 new Phase 1-specific tests written and passing + 4 pre-existing tests passing = **13/13 passed**.
   - [x] Created missing `__init__.py` package files across all Python packages.
 
-- [ ] **Phase 2: Evennia World State Liaison Service (Port 4005)** *(Assigned to Hermes)*
-  - [ ] Complete `evennia_world/app.py` REST service integration.
-  - [ ] Verify `POST /api/v1/world/action` response structure against SRD payload schema.
-  - [ ] Validate session tick locking (`evennia_world/session_lock.py`) under concurrent requests.
-  - [ ] Expand room templates in `evennia_world/hybrid_builder.py`.
+- [x] **Phase 2: Evennia World State Liaison Service (Port 4005)** *(Completed by Hermes & Antigravity)*
+  - [x] Complete `evennia_world/app.py` REST service integration.
+  - [x] Verify `POST /api/v1/world/action` response structure against SRD payload schema.
+  - [x] Validate session tick locking (`evennia_world/session_lock.py`) with TTL auto-cleanup and concurrent guards.
+  - [x] Expand room templates in `evennia_world/hybrid_builder.py` with 4 room networks, score-based matching, and character management.
+  - [x] Write comprehensive unit test suite in `tests/test_world_liaison.py` (67/67 total unit tests passing).
 
 - [ ] **Phase 3: SPM FastAPI Proxy & Stream Parser (Port 5050)** *(Assigned to Hermes)*
   - [ ] Implement full OpenAI-compatible `/v1/chat/completions` request pipeline in `proxy/api/routes.py`.
@@ -128,7 +129,8 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
 
 ## 5. Senior Auditor Checkpoint Log
 
-|| Date | Phase | Status | Auditor Notes ||
+| Date | Phase | Status | Auditor Notes |
 |---|---|---|---|
 | 2026-07-28 | Phase 0 | APPROVED | Initialized workspace, git repo, stubs, tests, and playbook. Prepared for Hermes Agent buildout. |
-| 2026-07-28 | Phase 1 | COMPLETE | Hermes built out DB infra: pgvector 3584-dim vectors require brute-force cosine search (HNSW capped at 2000 dims). B-tree index on (is_core_memory, timestamp). Reused existing spm-postgres container. 13/13 tests pass. Missing `__init__.py` files added to all packages. |
+| 2026-07-28 | Phase 1 | COMPLETE | Hermes built out DB infra: pgvector 3584-dim vectors require brute-force cosine search (HNSW capped at 2000 dims). B-tree index on (is_core_memory, timestamp). Reused existing spm-postgres container. 13/13 tests pass. |
+| 2026-07-28 | Phase 2 | COMPLETE | Hermes & Antigravity built out Evennia Liaison API: REST endpoints (Port 4005), 60s TTL lock manager with LockError guards & auto-cleanup, score-based template matcher with 4 room networks, dynamic character placement. 67/67 unit tests pass. |
