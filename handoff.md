@@ -1,27 +1,26 @@
-# Phase 8 Handoff: End-to-End SPM Integration Test Harness (Seraphina & SillyTavern)
+# FR-001 Handoff: Session-Bound Context & Memory Isolation
 
-## Goal & Objectives
-Build a complete end-to-end integration test suite that tests **SPM Proxy (Port 5050)**, **Evennia Liaison (Port 4005)**, **Lemonade LLM Server (Port 13305)**, **PostgreSQL (`litellm_postgres`)**, and **SillyTavern's default character `Seraphina`**.
+## Objectives
+Implement strict, zero-bleed session-bound memory and spatial isolation (`session_id`) across PostgreSQL database tables, RAG retrieval queries, Evennia spatial room state, and SPM Proxy routing. Every chat session must start 100% fresh for a character.
 
-### Required Files
-1. `tests/test_e2e_integration.py`
-   - Test 1: Service readiness probes for Port 4005 (Evennia), Port 5050 (Proxy), Port 13305 (Lemonade), and Port 5432 (Postgres).
-   - Test 2: Character registration (`Seraphina`) in Evennia `dungeon_cellar` room.
-   - Test 3: OpenAI `/v1/chat/completions` request simulating SillyTavern payload for Seraphina.
-   - Test 4: Real-time monologue stripping (`<ctrl94>`) verification in SSE stream.
-   - Test 5: PostgreSQL verification: query `csa_memory_seraphina` to verify turn persistence.
-   - Test 6: RAG memory retrieval injection on follow-up turn.
-   - Test 7: Zero-inference blackout bypass verification when character is distant.
-2. `scripts/run_e2e_test.py`
-   - Script that ensures background microservices (Evennia app on 4005, SPM proxy on 5050) are started, runs `pytest tests/test_e2e_integration.py`, captures SLA metrics, and outputs formatted findings.
+### Requirements
+1. **Database & RAG**:
+   - Ensure DDL in `scripts/init_db.sql` includes `session_id VARCHAR(255) NOT NULL DEFAULT 'default_session'` and index `idx_csa_memory_{char_id}_session_timestamp`.
+   - Update `proxy/rag/retriever.py` `retrieve_memories()` to filter strictly by `WHERE session_id = $1`.
+   - Update `proxy/core/sensory_filter.py` `evaluate_and_bypass()` to persist `session_id`.
+2. **Evennia Liaison (Port 4005)**:
+   - Update `evennia_world/app.py` state maps to session-keyed dictionary: `session_worlds: Dict[str, Dict[str, RoomMetadata]]`.
+   - Update `/api/v1/world/action`, `/api/v1/world/state`, `/api/v1/world/characters`, `/api/v1/world/move`, `/api/v1/world/configure` to support `session_id`.
+3. **SPM Proxy (Port 5050)**:
+   - Update `proxy/api/routes.py` with `_extract_session_id()` precedence: `X-Session-ID` header → body `session_id` → `"default_session"`.
+4. **Unit Tests**:
+   - Create `tests/test_fr001_session_isolation.py` and run full pytest suite (`pytest tests/ -v`).
 
-### Virtual Environment & Test Execution
+### Commands
 ```bash
 source /home/osmon/Desktop/Experiments/SillyTavern/spm-demo-mvp/venv/bin/activate
-python -m pytest tests/test_e2e_integration.py -v
-python scripts/run_e2e_test.py
+python -m pytest tests/ -v
 ```
 
 ### Git Status
-- Branch: `main`
-- Target remote: `origin/main`
+- Target branch: `main`

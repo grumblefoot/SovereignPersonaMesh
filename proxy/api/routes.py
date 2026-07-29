@@ -87,18 +87,36 @@ async def _gather_public_response(prompt: str, model: str, temperature: float,
     return public_resp
 
 
+def _extract_session_id(request: Request, body: dict) -> str:
+    """
+    Extract session_id from request with precedence:
+    X-Session-ID header > body session_id > "default_session".
+    Implements FR-001 session-bound context isolation.
+    """
+    header_session = request.headers.get("X-Session-ID")
+    if header_session:
+        return header_session
+    body_session = body.get("session_id")
+    if body_session:
+        return str(body_session)
+    return "default_session"
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest, req: Request):
     """
     OpenAI-compatible chat completions endpoint intercepted by SPM Proxy.
+    Supports session-bound context isolation via _extract_session_id().
     """
     logger.info(f"[SPMProxy] Received chat completion request ({len(request.messages)} messages) ...")
+
+    # Extract session ID for FR-001 session isolation
+    session_id = _extract_session_id(req, request.model_dump())
 
     # Extract target character identifier
     target_char = _extract_target_char(request.messages)
     last_msg = request.messages[-1] if request.messages else ChatCompletionMessage(role="user", content="")
     user_text = last_msg.content
-    session_id = "session_abc123"
 
     # --- Step 1: spatial routing via Evennia ---
     world_res = await evennia_client.submit_action(
