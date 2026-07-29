@@ -1,20 +1,26 @@
-# FR-001 Handoff: Session-Bound Context & Memory Isolation
+# FR-002 Handoff: Bulk Chat Import & Async Bootstrapping
 
 ## Objectives
-Implement strict, zero-bleed session-bound memory and spatial isolation (`session_id`) across PostgreSQL database tables, RAG retrieval queries, Evennia spatial room state, and SPM Proxy routing. Every chat session must start 100% fresh for a character.
+Implement automatic bulk chat import detection (> 10 historical messages for a new `session_id`), non-blocking live chat generation (< 5 ms routing overhead), and an asynchronous background worker (`proxy/rag/import_worker.py`) with dynamic hardware resource allocation.
 
 ### Requirements
-1. **Database & RAG**:
-   - Ensure DDL in `scripts/init_db.sql` includes `session_id VARCHAR(255) NOT NULL DEFAULT 'default_session'` and index `idx_csa_memory_{char_id}_session_timestamp`.
-   - Update `proxy/rag/retriever.py` `retrieve_memories()` to filter strictly by `WHERE session_id = $1`.
-   - Update `proxy/core/sensory_filter.py` `evaluate_and_bypass()` to persist `session_id`.
-2. **Evennia Liaison (Port 4005)**:
-   - Update `evennia_world/app.py` state maps to session-keyed dictionary: `session_worlds: Dict[str, Dict[str, RoomMetadata]]`.
-   - Update `/api/v1/world/action`, `/api/v1/world/state`, `/api/v1/world/characters`, `/api/v1/world/move`, `/api/v1/world/configure` to support `session_id`.
-3. **SPM Proxy (Port 5050)**:
-   - Update `proxy/api/routes.py` with `_extract_session_id()` precedence: `X-Session-ID` header → body `session_id` → `"default_session"`.
-4. **Unit Tests**:
-   - Create `tests/test_fr001_session_isolation.py` and run full pytest suite (`pytest tests/ -v`).
+1. **Database Schema (`scripts/init_db.sql`)**:
+   - Create table `spm_chat_imports`:
+     `import_id UUID PRIMARY KEY`, `session_id VARCHAR(255) UNIQUE`, `character_id VARCHAR(255)`, `status VARCHAR(50)`, `total_messages INT`, `processed_messages INT`, `error_log TEXT`, `created_at TIMESTAMP`, `updated_at TIMESTAMP`.
+2. **Background Import Worker (`proxy/rag/import_worker.py`)**:
+   - Dynamic batch size allocator inspecting `config/hardware_tiers.py` and CPU cores/memory.
+   - `process_bulk_import_background(session_id, character_id, messages, db_pool)` function:
+     - Record `status = 'processing'`.
+     - Process message pairs in dynamic batches.
+     - Vectorize embeddings via ONNX CPU embedder and insert into `csa_memory_{character_id}`.
+     - Update status to `'completed'` or `'failed'` with error logs.
+3. **SPM Proxy Interceptor (`proxy/api/routes.py`)**:
+   - Check `len(request.messages) > 10` for new `session_id`.
+   - Register job in `spm_chat_imports` and spawn `asyncio.create_task()`.
+   - Complete routing setup in < 5 ms for live response.
+4. **Unit Tests (`tests/test_fr002_bulk_import.py`)**:
+   - Create tests for detection speed (< 5 ms), worker memory population, dynamic resource scaling, and failure resilience.
+   - Run `pytest tests/ -v` (all tests passing).
 
 ### Commands
 ```bash
@@ -22,5 +28,5 @@ source /home/osmon/Desktop/Experiments/SillyTavern/spm-demo-mvp/venv/bin/activat
 python -m pytest tests/ -v
 ```
 
-### Git Status
-- Target branch: `main`
+### Git Target
+- Branch: `main`
