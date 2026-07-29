@@ -133,10 +133,20 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
     - Memory Retention SLA-3: Verified via unit tests (zero-loss on `is_core_memory = TRUE` enforced by sleep_cycle pruning logic).
 
 - [x] **Phase 8: SillyTavern E2E Integration Suite (Seraphina)** *(Completed by Hermes)*
-  - [x] Build `tests/test_e2e_integration.py` (20 tests across 7 groups: service readiness, Seraphina character registration in dungeon_cellar, SillyTavern OpenAI /v1/chat/completions payload, monologue stripping, PostgreSQL turn persistence, RAG memory retrieval, zero-inference blackout bypass).
-  - [x] Build `scripts/run_e2e_test.py` automated multi-service test launcher with SLA metric capture.
-  - [x] Validate live monologue stripping (`<ctrl94>`), PostgreSQL persistence in `csa_memory_seraphina`, vector RAG memory retrieval, and zero-inference Blackout bypass.
-  - [x] **128/128 total unit & integration tests passing** (20 new E2E + 108 existing) in 3.01s.
+ - [x] Build `tests/test_e2e_integration.py` (20 tests across 7 groups: service readiness, Seraphina registration in dungeon_cellar, SillyTavern OpenAI /v1/chat/completions payload, monologue stripping, PostgreSQL turn persistence, RAG memory retrieval, zero-inference blackout bypass).
+ - [x] Build `scripts/run_e2e_test.py` automated multi-service test launcher with SLA metric capture.
+ - [x] Validate live monologue stripping (`<ctrl94>`), PostgreSQL persistence in `csa_memory_seraphina`, vector RAG memory retrieval, and zero-inference Blackout bypass.
+ - [x] **128/128 total unit & integration tests passing** (20 new E2E + 108 existing) in 3.01s.
+
+- [x] **Phase 9: FR-001 Session-Bound Context & Memory Isolation** *(Completed by Hermes)*
+ - [x] Updated `proxy/rag/retriever.py` `retrieve_memories()` to strictly filter by `WHERE session_id = $3`, eliminating cross-session memory bleed.
+ - [x] Updated `proxy/core/sensory_filter.py` `evaluate_and_bypass()` — already persisted `session_id` in ambient log commits (no change needed).
+ - [x] Updated `evennia_world/app.py` with `session_worlds: Dict[session_id, Dict[template_key, Dict[room_id, RoomMetadata]]]` for session-scoped spatial state. Updated `_ensure_world()`, `_get_session_world()`, `_find_actor_room()`, `_compute_all_distances()`, `_remove_character_from_all_rooms()`, and all endpoints (`/action`, `/state`, `/characters`, `/configure`) to accept and propagate `session_id`.
+ - [x] Updated `proxy/api/routes.py` with `_extract_session_id()` helper (precedence: `X-Session-ID` header > body `session_id` > `"default_session"`), replacing hardcoded `"session_abc123"`.
+ - [x] Added `session_id` field to `evennia_world.models.CharacterMovePayload`.
+ - [x] Wrote `tests/test_fr001_session_isolation.py` (16 tests across 5 groups: retriever session filter, sensory filter session persistence, evennia session-scoped state, proxy session extraction, e2e full-stack isolation).
+ - [x] Updated `tests/test_retriever.py` (3 tests) and `tests/test_e2e_integration.py` (2 tests) to pass `session_id` to `retrieve_memories()`.
+ - [x] **144/144 total tests passing** (16 new FR-001 + 128 existing) in 3.79s.
 
 ---
 
