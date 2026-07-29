@@ -56,3 +56,21 @@ SELECT create_csa_memory_table('rowan');
 SELECT create_csa_memory_table('domino');
 SELECT create_csa_memory_table('luna');
 SELECT create_csa_memory_table('seamus');
+
+-- ======================================================================
+-- FR-002: Bulk Chat Import Tracking
+-- ======================================================================
+CREATE TABLE IF NOT EXISTS spm_chat_imports (
+    import_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id VARCHAR(255) UNIQUE NOT NULL,
+    character_id VARCHAR(255) NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'pending',
+    total_messages INT NOT NULL DEFAULT 0,
+    processed_messages INT NOT NULL DEFAULT 0,
+    error_log TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_imports_session ON spm_chat_imports(session_id);
+CREATE INDEX IF NOT EXISTS idx_chat_imports_status ON spm_chat_imports(status);
