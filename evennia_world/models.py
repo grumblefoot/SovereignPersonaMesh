@@ -78,3 +78,11 @@ class SessionLockPayload(BaseModel):
     session_id: str
     lock_action: str # "acquire" or "release"
     lock_token: Optional[str] = None
+
+
+class CharacterMovePayload(BaseModel):
+    """Move a character to a room within the active template."""
+    character_id: str
+    room_id: str
+    template_key: str = "dungeon_cellar"
+    session_id: str = "default_session"

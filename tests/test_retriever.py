@@ -112,7 +112,7 @@ def test_retriever_insert_and_retrieve():
                     "test", "Test sensory input", "Test inner thought", pgv, 7,
                 )
 
-            results = await retriever.retrieve_memories("test_insert", query_vec, top_k=5)
+            results = await retriever.retrieve_memories("test_insert", query_vec, top_k=5, session_id="test")
             assert len(results) >= 1
             assert results[0]["sensory_input"] == "Test sensory input"
             assert results[0]["cosine_distance"] < 0.35
@@ -171,7 +171,7 @@ def test_rag_score_formula():
                     "test", "Scoring test", pgv, 8, 3,
                 )
 
-            results = await retriever.retrieve_memories("test_score", query_vec, top_k=5)
+            results = await retriever.retrieve_memories("test_score", query_vec, top_k=5, session_id="test")
             assert len(results) >= 1
 
             r = results[0]
@@ -233,12 +233,12 @@ def test_retriever_access_count_increment():
                     "test", "Access test", pgv, 5, 1,
                 )
 
-            results1 = await retriever.retrieve_memories("test_access", vec_list, top_k=5)
+            results1 = await retriever.retrieve_memories("test_access", vec_list, top_k=5, session_id="test")
             assert len(results1) == 1
             score1 = results1[0]["rag_score"]
             assert score1 > 0
 
-            results2 = await retriever.retrieve_memories("test_access", vec_list, top_k=5)
+            results2 = await retriever.retrieve_memories("test_access", vec_list, top_k=5, session_id="test")
             assert len(results2) == 1
             score2 = results2[0]["rag_score"]
             assert score2 > score1, f"Score should increase with access count: {score1} -> {score2}"

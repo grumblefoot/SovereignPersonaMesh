@@ -527,6 +527,7 @@ class TestRAGMemoryRetrieval:
                 "SELECT create_csa_memory_table('seraphina');"
             )
 
+            session_id = _unique_session()
             await conn.execute(
                 """
                 INSERT INTO csa_memory_seraphina
@@ -547,7 +548,7 @@ class TestRAGMemoryRetrieval:
                      'It is almost out.',
                      FALSE, FALSE, 1, $2::vector);
                 """,
-                _unique_session(),
+                session_id,
                 embedding_str,
             )
 
@@ -561,6 +562,7 @@ class TestRAGMemoryRetrieval:
                     query_embedding=mock_embedding,
                     top_k=5,
                     max_cosine_distance=0.35,
+                    session_id=session_id,
                 )
 
                 assert len(retrieved) >= 1
@@ -595,6 +597,7 @@ class TestRAGMemoryRetrieval:
                 "SELECT create_csa_memory_table('seraphina');"
             )
 
+            decay_session = _unique_session()
             await conn.execute(
                 """
                 INSERT INTO csa_memory_seraphina
@@ -607,7 +610,7 @@ class TestRAGMemoryRetrieval:
                     ($1, 'High importance memory',
                      FALSE, 9, 0, $2::vector);
                 """,
-                _unique_session(),
+                decay_session,
                 embedding_str,
             )
 
@@ -620,6 +623,7 @@ class TestRAGMemoryRetrieval:
                     character_id="seraphina",
                     query_embedding=mock_embedding,
                     top_k=5,
+                    session_id=decay_session,
                 )
 
                 assert len(retrieved) >= 2

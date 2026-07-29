@@ -47,9 +47,11 @@ def _ensure_world(template_key: str = "dungeon_cellar", session_id: str = "defau
     return session_worlds[session_id][template_key]
 
 
-def _get_session_world(session_id: str, template_key: str = "dungeon_cellar") -> Dict[str, RoomMetadata]:
-    """Get the world dict for a session, falling back to legacy current_world."""
-    return session_worlds.get(session_id, {}).get(template_key, current_world)
+def _get_session_world(session_id: str, template_key: str = "dungeon_cellar") -> Optional[Dict[str, RoomMetadata]]:
+    """Get the world dict for a session. Returns None if the session doesn't exist (caller should call _ensure_world)."""
+    if session_id not in session_worlds:
+        return None
+    return session_worlds[session_id].get(template_key)
 
 
 # ── Health check ────────────────────────────────────────────────────────
