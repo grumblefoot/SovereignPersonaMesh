@@ -21,10 +21,12 @@ class EpisodicRAGRetriever:
         character_id: str,
         query_embedding: List[float],
         top_k: int = 5,
-        max_cosine_distance: float = 0.35
+        max_cosine_distance: float = 0.35,
+        session_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Retrieves top K relevant episodic memory nodes from csa_memory_{character_id}.
+        Filters by session_id when specified for zero-bleed session isolation.
         Calculates RAG Score = (1 - cosine_dist) * exp(-lambda * delta_t) * (1 + importance/10) * access_count.
         """
         table_name = f"csa_memory_{character_id.lower()}"
@@ -33,17 +35,31 @@ class EpisodicRAGRetriever:
             await conn.execute("SELECT create_csa_memory_table($1);", character_id.lower())
 
             embedding_str = "[" + ",".join(map(str, query_embedding)) + "]"
-            query = f"""
-                SELECT id, sensory_input, inner_monologue, is_core_memory, importance_score, access_count,
-                       (episodic_embedding <=> $1::vector) AS cosine_distance,
-                       EXTRACT(EPOCH FROM (NOW() - timestamp)) / 3600.0 AS delta_hours
-                FROM {table_name}
-                WHERE episodic_embedding IS NOT NULL
-                  AND (episodic_embedding <=> $1::vector) < $2
-                ORDER BY cosine_distance ASC
-                LIMIT 20;
-            """
-            records = await conn.fetch(query, embedding_str, max_cosine_distance)
+            if session_id:
+                query = f"""
+                    SELECT id, sensory_input, inner_monologue, is_core_memory, importance_score, access_count,
+                           (episodic_embedding <=> $1::vector) AS cosine_distance,
+                           EXTRACT(EPOCH FROM (NOW() - timestamp)) / 3600.0 AS delta_hours
+                    FROM {table_name}
+                    WHERE episodic_embedding IS NOT NULL
+                      AND (episodic_embedding <=> $1::vector) < $2
+                      AND session_id = $3
+                    ORDER BY cosine_distance ASC
+                    LIMIT 20;
+                """
+                records = await conn.fetch(query, embedding_str, max_cosine_distance, session_id)
+            else:
+                query = f"""
+                    SELECT id, sensory_input, inner_monologue, is_core_memory, importance_score, access_count,
+                           (episodic_embedding <=> $1::vector) AS cosine_distance,
+                           EXTRACT(EPOCH FROM (NOW() - timestamp)) / 3600.0 AS delta_hours
+                    FROM {table_name}
+                    WHERE episodic_embedding IS NOT NULL
+                      AND (episodic_embedding <=> $1::vector) < $2
+                    ORDER BY cosine_distance ASC
+                    LIMIT 20;
+                """
+                records = await conn.fetch(query, embedding_str, max_cosine_distance)
 
             scored_nodes = []
             for r in records:
@@ -82,5 +98,5 @@ class EpisodicRAGRetriever:
                     WHERE id = ANY($1::uuid[]);
                 """, node_ids)
 
-            logger.info(f"[RAGRetriever] Retrieved {len(top_memories)} memory nodes for {character_id}.")
+            logger.info(f"[RAGRetriever] Retrieved {len(top_memories)} memory nodes for {character_id} (session={session_id}).")
             return top_memories

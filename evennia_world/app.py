@@ -29,13 +29,27 @@ action_tick_counter: int = 1420
 current_world: Dict[str, RoomMetadata] = {}
 room_to_template: Dict[str, str] = {}
 
+# Session-keyed world state maps for FR-001 session isolation
+# session_worlds: Dict[session_id, Dict[template_key, Dict[room_id, RoomMetadata]]]
+session_worlds: Dict[str, Dict[str, Dict[str, RoomMetadata]]] = {}
 
-def _ensure_world(template_key: str = "dungeon_cellar") -> None:
-    """Ensure current_world matches the requested template."""
+
+def _ensure_world(template_key: str = "dungeon_cellar", session_id: str = "default_session") -> Dict[str, RoomMetadata]:
+    """Ensure session-scoped world state matches the requested template. Returns the world dict for the session."""
+    if session_id not in session_worlds:
+        session_worlds[session_id] = {}
+    if template_key not in session_worlds[session_id]:
+        session_worlds[session_id][template_key] = world_builder.instantiate_world(template_key)
+    # Also sync the legacy current_world for backward compatibility
     global current_world
-    if current_world:
-        return
-    current_world = world_builder.instantiate_world(template_key)
+    if not current_world:
+        current_world = session_worlds[session_id].get(template_key, {})
+    return session_worlds[session_id][template_key]
+
+
+def _get_session_world(session_id: str, template_key: str = "dungeon_cellar") -> Dict[str, RoomMetadata]:
+    """Get the world dict for a session, falling back to legacy current_world."""
+    return session_worlds.get(session_id, {}).get(template_key, current_world)
 
 
 # ── Health check ────────────────────────────────────────────────────────
@@ -59,21 +73,26 @@ async def submit_action(payload: ActionPayload):
     Evaluates physical intentions (speak|whisper|move|manipulate).
     Returns action_tick and sensory feeds for recipient characters based on
     real room positions, distances, and the SpatialConstraintsMatrix.
+    Supports session-scoped world state for FR-001 isolation.
     """
     global action_tick_counter
     action_tick_counter += 1
 
-    # Ensure world is loaded
-    if not current_world:
+    # Ensure session-scoped world is loaded
+    template_key = "dungeon_cellar"
+    _ensure_world(template_key, payload.session_id)
+    world = _get_session_world(payload.session_id, template_key)
+    if not world:
         _ensure_world()
+        world = current_world
 
     # Find which room the actor is in
-    actor_room = _find_actor_room(payload.character_id)
+    actor_room = _find_actor_room(payload.character_id, payload.session_id)
 
     consequences: list[SensoryConsequence] = []
     seen_ids: set[str] = set()
 
-    for room_id, room in current_world.items():
+    for room_id, room in world.items():
         for char_id in room.present_characters:
             if char_id in seen_ids:
                 continue
@@ -107,7 +126,7 @@ async def submit_action(payload: ActionPayload):
                 ))
 
     # Always include Seamus (or any "upstairs" / distant character) if they exist
-    for room_id, room in current_world.items():
+    for room_id, room in world.items():
         if "upstairs" in room_id or "tavern" in room_id:
             for char_id in room.present_characters:
                 if char_id not in seen_ids:
@@ -135,14 +154,18 @@ async def submit_action(payload: ActionPayload):
 async def query_world_state(character_id: str, session_id: str = "default_session"):
     """
     Queries local room metadata for any character (lighting, exits, nearby entities, distances).
+    Session-scoped state per FR-001.
     """
     char_id_lower = character_id.lower()
+    template_key = "dungeon_cellar"
 
-    if not current_world:
-        _ensure_world()
+    world = _get_session_world(session_id, template_key)
+    if not world:
+        _ensure_world(template_key, session_id)
+        world = _get_session_world(session_id, template_key)
 
-    # Find the character's current room
-    char_room = _find_actor_room(char_id_lower)
+    # Find the character's current room in the session-scoped world
+    char_room = _find_actor_room(char_id_lower, session_id)
     if char_room is None:
         # Character not in any tracked room — return a default state
         default_room = RoomMetadata(
@@ -162,8 +185,17 @@ async def query_world_state(character_id: str, session_id: str = "default_sessio
             distances={},
         )
 
-    room = current_world[char_room]
-    distances = _compute_all_distances(char_id_lower)
+    # Look up the room in session-scoped world first, then fall back to legacy current_world
+    room = world.get(char_room)
+    if room is None:
+        room = current_world.get(char_room)
+    if room is None:
+        room = RoomMetadata(
+            room_id="unknown", room_name="Unknown Location",
+            description="No room assigned.", lighting="normal",
+            exits=[], present_characters=[], nearby_objects=[],
+        )
+    distances = _compute_all_distances(char_id_lower, session_id)
 
     return CharacterWorldState(
         character_id=char_id_lower,
@@ -234,7 +266,7 @@ async def add_character_to_world(payload: CharacterMovePayload):
 
     # Also update the active world if the room is in current_world
     if current_world and payload.room_id in current_world:
-        _remove_character_from_all_rooms(payload.character_id)
+        _remove_character_from_all_rooms(payload.character_id, payload.session_id if hasattr(payload, 'session_id') else "default_session")
         if payload.character_id not in current_world[payload.room_id].present_characters:
             current_world[payload.room_id].present_characters.append(payload.character_id)
 
@@ -313,8 +345,10 @@ async def configure_world(payload: WorldConfigPayload):
             status_code=404,
             detail=f"Template '{payload.template_key}' not found",
         )
+    session_id_for_config = payload.template_key
+    session_worlds[session_id_for_config] = {payload.template_key: world_builder.instantiate_world(payload.template_key)}
     global current_world
-    current_world = world_builder.instantiate_world(payload.template_key)
+    current_world = session_worlds[session_id_for_config][payload.template_key]
     return CharacterResponse(
         success=True,
         message=f"World loaded: template '{payload.template_key}'",
@@ -340,9 +374,12 @@ async def get_lock_info(session_id: str):
 
 # ── Internal helpers ────────────────────────────────────────────────────
 
-def _find_actor_room(character_id: str) -> Optional[str]:
-    """Find the room_id where character_id is present in the active world."""
-    for room_id, room in current_world.items():
+def _find_actor_room(character_id: str, session_id: str = "default_session") -> Optional[str]:
+    """Find the room_id where character_id is present in the active world for a session."""
+    world = _get_session_world(session_id)
+    if not world:
+        world = current_world
+    for room_id, room in world.items():
         if character_id in room.present_characters:
             return room_id
     return None
@@ -386,12 +423,15 @@ def _compute_distance_and_barriers(
     return (45.0, [_str_to_barrier("closed_door"), _str_to_barrier("solid_wall")])
 
 
-def _compute_all_distances(character_id: str) -> Dict[str, float]:
-    """Compute distances from character_id to every other character in the world."""
+def _compute_all_distances(character_id: str, session_id: str = "default_session") -> Dict[str, float]:
+    """Compute distances from character_id to every other character in the world for a session."""
     distances: Dict[str, float] = {}
-    char_room = _find_actor_room(character_id)
+    world = _get_session_world(session_id)
+    if not world:
+        world = current_world
+    char_room = _find_actor_room(character_id, session_id)
 
-    for room_id, room in current_world.items():
+    for room_id, room in world.items():
         for other_id in room.present_characters:
             if other_id == character_id:
                 distances[other_id] = 0.0
@@ -404,11 +444,16 @@ def _compute_all_distances(character_id: str) -> Dict[str, float]:
     return distances
 
 
-def _remove_character_from_all_rooms(character_id: str) -> None:
-    """Remove a character from every room in the active world."""
-    for room_id, room in list(current_world.items()):
-        if character_id in room.present_characters:
-            room.present_characters.remove(character_id)
+def _remove_character_from_all_rooms(character_id: str, session_id: str = "default_session") -> None:
+    """Remove a character from every room in the active world for a session."""
+    target_worlds = [current_world]
+    if session_id in session_worlds:
+        for tmpl_dict in session_worlds[session_id].values():
+            target_worlds.append(tmpl_dict)
+    for w in target_worlds:
+        for room_id, room in list(w.items()):
+            if character_id in room.present_characters:
+                room.present_characters.remove(character_id)
 
 
 # ── Startup ─────────────────────────────────────────────────────────────
