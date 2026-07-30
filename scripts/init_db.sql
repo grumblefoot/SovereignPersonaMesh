@@ -74,3 +74,18 @@ CREATE TABLE IF NOT EXISTS spm_chat_imports (
 
 CREATE INDEX IF NOT EXISTS idx_chat_imports_session ON spm_chat_imports(session_id);
 CREATE INDEX IF NOT EXISTS idx_chat_imports_status ON spm_chat_imports(status);
+
+-- ======================================================================
+-- FR-003: Tiered Data Lifecycle & Cold Storage
+-- ======================================================================
+CREATE TABLE IF NOT EXISTS spm_cold_archives (
+    archive_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id VARCHAR(255) NOT NULL,
+    character_id VARCHAR(255) NOT NULL,
+    archive_path TEXT NOT NULL,
+    record_count INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_cold_archives_session ON spm_cold_archives(session_id);
+CREATE INDEX IF NOT EXISTS idx_cold_archives_character ON spm_cold_archives(character_id);

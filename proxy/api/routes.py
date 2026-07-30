@@ -20,6 +20,7 @@ from proxy.core.sensory_filter import ObserverInferenceGatingFilter
 from proxy.rag.prompt_builder import CognitivePromptBuilder
 from proxy.rag.retriever import EpisodicRAGRetriever
 from proxy.rag.import_worker import BulkImportWorker, get_import_worker, _compute_dynamic_batch_size, BULK_IMPORT_THRESHOLD
+from proxy.rag.tier_manager import MemoryTierManager
 from proxy.backend_client.lemonade_client import LemonadeLLMClient
 from proxy.backend_client.evennia_client import EvenniaWorldClient
 from scripts.onnx_embedder import CPUEmbeddingEngine
@@ -299,6 +300,105 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         )
 
     return StreamingResponse(sse_event_generator(), media_type="text/event-stream")
+
+
+# ======================================================================
+# FR-003: Tiered Data Lifecycle & Cold Storage
+# ======================================================================
+
+@router.post("/v1/memories/archive")
+async def archive_memories(request: dict):
+    """
+    Archive old volatile memories to cold .jsonl.gz storage.
+    Accepts JSON body with: character_id, session_id, max_records, max_age_days.
+    Core memories (is_core_memory = TRUE) are never archived.
+    """
+    if _db_pool is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Database pool not configured"}
+        )
+
+    character_id = request.get("character_id", "")
+    session_id = request.get("session_id", "default_session")
+    max_records = request.get("max_records", 500)
+    max_age_days = request.get("max_age_days", 30)
+
+    if not character_id:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "character_id is required"}
+        )
+
+    manager = MemoryTierManager(_db_pool)
+    result = await manager.archive_old_memories(
+        character_id=character_id,
+        session_id=session_id,
+        max_records=max_records,
+        max_age_days=max_age_days,
+    )
+
+    return JSONResponse(content=result)
+
+
+@router.post("/v1/memories/reconstitute")
+async def reconstitute_memory(request: dict):
+    """
+    Reconstitute a cold archive back into hot memory storage.
+    Accepts JSON body with: archive_id, character_id.
+    """
+    if _db_pool is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Database pool not configured"}
+        )
+
+    archive_id = request.get("archive_id")
+    character_id = request.get("character_id")
+
+    if not archive_id or not character_id:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "archive_id and character_id are required"}
+        )
+
+    manager = MemoryTierManager(_db_pool)
+    result = await manager.reconstitute_cold_archive(
+        archive_id=archive_id,
+        character_id=character_id,
+    )
+
+    return JSONResponse(content=result)
+
+
+@router.get("/v1/memories/stats")
+async def memory_stats(
+    character_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+):
+    """
+    Return tiered memory statistics (hot, warm, cold counts).
+    Query params: character_id (required), session_id (optional).
+    """
+    if _db_pool is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Database pool not configured"}
+        )
+
+    if not character_id:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "character_id is required"}
+        )
+
+    manager = MemoryTierManager(_db_pool)
+    result = await manager.get_tier_stats(
+        character_id=character_id,
+        session_id=session_id,
+    )
+
+    return JSONResponse(content=result)
 
 
 @router.get("/v1/imports/status/{session_id}")

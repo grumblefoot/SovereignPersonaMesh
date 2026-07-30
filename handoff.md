@@ -1,26 +1,27 @@
-# FR-002 Handoff: Bulk Chat Import & Async Bootstrapping
+# FR-003 Handoff: Tiered Data Lifecycle & Cold Storage Reconstitution
 
 ## Objectives
-Implement automatic bulk chat import detection (> 10 historical messages for a new `session_id`), non-blocking live chat generation (< 5 ms routing overhead), and an asynchronous background worker (`proxy/rag/import_worker.py`) with dynamic hardware resource allocation.
+Implement a 3-tiered data lifecycle (Hot vector storage, Warm core memories, and Cold `.jsonl.gz` archives) with 100% Core Memory Immunity (`is_core_memory = TRUE`), seamless reconstitution pipelines, and lifecycle REST endpoints.
 
 ### Requirements
 1. **Database Schema (`scripts/init_db.sql`)**:
-   - Create table `spm_chat_imports`:
-     `import_id UUID PRIMARY KEY`, `session_id VARCHAR(255) UNIQUE`, `character_id VARCHAR(255)`, `status VARCHAR(50)`, `total_messages INT`, `processed_messages INT`, `error_log TEXT`, `created_at TIMESTAMP`, `updated_at TIMESTAMP`.
-2. **Background Import Worker (`proxy/rag/import_worker.py`)**:
-   - Dynamic batch size allocator inspecting `config/hardware_tiers.py` and CPU cores/memory.
-   - `process_bulk_import_background(session_id, character_id, messages, db_pool)` function:
-     - Record `status = 'processing'`.
-     - Process message pairs in dynamic batches.
-     - Vectorize embeddings via ONNX CPU embedder and insert into `csa_memory_{character_id}`.
-     - Update status to `'completed'` or `'failed'` with error logs.
-3. **SPM Proxy Interceptor (`proxy/api/routes.py`)**:
-   - Check `len(request.messages) > 10` for new `session_id`.
-   - Register job in `spm_chat_imports` and spawn `asyncio.create_task()`.
-   - Complete routing setup in < 5 ms for live response.
-4. **Unit Tests (`tests/test_fr002_bulk_import.py`)**:
-   - Create tests for detection speed (< 5 ms), worker memory population, dynamic resource scaling, and failure resilience.
-   - Run `pytest tests/ -v` (all tests passing).
+   - Table `spm_cold_archives`:
+     `archive_id UUID PRIMARY KEY`, `session_id VARCHAR(255)`, `character_id VARCHAR(255)`, `archive_path TEXT`, `record_count INT`, `created_at TIMESTAMP`.
+2. **Memory Tier Manager (`proxy/rag/tier_manager.py`)**:
+   - Class `MemoryTierManager`:
+     - `archive_old_memories(character_id, session_id, max_records=500, max_age_days=30)`: Export volatile records to `storage/cold_archives/{character_id}/{session_id}_{timestamp}.jsonl.gz`, register archive, delete volatile rows (`is_core_memory = FALSE`).
+     - `reconstitute_cold_archive(session_id, character_id)`: Decompress `.jsonl.gz`, re-insert/index vectors into `csa_memory_{character_id}`, remove archive record and file.
+     - `get_tier_stats(character_id, session_id)`: Return hot, warm, cold record counts.
+3. **SPM Proxy Endpoints (`proxy/api/routes.py`)**:
+   - `POST /v1/memories/archive`
+   - `POST /v1/memories/reconstitute`
+   - `GET /v1/memories/stats`
+4. **Unit Tests (`tests/test_fr003_tiered_lifecycle.py`)**:
+   - Test core memory immunity (`is_core_memory = TRUE` never archived).
+   - Test gzip compression & schema tracking.
+   - Test full reconstitution pipeline.
+   - Test stats endpoint.
+   - Run `pytest tests/ -v` (100% passing).
 
 ### Commands
 ```bash
