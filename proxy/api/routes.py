@@ -130,6 +130,9 @@ async def _check_bulk_import(
       - session_id is new (not in spm_chat_imports)
       - message count exceeds BULK_IMPORT_THRESHOLD (10)
     """
+    if db_pool is None:
+        return False
+
     # Only check on first request to a new session
     worker = BulkImportWorker(db_pool)
     existing = await worker.check_import_status(session_id)
