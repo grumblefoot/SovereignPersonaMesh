@@ -1,48 +1,82 @@
 """
-Rotating file logger for SPM Proxy (Port 5050).
+Rotating Log Handler for Sovereign Persona Mesh (SPM).
 
-Outputs to sys.stdout and a rotating log file at logs/spm_proxy.log
-(10 MB max per file, 5 backup files).
+Configures a RotatingFileHandler that writes structured logs to
+logs/spm_proxy.log with a 10 MB rotation limit.
 """
 
 import logging
 import os
-import sys
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
-# Ensure the logs directory exists
-_LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "logs")
-os.makedirs(_LOG_DIR, exist_ok=True)
+LOG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "logs",
+)
+LOG_FILE = os.path.join(LOG_DIR, "spm_proxy.log")
+MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+BACKUP_COUNT = 5
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
-_LOG_FILE = os.path.join(_LOG_DIR, "spm_proxy.log")
-_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
-_BACKUP_COUNT = 5
-_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
+def setup_rotating_logger(
+    name: str = "SPMProxy",
+    level: int = logging.INFO,
+    log_file: str = LOG_FILE,
+    max_bytes: int = MAX_BYTES,
+    backup_count: int = BACKUP_COUNT,
+) -> logging.Logger:
+    """
+    Configure and return a logger that writes to a rotating log file.
 
-def setup_spm_logging(level: int = logging.INFO) -> logging.Logger:
-    """Configure and return the root SPM logger with stdout + rotating file handlers."""
-    logger = logging.getLogger("SPM")
+    Parameters
+    ----------
+    name : str
+        Logger name.
+    level : int
+        Logging level (default: INFO).
+    log_file : str
+        Path to the log file.
+    max_bytes : int
+        Max bytes per log file before rotation.
+    backup_count : int
+        Number of rotated backup files to keep.
+
+    Returns
+    -------
+    logging.Logger
+        Configured logger instance.
+    """
+    logger = logging.getLogger(name)
     logger.setLevel(level)
 
-    # Avoid duplicate handlers when called multiple times
+    # Avoid adding duplicate handlers
     if logger.handlers:
         return logger
 
-    formatter = logging.Formatter(_LOG_FORMAT)
-
-    # Stdout handler
-    stdout_handler = logging.StreamHandler(sys.stdout)
-    stdout_handler.setFormatter(formatter)
-    logger.addHandler(stdout_handler)
+    # Ensure log directory exists
+    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
 
     # Rotating file handler
     file_handler = RotatingFileHandler(
-        _LOG_FILE,
-        maxBytes=_MAX_BYTES,
-        backupCount=_BACKUP_COUNT,
+        log_file,
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding="utf-8",
     )
-    file_handler.setFormatter(formatter)
+    file_handler.setLevel(level)
+    file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
     logger.addHandler(file_handler)
 
+    # Also keep a console handler for debugging
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(level)
+    console_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logger.addHandler(console_handler)
+
+    logger.info(f"[Logger] Rotating log handler configured -> {log_file}")
     return logger
+
+
+setup_spm_logging = setup_rotating_logger
