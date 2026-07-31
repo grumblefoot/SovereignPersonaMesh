@@ -1,6 +1,6 @@
 {
-  "BACKEND_LLM_URL": "http://localhost:13305/v1",
-  "BACKEND_API_KEY": "spm-secret-key",
+  "BACKEND_LLM_URL": "http://127.0.0.1:9999/v1",
+  "BACKEND_API_KEY": "",
   "SPM_PROXY_PORT": 5050,
   "SPM_HARDWARE_TIER": "SOVEREIGN",
   "EVENNIA_LIAISON_URL": "http://localhost:4005"
