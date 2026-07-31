@@ -81,15 +81,13 @@ class MemoryTierManager:
         char_id = character_id.lower()
         table_name = f"csa_memory_{char_id}"
 
-        # Ensure the character table and spm_cold_archives exist
+        cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+
         async with self.db_pool.acquire() as conn:
             await conn.execute("SELECT create_csa_memory_table($1);", char_id)
             await self._ensure_cold_archives_table(conn)
 
-        cutoff = datetime.utcnow() - timedelta(days=max_age_days)
-
-        # --- Read eligible rows (volatile only, ordered oldest first) ---
-        async with self.db_pool.acquire() as conn:
+            # --- Read eligible rows (volatile only, ordered oldest first) ---
             rows = await conn.fetch(
                 f"""
                 SELECT id, session_id, timestamp, sensory_input, inner_monologue,
@@ -107,48 +105,46 @@ class MemoryTierManager:
                 max_records,
             )
 
-        if not rows:
-            logger.info(
-                f"[TierManager] No volatile records eligible for archival "
-                f"(char={char_id}, session={session_id})."
+            if not rows:
+                logger.info(
+                    f"[TierManager] No volatile records eligible for archival "
+                    f"(char={char_id}, session={session_id})."
+                )
+                return {
+                    "archive_id": None,
+                    "archive_path": None,
+                    "record_count": 0,
+                    "deleted_count": 0,
+                    "char_id": char_id,
+                }
+
+            # --- Build .jsonl.gz ---
+            os.makedirs(COLD_ARCHIVE_DIR, exist_ok=True)
+            os.makedirs(
+                os.path.join(COLD_ARCHIVE_DIR, char_id),
+                exist_ok=True,
             )
-            return {
-                "archive_id": None,
-                "archive_path": None,
-                "record_count": 0,
-                "deleted_count": 0,
-                "char_id": char_id,
-            }
+            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+            archive_path = os.path.join(
+                COLD_ARCHIVE_DIR,
+                char_id,
+                f"{session_id}_{ts}.jsonl.gz",
+            )
 
-        # --- Build .jsonl.gz ---
-        os.makedirs(COLD_ARCHIVE_DIR, exist_ok=True)
-        os.makedirs(
-            os.path.join(COLD_ARCHIVE_DIR, char_id),
-            exist_ok=True,
-        )
-        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
-        archive_path = os.path.join(
-            COLD_ARCHIVE_DIR,
-            char_id,
-            f"{session_id}_{ts}.jsonl.gz",
-        )
+            with gzip.open(archive_path, "wt", encoding="utf-8") as gz_file:
+                for row in rows:
+                    record = dict(row)
+                    # Serialize embedding vector as a plain list
+                    if record.get("episodic_embedding") is not None:
+                        record["episodic_embedding"] = _embedding_to_list(
+                            record["episodic_embedding"]
+                        )
+                    gz_file.write(json.dumps(record, default=str) + "\n")
 
-        with gzip.open(archive_path, "wt", encoding="utf-8") as gz_file:
-            for row in rows:
-                record = dict(row)
-                # Serialize embedding vector as a plain list
-                if record.get("episodic_embedding") is not None:
-                    # asyncpg returns VECTOR as a numpy array-like; convert to list
-                    record["episodic_embedding"] = _embedding_to_list(
-                        record["episodic_embedding"]
-                    )
-                gz_file.write(json.dumps(record, default=str) + "\n")
+            record_count = len(rows)
+            record_ids = [str(r["id"]) for r in rows]
 
-        record_count = len(rows)
-        record_ids = [str(r["id"]) for r in rows]
-
-        # --- Register archive in spm_cold_archives ---
-        async with self.db_pool.acquire() as conn:
+            # --- Register archive in spm_cold_archives ---
             result = await conn.fetchrow(
                 """
                 INSERT INTO spm_cold_archives
@@ -162,10 +158,9 @@ class MemoryTierManager:
                 record_count,
             )
 
-        archive_id = str(result["archive_id"])
+            archive_id = str(result["archive_id"])
 
-        # --- Delete archived rows (core memories are NOT touched) ---
-        async with self.db_pool.acquire() as conn:
+            # --- Delete archived rows (core memories are NOT touched) ---
             await conn.execute(
                 f"""
                 DELETE FROM {table_name}
@@ -303,12 +298,12 @@ class MemoryTierManager:
             params.append(session_id)
             param_idx += 1
 
-        # --- Hot: non-core records in the memory table ---
+         # --- Hot: non-core records in the memory table ---
         hot_where = "WHERE is_core_memory = FALSE"
+        hot_params: list = []
         if session_id is not None:
-            hot_where = f"WHERE session_id = ${param_idx} AND is_core_memory = FALSE"
-            params = [session_id]
-            param_idx = 2
+            hot_where = "WHERE session_id = $1 AND is_core_memory = FALSE"
+            hot_params = [session_id]
 
         async with self.db_pool.acquire() as conn:
             await conn.execute("SELECT create_csa_memory_table($1);", char_id)
@@ -318,13 +313,14 @@ class MemoryTierManager:
                 SELECT COUNT(*) FROM {table_name}
                 {hot_where};
                 """,
-                *params,
+                *hot_params,
             )
 
-        # --- Warm: core memory records ---
+    # --- Warm: core memory records ---
         warm_where = "WHERE is_core_memory = TRUE"
+        warm_params: list = []
         if session_id is not None:
-            warm_where = f"WHERE session_id = ${param_idx} AND is_core_memory = TRUE"
+            warm_where = f"WHERE session_id = $1 AND is_core_memory = TRUE"
             warm_params = [session_id]
 
         async with self.db_pool.acquire() as conn:
@@ -333,7 +329,7 @@ class MemoryTierManager:
                 SELECT COUNT(*) FROM {table_name}
                 {warm_where};
                 """,
-                *[session_id] if session_id is not None else [],
+                *warm_params,
             )
 
         # --- Cold: registered archive records ---

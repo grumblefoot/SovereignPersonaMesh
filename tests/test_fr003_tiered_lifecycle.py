@@ -9,7 +9,6 @@ Verifies:
   5. API endpoints (archive, reconstitute, stats) via TestClient.
 """
 
-import asyncio
 import gzip
 import json
 import os
@@ -656,6 +655,12 @@ class TestStatsEndpoint:
 # ======================================================================
 # 5. API Endpoints via TestClient
 # ======================================================================
+#
+# The FastAPI TestClient runs in a separate asyncio event loop.
+# asyncpg pools created in the test's loop cannot be reused inside
+# the request handler.  Solution: fully mock MemoryTierManager
+# (matching the pattern used by test_fr002_bulk_import.py for
+# BulkImportWorker).
 
 class TestAPIEndpoints:
     """Test /v1/memories/archive, /v1/memories/reconstitute, /v1/memories/stats."""
@@ -670,170 +675,126 @@ class TestAPIEndpoints:
             "deleted_count": 5,
             "char_id": "fr003_api_arc",
         })
+
         with patch("proxy.api.routes.MemoryTierManager", return_value=manager_mock), \
-             patch("proxy.api.routes._db_pool", None):
-            pass  # pool check skipped since we're testing the manager path
-
-        # Actually use a real pool but patch the manager for loop safety
-        async with asyncpg.create_pool(**DB_CONFIG) as pool:
-            char_id = "fr003_api_arc"
-            session_id = f"fr003_aa_{time.time_ns()}"
-            set_db_pool(pool)
-            await _cleanup(char_id, session_id)
-
-            records = [
-                {
-                    "sensory_input": f"api arc {i}",
-                    "is_core_memory": False,
-                    "timestamp": datetime.utcnow() - timedelta(days=45),
-                    "episodic_embedding": _embedding(),
-                }
-                for i in range(5)
-            ]
-            await _insert_memories(pool, char_id, session_id, records)
-
-            # Patch MemoryTierManager to use the pool-created manager directly
-            real_manager = MemoryTierManager(pool)
-            with patch("proxy.api.routes.MemoryTierManager", return_value=real_manager):
-                with TestClient(proxy_app) as client:
-                    resp = client.post(
-                        "/v1/memories/archive",
-                        json={
-                            "character_id": char_id,
-                            "session_id": session_id,
-                        },
-                    )
-                    assert resp.status_code == 200
-                    data = resp.json()
-                    assert data["record_count"] == 5
-                    assert data["archive_id"] is not None
-                    assert data["archive_path"].endswith(".jsonl.gz")
-
-            await _cleanup(char_id, session_id)
+             patch("proxy.api.routes._db_pool", "mock_pool"):
+            with TestClient(proxy_app) as client:
+                resp = client.post(
+                    "/v1/memories/archive",
+                    json={
+                        "character_id": "fr003_api_arc",
+                        "session_id": "test_session",
+                    },
+                )
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["record_count"] == 5
+                assert data["archive_id"] == "a1b2c3d4-0000-0000-0000-000000000001"
+                assert data["archive_path"].endswith(".jsonl.gz")
 
     async def test_archive_endpoint_missing_char(self):
         """POST /v1/memories/archive without character_id returns 400."""
-        with TestClient(proxy_app) as client:
-            resp = client.post(
-                "/v1/memories/archive",
-                json={"session_id": "test"},
-            )
-            assert resp.status_code == 400
-            assert "character_id is required" in resp.json()["error"]
+        with patch("proxy.api.routes._db_pool", "mock_pool"):
+            with TestClient(proxy_app) as client:
+                resp = client.post(
+                    "/v1/memories/archive",
+                    json={"session_id": "test"},
+                )
+                assert resp.status_code == 400
+                assert "character_id is required" in resp.json()["error"]
 
     async def test_reconstitute_endpoint_success(self):
         """POST /v1/memories/reconstitute should restore archived data."""
-        async with asyncpg.create_pool(**DB_CONFIG) as pool:
-            char_id = "fr003_api_recon"
-            session_id = f"fr003_ar_{time.time_ns()}"
-            set_db_pool(pool)
-            await _cleanup(char_id, session_id)
+        manager_mock = AsyncMock()
+        manager_mock.reconstitute_cold_archive = AsyncMock(return_value={
+            "reconstituted_count": 7,
+            "error_count": 0,
+            "archive_path": "/tmp/archive/test.jsonl.gz",
+            "char_id": "fr003_api_recon",
+            "session_id": "test_session",
+        })
 
-            records = [
-                {
-                    "sensory_input": f"api recon {i}",
-                    "is_core_memory": False,
-                    "timestamp": datetime.utcnow() - timedelta(days=45),
-                    "episodic_embedding": _embedding(),
-                }
-                for i in range(7)
-            ]
-            await _insert_memories(pool, char_id, session_id, records)
-
-            # Archive first (direct call, not via API)
-            manager = MemoryTierManager(pool)
-            arc = await manager.archive_old_memories(
-                character_id=char_id, session_id=session_id,
-                max_records=500, max_age_days=30,
-            )
-
-            # Now reconstitute via API (patch manager to use same pool)
-            real_manager = MemoryTierManager(pool)
-            with patch("proxy.api.routes.MemoryTierManager", return_value=real_manager):
-                with TestClient(proxy_app) as client:
-                    resp = client.post(
-                        "/v1/memories/reconstitute",
-                        json={
-                            "archive_id": arc["archive_id"],
-                            "character_id": char_id,
-                        },
-                    )
-                    assert resp.status_code == 200
-                    data = resp.json()
-                    assert data["reconstituted_count"] == 7
-                    assert data["char_id"] == char_id
-
-            await _cleanup(char_id, session_id)
+        with patch("proxy.api.routes.MemoryTierManager", return_value=manager_mock), \
+             patch("proxy.api.routes._db_pool", "mock_pool"):
+            with TestClient(proxy_app) as client:
+                resp = client.post(
+                    "/v1/memories/reconstitute",
+                    json={
+                        "archive_id": "b2c3d4e5-0000-0000-0000-000000000002",
+                        "character_id": "fr003_api_recon",
+                    },
+                )
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["reconstituted_count"] == 7
+                assert data["char_id"] == "fr003_api_recon"
 
     async def test_reconstitute_endpoint_missing_fields(self):
         """POST /v1/memories/reconstitute without required fields returns 400."""
-        with TestClient(proxy_app) as client:
-            resp = client.post(
-                "/v1/memories/reconstitute",
-                json={"archive_id": "some-id"},  # missing character_id
-            )
-            assert resp.status_code == 400
+        with patch("proxy.api.routes._db_pool", "mock_pool"):
+            with TestClient(proxy_app) as client:
+                resp = client.post(
+                    "/v1/memories/reconstitute",
+                    json={"archive_id": "some-id"},  # missing character_id
+                )
+                assert resp.status_code == 400
 
     async def test_stats_endpoint_success(self):
         """GET /v1/memories/stats should return tier counts."""
-        async with asyncpg.create_pool(**DB_CONFIG) as pool:
-            char_id = "fr003_api_stats"
-            session_id = f"fr003_as_{time.time_ns()}"
-            set_db_pool(pool)
-            await _cleanup(char_id, session_id)
+        manager_mock = AsyncMock()
+        manager_mock.get_tier_stats = AsyncMock(return_value={
+            "character_id": "fr003_api_stats",
+            "session_id": "test_session",
+            "hot": 3,
+            "warm": 0,
+            "cold": 0,
+            "total": 3,
+        })
 
-            vol = [
-                {
-                    "sensory_input": f"stat {i}",
-                    "is_core_memory": False,
-                    "timestamp": datetime.utcnow() - timedelta(days=5),
-                    "episodic_embedding": _embedding(),
-                }
-                for i in range(3)
-            ]
-            await _insert_memories(pool, char_id, session_id, vol)
-
-            real_manager = MemoryTierManager(pool)
-            with patch("proxy.api.routes.MemoryTierManager", return_value=real_manager):
-                with TestClient(proxy_app) as client:
-                    resp = client.get(
-                        "/v1/memories/stats",
-                        params={"character_id": char_id, "session_id": session_id},
-                    )
-                    assert resp.status_code == 200
-                    data = resp.json()
-                    assert data["hot"] == 3
-                    assert data["warm"] == 0
-                    assert data["cold"] == 0
-                    assert data["total"] == 3
-
-            await _cleanup(char_id, session_id)
+        with patch("proxy.api.routes.MemoryTierManager", return_value=manager_mock), \
+             patch("proxy.api.routes._db_pool", "mock_pool"):
+            with TestClient(proxy_app) as client:
+                resp = client.get(
+                    "/v1/memories/stats",
+                    params={"character_id": "fr003_api_stats", "session_id": "test_session"},
+                )
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["hot"] == 3
+                assert data["warm"] == 0
+                assert data["cold"] == 0
+                assert data["total"] == 3
 
     async def test_stats_endpoint_missing_char(self):
         """GET /v1/memories/stats without character_id returns 400."""
-        with TestClient(proxy_app) as client:
-            resp = client.get("/v1/memories/stats")
-            assert resp.status_code == 400
+        with patch("proxy.api.routes._db_pool", "mock_pool"):
+            with TestClient(proxy_app) as client:
+                resp = client.get("/v1/memories/stats")
+                assert resp.status_code == 400
 
     async def test_db_pool_not_configured(self):
         """All endpoints return 503 when _db_pool is None."""
-        set_db_pool(None)
+        import proxy.api.routes
+        orig_pool = proxy.api.routes._db_pool
+        try:
+            set_db_pool(None)
+            with TestClient(proxy_app) as client:
+                # Archive
+                resp = client.post(
+                    "/v1/memories/archive",
+                    json={"character_id": "test", "session_id": "test"},
+                )
+                assert resp.status_code == 503
 
-        with TestClient(proxy_app) as client:
-            # Archive
-            resp = client.post(
-                "/v1/memories/archive",
-                json={"character_id": "test", "session_id": "test"},
-            )
-            assert resp.status_code == 503
+                # Reconstitute
+                resp = client.post(
+                    "/v1/memories/reconstitute",
+                    json={"archive_id": "test", "character_id": "test"},
+                )
+                assert resp.status_code == 503
 
-            # Reconstitute
-            resp = client.post(
-                "/v1/memories/reconstitute",
-                json={"archive_id": "test", "character_id": "test"},
-            )
-            assert resp.status_code == 503
-
-            # Stats
-            resp = client.get("/v1/memories/stats")
-            assert resp.status_code == 503
+                # Stats
+                resp = client.get("/v1/memories/stats")
+                assert resp.status_code == 503
+        finally:
+            set_db_pool(orig_pool)

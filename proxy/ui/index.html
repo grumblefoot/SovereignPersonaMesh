@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sovereign Persona Mesh (SPM) Admin Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --accent: #38bdf8;
+      --accent-hover: #0284c7;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --border: #334155;
+      --success: #4ade80;
+      --warning: #fbbf24;
+      --danger: #f87171;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); padding: 24px; }
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+    h1 { font-size: 1.5rem; font-weight: 600; color: var(--text); }
+    .nav { display: flex; gap: 8px; }
+    .nav button { background: var(--card-bg); border: 1px solid var(--border); color: var(--text-muted); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
+    .nav button.active { background: var(--accent); color: #000; font-weight: 600; border-color: var(--accent); }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+    .card h3 { font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px; }
+    .card .value { font-size: 1.8rem; font-weight: 700; color: var(--accent); }
+    
+    .form-group { margin-bottom: 16px; }
+    label { display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 6px; }
+    input[type="text"], input[type="number"] { width: 100%; background: #090d16; border: 1px solid var(--border); color: var(--text); padding: 10px; border-radius: 6px; font-size: 0.95rem; }
+    .btn { background: var(--accent); color: #000; font-weight: 600; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn:hover { opacity: 0.9; }
+    
+    table { width: 100%; border-collapse: collapse; background: var(--card-bg); border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
+    th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+    th { background: #131d2e; color: var(--text-muted); font-weight: 600; }
+    tr:last-child td { border-bottom: none; }
+    
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }
+    .badge-direct { background: rgba(74, 222, 128, 0.2); color: var(--success); }
+    .badge-muffled { background: rgba(251, 191, 36, 0.2); color: var(--warning); }
+    .badge-blackout { background: rgba(248, 113, 113, 0.2); color: var(--danger); }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Sovereign Persona Mesh (SPM) Admin</h1>
+    <div class="nav">
+      <button class="active" onclick="showTab('dashboard')">Dashboard</button>
+      <button onclick="showTab('config')">Configuration</button>
+      <button onclick="showTab('data')">Data Management</button>
+    </div>
+  </header>
+
+  <!-- TAB 1: DASHBOARD -->
+  <div id="dashboard" class="tab-content active">
+    <div class="grid">
+      <div class="card">
+        <h3>Total Requests</h3>
+        <div class="value" id="val-requests">0</div>
+      </div>
+      <div class="card">
+        <h3>Avg Latency</h3>
+        <div class="value" id="val-latency">0 ms</div>
+      </div>
+      <div class="card">
+        <h3>Active Sessions</h3>
+        <div class="value" id="val-sessions">0</div>
+      </div>
+      <div class="card">
+        <h3>DB Size</h3>
+        <div class="value" id="val-dbsize">0 MB</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 24px;">
+      <h3>Spatial Gating Breakdown</h3>
+      <div style="display: flex; gap: 16px; margin-top: 12px;">
+        <div><span class="badge badge-direct">Direct</span> <strong id="val-direct">0</strong></div>
+        <div><span class="badge badge-muffled">Muffled</span> <strong id="val-muffled">0</strong></div>
+        <div><span class="badge badge-blackout">Blackout</span> <strong id="val-blackout">0</strong></div>
+      </div>
+    </div>
+
+    <h2 style="font-size: 1.1rem; margin-bottom: 12px;">Recent Requests Log</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Session ID</th>
+          <th>Spatial Gating</th>
+          <th>Latency</th>
+          <th>RAG Hits</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="log-tbody">
+        <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">No requests recorded yet.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- TAB 2: CONFIGURATION -->
+  <div id="config" class="tab-content">
+    <div class="card" style="max-width: 600px;">
+      <h2 style="font-size: 1.1rem; margin-bottom: 16px;">Runtime Settings</h2>
+      <div class="form-group">
+        <label>Backend LLM Endpoint URL</label>
+        <input type="text" id="cfg-llm-url" value="http://localhost:8000/v1">
+      </div>
+      <div class="form-group">
+        <label>Backend API Key</label>
+        <input type="text" id="cfg-api-key" value="sk-dummy-key">
+      </div>
+      <div class="form-group">
+        <label>SPM Proxy Port</label>
+        <input type="number" id="cfg-port" value="5050">
+      </div>
+      <button class="btn" onclick="saveConfig()">Save Configuration</button>
+    </div>
+  </div>
+
+  <!-- TAB 3: DATA MANAGEMENT -->
+  <div id="data" class="tab-content">
+    <div class="card" style="max-width: 600px;">
+      <h2 style="font-size: 1.1rem; margin-bottom: 16px; color: var(--danger);">Danger Zone</h2>
+      <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 20px;">
+        Factory Reset will truncate all character memory tables, bulk imports, and cold archives.
+      </p>
+      <button class="btn btn-danger" onclick="triggerFactoryReset()">Execute Factory Reset</button>
+    </div>
+  </div>
+
+  <script>
+    function showTab(id) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.nav button').forEach(el => el.classList.remove('active'));
+      document.getElementById(id).classList.add('active');
+      event.target.classList.add('active');
+    }
+
+    async function fetchStats() {
+      try {
+        const res = await fetch('/admin/api/v1/stats');
+        if (!res.ok) return;
+        const data = await res.json();
+        document.getElementById('val-requests').innerText = data.total_requests || 0;
+        document.getElementById('val-latency').innerText = (data.avg_latency_ms || 0) + ' ms';
+        document.getElementById('val-sessions').innerText = data.active_sessions_count || 0;
+        document.getElementById('val-dbsize').innerText = (data.db_size_mb || 0) + ' MB';
+        
+        if (data.spatial_gating_counts) {
+          document.getElementById('val-direct').innerText = data.spatial_gating_counts.direct || 0;
+          document.getElementById('val-muffled').innerText = data.spatial_gating_counts.muffled || 0;
+          document.getElementById('val-blackout').innerText = data.spatial_gating_counts.blackout || 0;
+        }
+      } catch (e) {}
+    }
+
+    async function fetchConfig() {
+      try {
+        const res = await fetch('/admin/api/v1/config');
+        if (!res.ok) return;
+        const data = await res.json();
+        document.getElementById('cfg-llm-url').value = data.BACKEND_LLM_URL || '';
+        document.getElementById('cfg-api-key').value = data.BACKEND_API_KEY || '';
+        document.getElementById('cfg-port').value = data.SPM_PROXY_PORT || 5050;
+      } catch (e) {}
+    }
+
+    async function saveConfig() {
+      const payload = {
+        BACKEND_LLM_URL: document.getElementById('cfg-llm-url').value,
+        BACKEND_API_KEY: document.getElementById('cfg-api-key').value,
+        SPM_PROXY_PORT: parseInt(document.getElementById('cfg-port').value),
+      };
+      const res = await fetch('/admin/api/v1/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) alert('Settings saved successfully!');
+    }
+
+    async function triggerFactoryReset() {
+      if (!confirm('ARE YOU SURE? This will permanently delete all character memories and chat sessions!')) return;
+      const res = await fetch('/admin/api/v1/factory_reset', { method: 'DELETE' });
+      if (res.ok) {
+        alert('Factory reset completed.');
+        fetchStats();
+      }
+    }
+
+    setInterval(fetchStats, 2000);
+    fetchStats();
+    fetchConfig();
+  </script>
+</body>
+</html>
