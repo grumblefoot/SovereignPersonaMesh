@@ -25,6 +25,8 @@ from proxy.backend_client.lemonade_client import LemonadeLLMClient
 from proxy.backend_client.evennia_client import EvenniaWorldClient
 from scripts.onnx_embedder import CPUEmbeddingEngine
 
+from proxy.core.telemetry import get_telemetry_collector
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -205,6 +207,9 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             break
 
     # --- Step 2: Observer Inference Gating & Bypass Protocol ---
+    telemetry = get_telemetry_collector()
+    telemetry.record_request(time.time() - t0, session_id)
+
     if gating_level.lower() in ["null", "blackout"]:
         logger.info(f"[SPMProxy] Character {target_char} turn bypassed (gating={gating_level}). Zero inference cost.")
         async def empty_generator():
@@ -250,6 +255,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             max_tokens=request.max_tokens or 4096,
             stop=stop,
         )
+        telemetry.record_request(time.time() - t0, session_id)
         return JSONResponse(content={
             "id": "chatcmpl-spm-turn",
             "object": "chat.completion",
@@ -293,6 +299,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         yield f"data: {json.dumps(final_chunk)}\n\n"
         yield "data: [DONE]\n\n"
 
+        telemetry.record_request(time.time() - t0, session_id)
         inner_monologue, public_resp = parser.get_final_buffers()
         logger.info(
             f"[SPMProxy] Turn finished for {target_char}. "
