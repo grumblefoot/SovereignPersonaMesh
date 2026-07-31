@@ -104,16 +104,31 @@ async def _gather_public_response(prompt: str, model: str, temperature: float,
 def _extract_session_id(request: Request, body: dict) -> str:
     """
     Extract session_id from request with precedence:
-    X-Session-ID header > body session_id > "default_session".
+    X-Session-ID header > body session_id > X-Chat-ID > user/character pair.
     Implements FR-001 session-bound context isolation.
     """
-    header_session = request.headers.get("X-Session-ID")
+    header_session = request.headers.get("X-Session-ID") or request.headers.get("x-session-id")
     if header_session:
         return header_session
     body_session = body.get("session_id")
     if body_session:
         return str(body_session)
-    return "default_session"
+    chat_id = request.headers.get("X-Chat-ID") or request.headers.get("X-Conversation-ID")
+    if chat_id:
+        return chat_id
+    # Fallback to user + target character identifier for SillyTavern stability
+    user_name = body.get("user") or "user"
+    messages = body.get("messages", [])
+    target_char = "default"
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "system":
+            content = m.get("content", "")
+            if "You are " in content:
+                parts = content.split("You are ")
+                if len(parts) > 1:
+                    target_char = parts[1].split(".")[0].split(",")[0].strip().lower().replace(" ", "_")
+                    break
+    return f"st_{user_name}_{target_char}"
 
 
 async def _check_bulk_import(
