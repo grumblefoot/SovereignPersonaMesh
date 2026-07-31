@@ -59,6 +59,14 @@ async def get_config():
     return JSONResponse(content=mgr.get_settings())
 
 
+@router.get("/logs")
+async def get_logs(session_id: Optional[str] = None, level: Optional[str] = None, limit: int = 50):
+    """Fetch recent log entries from the circular log buffer."""
+    telemetry = get_telemetry_collector()
+    logs = telemetry.get_logs(session_id=session_id, level=level, limit=limit)
+    return JSONResponse(content={"logs": logs})
+
+
 @router.post("/config")
 async def update_config(new_settings: Dict[str, Any]):
     """Update dynamic settings in config.json."""
