@@ -71,6 +71,8 @@ class SettingsManager:
         logger.info(f"[SettingsManager] Updated settings in {self.config_path}")
         return current
 
+    update = write_settings
+
 
 _manager_instance: Optional[SettingsManager] = None
 
