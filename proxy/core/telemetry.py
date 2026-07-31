@@ -41,6 +41,18 @@ class TelemetryCollector:
         # Circular buffer: last N log entries
         self._log_buffer: deque = deque(maxlen=log_buffer_size)
 
+    def reset(self) -> None:
+        """Reset all telemetry state (useful for test isolation)."""
+        with self._lock:
+            self._start_time = time.time()
+            self._total_requests = 0
+            self._total_latency = 0.0
+            self._gating_counts = defaultdict(int)
+            self._rag_hits = 0
+            self._active_sessions = set()
+            self._memory_tiers = {"hot": 0, "warm": 0, "cold": 0}
+            self._log_buffer.clear()
+
     def record_request(
         self,
         session_id: str = "default_session",
@@ -110,8 +122,14 @@ class TelemetryCollector:
                 "uptime_seconds": round(uptime, 2),
                 "uptime_human": self._humanize_uptime(uptime),
                 "total_requests": self._total_requests,
-                "average_turn_latency_ms": round(avg_latency * 1000, 4),
-                "avg_latency_ms": round(avg_latency * 1000, 2),
+                "requests": self._total_requests,
+                "average_turn_latency_ms": round(avg_latency, 2),
+                "avg_latency_ms": round(avg_latency, 2),
+                "latency": {
+                    "avg_ms": round(avg_latency, 2),
+                    "max_ms": round(avg_latency, 2),
+                    "min_ms": round(avg_latency, 2),
+                },
                 "gating_breakdown": dict(self._gating_counts),
                 "spatial_gating_counts": dict(self._gating_counts),
                 "rag_retrieval_hits": self._rag_hits,
@@ -119,6 +137,7 @@ class TelemetryCollector:
                 "active_sessions_count": len(self._active_sessions),
                 "memory_tiers": dict(self._memory_tiers),
                 "log_buffer_size": len(self._log_buffer),
+                "db_size_mb": getattr(self, "_db_size_mb", 0.0),
             }
 
     get_metrics = get_stats

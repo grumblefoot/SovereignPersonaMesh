@@ -208,7 +208,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
 
     # --- Step 2: Observer Inference Gating & Bypass Protocol ---
     telemetry = get_telemetry_collector()
-    telemetry.record_request(time.time() - t0, session_id)
+    telemetry.record_request(session_id=session_id, gating_level=gating_level, latency=(time.time() - t0) * 1000)
 
     if gating_level.lower() in ["null", "blackout"]:
         logger.info(f"[SPMProxy] Character {target_char} turn bypassed (gating={gating_level}). Zero inference cost.")
@@ -255,7 +255,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             max_tokens=request.max_tokens or 4096,
             stop=stop,
         )
-        telemetry.record_request(time.time() - t0, session_id)
+        telemetry.record_request(session_id=session_id, gating_level=gating_level, latency=(time.time() - t0) * 1000)
         return JSONResponse(content={
             "id": "chatcmpl-spm-turn",
             "object": "chat.completion",
@@ -299,7 +299,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         yield f"data: {json.dumps(final_chunk)}\n\n"
         yield "data: [DONE]\n\n"
 
-        telemetry.record_request(time.time() - t0, session_id)
+        telemetry.record_request(session_id=session_id, gating_level=gating_level, latency=(time.time() - t0) * 1000)
         inner_monologue, public_resp = parser.get_final_buffers()
         logger.info(
             f"[SPMProxy] Turn finished for {target_char}. "
