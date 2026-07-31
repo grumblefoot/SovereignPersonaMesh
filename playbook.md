@@ -147,6 +147,17 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
  - [x] Wrote `tests/test_fr001_session_isolation.py` (16 tests across 5 groups: retriever session filter, sensory filter session persistence, evennia session-scoped state, proxy session extraction, e2e full-stack isolation).
  - [x] Updated `tests/test_retriever.py` (3 tests) and `tests/test_e2e_integration.py` (2 tests) to pass `session_id` to `retrieve_memories()`.
  - [x] **144/144 total tests passing** (16 new FR-001 + 128 existing) in 3.79s.
+- [x] **Phase 10: FR-002 Bulk Chat Import & Async Bootstrapping** *(Completed by Hermes)*
+- [x] **Phase 11: FR-003 Tiered Data Lifecycle & Cold Storage Reconstitution** *(Completed by Hermes)*
+- [x] **Phase 12: FR-004 Observability, Real-Time Logging & Monitoring Dashboard** *(Completed by Hermes & Antigravity)*
+ - [x] Built `config/manager.py` with `SettingsManager` for JSON file persistence (`config/config.json`).
+ - [x] Built `proxy/core/logger.py` with rotating file handler (`logs/spm_proxy.log`).
+ - [x] Built `proxy/core/telemetry.py` with thread-safe `TelemetryCollector` singleton tracking requests, latencies, spatial gating counts, memory tiers, and circular log buffer.
+ - [x] Built `proxy/api/admin_routes.py` with GET/POST endpoints for `/admin/api/v1/stats`, `/admin/api/v1/config`, `/admin/api/v1/sessions/{session_id}`, `/admin/api/v1/logs`, `/admin/api/v1/factory_reset`.
+ - [x] Built `proxy/ui/index.html` single-page HTML/CSS web admin dashboard with glassmorphism design system served at `GET /admin`.
+ - [x] Built CLI monitoring dashboard script `scripts/monitor_spm.py`.
+ - [x] Built test suite `tests/test_fr004_observability.py` (5 tests).
+ - [x] **194/194 total tests passing** (100% pass rate in 15.31s).
 
 ---
 
@@ -175,3 +186,4 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
 | 2026-07-28 | FR-001 | CERTIFIED | Senior Auditor certified FR-001 (Session-Bound Context & Memory Isolation): Option B strict session partitioning, sub-ms session indexing, Evennia session_id spatial state mapping, X-Session-ID header precedence. 131/131 total unit & integration tests passing (100% pass rate in 3.41s). Clean remote main branch (b98d96b). |
 | 2026-07-28 | FR-002 | CERTIFIED | Senior Auditor certified FR-002 (Bulk Chat Import & Async Bootstrapping): Dynamic resource allocation via hardware tier detection (SOVEREIGN/PERFORMANCE/EXPERIMENTAL), async bulk import detection on >10 messages (<15ms), spm_chat_imports tracking table, 26 tests across 7 groups (detection speed, worker memory population, dynamic resource scaling, failure resilience, API endpoints, E2E pipeline, DB schema). 157/157 total tests passing (100% pass rate in 6.80s). |
 | 2026-07-30 | FR-003 | CERTIFIED | Senior Auditor certified FR-003 (Tiered Data Lifecycle & Cold Storage Reconstitution): 3-tier memory lifecycle (Hot PostgreSQL vector space, Warm synthesized core memories, Cold compressed .jsonl.gz storage), 100% Core Memory Immunity (`is_core_memory = TRUE` immune to archiving), MemoryTierManager (`proxy/rag/tier_manager.py`), REST endpoints (`/v1/memories/archive`, `/v1/memories/reconstitute`, `/v1/memories/stats`). 175/175 total unit & integration tests passing (100% pass rate in 11.12s). Clean remote main branch (87cf15a). |
+| 2026-07-31 | FR-004 | CERTIFIED | Senior Auditor certified FR-004 (Observability, Real-Time Logging & Monitoring Dashboard): Web Admin Dashboard at `http://localhost:5050/admin`, JSON settings manager, rotating file logger, singleton TelemetryCollector, REST endpoints (`/stats`, `/config`, `/sessions/{id}`, `/logs`, `/factory_reset`), terminal CLI monitor (`scripts/monitor_spm.py`). 194/194 total unit & integration tests passing (100% pass rate in 15.31s). Clean main branch (`c8e3676`). |
