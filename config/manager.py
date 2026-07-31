@@ -19,11 +19,11 @@ _CONFIG_PATH = os.path.join(
 )
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "BACKEND_LLM_URL": "http://localhost:8000/v1",
-    "BACKEND_API_KEY": "sk-dummy-key",
-    "SPM_PROXY_PORT": 5050,
-    "SPM_HARDWARE_TIER": "SOVEREIGN",
-    "EVENNIA_LIAISON_URL": "http://localhost:4005",
+    "BACKEND_LLM_URL": os.getenv("BACKEND_LLM_URL", "http://localhost:8000/v1"),
+    "BACKEND_API_KEY": os.getenv("BACKEND_API_KEY", os.getenv("SPM_SECRET_KEY", "")),
+    "SPM_PROXY_PORT": int(os.getenv("SPM_PROXY_PORT", "5050")),
+    "SPM_HARDWARE_TIER": os.getenv("SPM_HARDWARE_TIER", "SOVEREIGN"),
+    "EVENNIA_LIAISON_URL": os.getenv("EVENNIA_LIAISON_URL", "http://localhost:4005"),
 }
 
 
