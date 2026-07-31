@@ -43,6 +43,7 @@ class TestFR004Observability:
     def test_telemetry_collector_metrics(self):
         """TelemetryCollector tracks requests, latencies, spatial gating counts, and logs."""
         collector = TelemetryCollector(log_buffer_size=10)
+        collector.reset()
         collector.record_request("sess_1", "direct", 12.5, rag_count=3)
         collector.record_request("sess_1", "muffled", 18.2, rag_count=1)
         collector.record_request("sess_2", "blackout", 1.2, rag_count=0)
