@@ -386,7 +386,7 @@ class TestProxySessionExtraction:
         mock_req3 = Request(scope3)
         body3 = {}
         result3 = _extract_session_id(mock_req3, body3)
-        assert result3 == "default_session"
+        assert result3 == "st_user_default"
 
 
 # ======================================================================
