@@ -1,26 +1,26 @@
-# FR-003 Handoff: Tiered Data Lifecycle & Cold Storage Reconstitution
+# FR-004 Handoff: Built-in Web Admin Dashboard & Configuration API
 
 ## Objectives
-Implement a 3-tiered data lifecycle (Hot vector storage, Warm core memories, and Cold `.jsonl.gz` archives) with 100% Core Memory Immunity (`is_core_memory = TRUE`), seamless reconstitution pipelines, and lifecycle REST endpoints.
+Implement GitHub Issue #4: Web Admin Dashboard (`http://localhost:5050/admin`), dynamic SettingsManager (`config/manager.py`), Admin REST API (`proxy/api/admin_routes.py`), rotating logger (`logs/spm_proxy.log`), and CLI live monitor (`scripts/monitor_spm.py`).
 
 ### Requirements
-1. **Database Schema (`scripts/init_db.sql`)**:
-   - Table `spm_cold_archives`:
-     `archive_id UUID PRIMARY KEY`, `session_id VARCHAR(255)`, `character_id VARCHAR(255)`, `archive_path TEXT`, `record_count INT`, `created_at TIMESTAMP`.
-2. **Memory Tier Manager (`proxy/rag/tier_manager.py`)**:
-   - Class `MemoryTierManager`:
-     - `archive_old_memories(character_id, session_id, max_records=500, max_age_days=30)`: Export volatile records to `storage/cold_archives/{character_id}/{session_id}_{timestamp}.jsonl.gz`, register archive, delete volatile rows (`is_core_memory = FALSE`).
-     - `reconstitute_cold_archive(session_id, character_id)`: Decompress `.jsonl.gz`, re-insert/index vectors into `csa_memory_{character_id}`, remove archive record and file.
-     - `get_tier_stats(character_id, session_id)`: Return hot, warm, cold record counts.
-3. **SPM Proxy Endpoints (`proxy/api/routes.py`)**:
-   - `POST /v1/memories/archive`
-   - `POST /v1/memories/reconstitute`
-   - `GET /v1/memories/stats`
-4. **Unit Tests (`tests/test_fr003_tiered_lifecycle.py`)**:
-   - Test core memory immunity (`is_core_memory = TRUE` never archived).
-   - Test gzip compression & schema tracking.
-   - Test full reconstitution pipeline.
-   - Test stats endpoint.
+1. **Settings Manager (`config/manager.py`)**:
+   - `SettingsManager` reading/writing `config/config.json`.
+   - Keys: `BACKEND_LLM_URL`, `BACKEND_API_KEY`, `SPM_PROXY_PORT`.
+2. **Admin REST API (`proxy/api/admin_routes.py`)**:
+   - `GET /admin/api/v1/stats`: Returns JSON stats (requests, latencies, active sessions, gating breakdown, DB size).
+   - `GET /admin/api/v1/config` & `POST /admin/api/v1/config`: Read/write settings.
+   - `DELETE /admin/api/v1/sessions/{session_id}`: Delete specific session data.
+   - `DELETE /admin/api/v1/factory_reset`: Truncate all tables and reset state.
+3. **Web Admin Dashboard (`proxy/ui/index.html`)**:
+   - Single-page Vanilla HTML/CSS UI with Dashboard, Config, and Data Management tabs.
+   - Serve under `http://localhost:5050/admin` in `proxy/main.py`.
+4. **Rotating Logger (`proxy/core/logger.py`)**:
+   - Save structured logs to `logs/spm_proxy.log` (10 MB rotation).
+5. **CLI Live Monitor (`scripts/monitor_spm.py`)**:
+   - Stream live metrics and logs to terminal.
+6. **Unit Tests (`tests/test_fr004_observability.py`)**:
+   - Test config manager, admin API, wipeout safety, and UI serving.
    - Run `pytest tests/ -v` (100% passing).
 
 ### Commands

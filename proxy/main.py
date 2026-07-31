@@ -6,9 +6,16 @@ import os
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
 from dotenv import load_dotenv
 
 from proxy.api.routes import router as api_router
+from config.hardware_tiers import get_hardware_config
+from proxy.core.logger import setup_spm_logging
+from proxy.core.telemetry import TelemetryCollector
+from proxy.api.routes import router as api_router
+from proxy.api.admin_routes import router as admin_router
 from config.hardware_tiers import get_hardware_config
 
 load_dotenv()
@@ -35,6 +42,18 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+app.include_router(admin_router)
+
+_UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+if os.path.exists(_UI_DIR):
+    app.mount("/proxy/ui", StaticFiles(directory=_UI_DIR), name="static_ui")
+
+@app.get("/admin")
+async def serve_admin_dashboard():
+    index_file = os.path.join(_UI_DIR, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    return {"error": "Admin UI index.html not found"}
 
 
 @app.get("/")
