@@ -109,6 +109,9 @@ async def delete_session(session_id: str):
                 except (ValueError, IndexError):
                     pass
 
+        telemetry = get_telemetry_collector()
+        telemetry.dismiss_session(session_id)
+
         logger.info(f"[AdminAPI] Deleted session {session_id}: {deleted_count} memory rows removed")
         return JSONResponse(content={
             "status": "success",
@@ -122,7 +125,7 @@ async def delete_session(session_id: str):
 
 @router.delete("/factory_reset")
 async def factory_reset():
-    """Truncate all character memory tables, bulk imports, and cold archives."""
+    """Truncate all character memory tables, bulk imports, cold archives, and reset telemetry metrics."""
     if _admin_db_pool is None:
         return JSONResponse(
             status_code=530,
@@ -144,10 +147,14 @@ async def factory_reset():
                 table_name = t["table_name"]
                 await conn.execute(f"TRUNCATE TABLE {table_name} RESTART IDENTITY CASCADE;")
 
-        logger.warning("[AdminAPI] FACTORY RESET TRIGGERED — all memory tables truncated.")
+        # Reset telemetry metrics, active sessions, and request logs
+        telemetry = get_telemetry_collector()
+        telemetry.reset()
+
+        logger.warning("[AdminAPI] FACTORY RESET TRIGGERED — all memory tables truncated and telemetry reset.")
         return JSONResponse(content={
             "status": "success",
-            "message": "Factory reset complete. All character memories and session data truncated."
+            "message": "Factory reset complete. All character memories, session data, and telemetry stats truncated."
         })
     except Exception as e:
         logger.error(f"[AdminAPI] Error executing factory reset: {e}")
