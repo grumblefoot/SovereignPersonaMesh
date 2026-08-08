@@ -29,7 +29,7 @@ logger = logging.getLogger("SPMProxyMain")
 app = FastAPI(
     title="Sovereign Persona Mesh (SPM) Proxy",
     description="High-performance, model-agnostic multi-agent OpenAI emulation proxy with sensory gating and private memory isolation.",
-    version="1.0.0"
+    version="0.2.0"
 )
 
 # CORS middleware for SillyTavern web client

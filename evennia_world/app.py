@@ -18,7 +18,7 @@ from .spatial_matrix import SpatialConstraintsMatrix
 from .session_lock import SessionLockManager, LockError
 from .hybrid_builder import HybridWorldBuilder
 
-app = FastAPI(title="Evennia World State Engine Liaison API", version="1.1.0")
+app = FastAPI(title="Evennia World State Engine Liaison API", version="0.2.0")
 
 # ── Internal state ──────────────────────────────────────────────────────
 lock_manager = SessionLockManager()
