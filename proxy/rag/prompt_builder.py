@@ -17,10 +17,17 @@ class CognitivePromptBuilder:
         sensory_feed: str,
         retrieved_memories: List[Dict[str, Any]],
         chat_history: List[Dict[str, str]],
-        spatial_context: str
+        spatial_context: str,
+        flavor_text: str = "",
+        frontend_max_tokens: int = 300,
+        style_card: Optional[Any] = None,
     ) -> str:
         """
         Assembles structured prompt for Character Subagent turn execution.
+        Follows conflict resolution hierarchy:
+          1. SPM Mechanics (<ctrl94> monologue system directive)
+          2. Explicit Frontend (system_prompt & frontend_max_tokens)
+          3. Implicit Heuristics (style_card directives)
         """
         # Format Long-Term RAG Memories
         memory_str = ""
@@ -30,15 +37,22 @@ class CognitivePromptBuilder:
         else:
             memory_str = "No specific relevant past memories recalled."
 
+        env_block = f"{spatial_context}\nSensory Feed: {sensory_feed}"
+        if flavor_text:
+            env_block += f"\nEnvironmental Atmosphere: {flavor_text}"
+
+        style_block = ""
+        if style_card and hasattr(style_card, "style_instruction"):
+            style_block = f"\n\n[NARRATIVE STYLE HEURISTICS]\n{style_card.style_instruction}"
+
         formatted_prompt = f"""<system>
-{system_prompt}
+{system_prompt}{style_block}
 
 [RECALLED EPISODIC MEMORIES]
 {memory_str}
 
 [CURRENT SPATIAL & SENSORY ENVIRONMENT]
-{spatial_context}
-Sensory Feed: {sensory_feed}
+{env_block}
 </system>
 
 [RECENT CONVERSATIONAL HISTORY]
@@ -49,7 +63,7 @@ Sensory Feed: {sensory_feed}
             formatted_prompt += f"\n{role.capitalize()}: {content}"
 
         if self.config.inner_monologue_enabled:
-            formatted_prompt += """\n\n<ctrl94>Write your private inner monologue planning thoughts first inside <ctrl94> ... </ctrl94> tags, followed by your public dialogue response.</ctrl94>\n<ctrl94>"""
+            formatted_prompt += f"""\n\nSystem Directive: You must begin your response immediately with <ctrl94>. Place all internal thoughts and planning strictly inside these tags. You must close with </ctrl94> before writing your public dialogue. Your public dialogue must not exceed {frontend_max_tokens} words.\n<ctrl94>"""
         else:
             formatted_prompt += "\n\nCharacter Output:"
 

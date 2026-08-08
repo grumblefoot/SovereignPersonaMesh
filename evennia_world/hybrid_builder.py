@@ -177,12 +177,41 @@ DEFAULT_ROOM_TEMPLATES: Dict[str, Dict[str, RoomMetadata]] = {
             nearby_objects=["garbage_bin", "drainpipe", "cat"],
         ),
     },
+    "generic_void": {
+        "central_nexus": RoomMetadata(
+            room_id="central_nexus",
+            room_name="Central Nexus",
+            description="An abstract central nexus in unmapped topological space.",
+            lighting="abstract",
+            exits=["node_alpha", "node_beta"],
+            present_characters=[],
+            nearby_objects=[],
+        ),
+        "node_alpha": RoomMetadata(
+            room_id="node_alpha",
+            room_name="Node Alpha",
+            description="An adjacent topological node.",
+            lighting="abstract",
+            exits=["central_nexus"],
+            present_characters=[],
+            nearby_objects=[],
+        ),
+        "node_beta": RoomMetadata(
+            room_id="node_beta",
+            room_name="Node Beta",
+            description="An adjacent topological node.",
+            lighting="abstract",
+            exits=["central_nexus"],
+            present_characters=[],
+            nearby_objects=[],
+        ),
+    },
 }
 
 # Score-based keyword weighting for template matching
 _KEYWORD_SCORES: Dict[str, Dict[str, float]] = {
     "dungeon_cellar": {"dungeon": 3.0, "cellar": 3.0, "basement": 2.0, "prison": 2.0, "jail": 2.0, "tavern": 1.5, "ale": 1.0},
-    "forest_camp": {"forest": 3.0, "camp": 2.0, "woods": 2.5, "tree": 1.5, "wild": 2.0, "nature": 1.5, "nature": 1.5},
+    "forest_camp": {"forest": 3.0, "camp": 2.0, "woods": 2.5, "tree": 1.5, "wild": 2.0, "nature": 1.5},
     "castle_exterior": {"castle": 3.0, "fortress": 2.5, "courtyard": 2.0, "throne": 2.0, "knight": 1.5, "armory": 2.0, "stables": 1.5},
     "tavern_common": {"tavern": 3.0, "inn": 2.5, "bar": 2.0, "pub": 2.0, "ale": 1.5, "common": 1.0},
 }
@@ -200,13 +229,13 @@ class HybridWorldBuilder:
 
     # ── Template matching ─────────────────────────────────────────────
 
-    def match_template(self, keywords: List[str], min_score: float = 0.5) -> str:
+    def match_template(self, keywords: List[str], min_score: float = 0.65) -> str:
         """Score each template against the given keywords and return the highest-scoring key.
 
-        If no template exceeds min_score, returns "default_meeting_room".
+        If no template exceeds min_score (default 0.65), returns "generic_void".
         """
         keywords_lower = [k.lower() for k in keywords]
-        best_key: str = "default_meeting_room"
+        best_key: str = "generic_void"
         best_score: float = -1.0
 
         for template_key, kw_map in _KEYWORD_SCORES.items():
@@ -220,13 +249,13 @@ class HybridWorldBuilder:
         if best_score < min_score:
             logger.info(
                 f"[HybridWorldBuilder] No template matched keywords={keywords} "
-                f"(best_score={best_score:.1f} < min_score={min_score}), defaulting"
+                f"(best_score={best_score:.2f} < min_score={min_score}), defaulting to generic_void"
             )
-            return "default_meeting_room"
+            return "generic_void"
 
         logger.info(
             f"[HybridWorldBuilder] Matched template={best_key} "
-            f"score={best_score:.1f} for keywords={keywords}"
+            f"score={best_score:.2f} for keywords={keywords}"
         )
         return best_key
 

@@ -15,11 +15,14 @@ MAX_MONOLOGUE_TOKENS = 500
 
 
 class MonologueStreamParser:
-    def __init__(self):
+    def __init__(self, max_public_tokens: Optional[int] = None):
         self.state = 0  # 0: Monologue, 1: Public Dialogue
         self.inner_monologue_buffer: str = ""
         self.public_response_buffer: str = ""
         self.monologue_token_count: int = 0
+        self.public_token_count: int = 0
+        self.max_public_tokens: Optional[int] = max_public_tokens
+        self.is_public_truncated: bool = False
         self.is_failsafe_triggered: bool = False
         self._monologue_sections: List[str] = []  # Accumulate all monologue sections
         self._in_monologue: bool = False  # True once we've entered monologue mode
@@ -33,6 +36,16 @@ class MonologueStreamParser:
         self._in_monologue = True
         self._open_tag_seen = False
 
+    def _check_public_limit(self, chunk: str) -> bool:
+        """Helper to increment public token count and check if limit exceeded. Returns True if truncated."""
+        tokens = len(chunk.split()) if chunk.strip() else 1
+        self.public_token_count += tokens
+        if self.max_public_tokens is not None and self.public_token_count >= self.max_public_tokens:
+            self.is_public_truncated = True
+            logger.info(f"[StreamParser] Reached max_public_tokens ({self.public_token_count} >= {self.max_public_tokens}). Truncating.")
+            return True
+        return False
+
     async def process_token_stream(
         self, token_generator: AsyncGenerator[str, None]
     ) -> AsyncGenerator[str, None]:
@@ -45,12 +58,15 @@ class MonologueStreamParser:
           2. Unexpected EOS (stream ends) while in State 0 -> auto-close monologue,
              flush entire buffer as public, switch to State 1.
           3. Malformed or unclosed open tag -> treat as public output.
+          4. Truncates public stream cleanly if max_public_tokens is reached.
         """
         try:
             async for chunk in token_generator:
                 if self.is_failsafe_triggered:
                     self.public_response_buffer += chunk
                     yield chunk
+                    if self._check_public_limit(chunk):
+                        break
                     continue
 
                 if self.state == 0:
@@ -71,6 +87,8 @@ class MonologueStreamParser:
                         if len(parts) > 1 and parts[1]:
                             self.public_response_buffer += parts[1]
                             yield parts[1]
+                            if self._check_public_limit(parts[1]):
+                                break
                     elif "<ctrl" in chunk and OPEN_TAG not in chunk:
                         # Malformed open tag (e.g. "<ctrl9" without closing) -> passthrough
                         logger.warning(
@@ -81,9 +99,13 @@ class MonologueStreamParser:
                         self.state = 1
                         self.public_response_buffer += self.inner_monologue_buffer
                         yield self.inner_monologue_buffer
+                        if self._check_public_limit(self.inner_monologue_buffer):
+                            break
                         self.inner_monologue_buffer = ""
                         self.public_response_buffer += chunk
                         yield chunk
+                        if self._check_public_limit(chunk):
+                            break
                     else:
                         if OPEN_TAG in chunk:
                             # First chunk with the open tag — accumulate it
@@ -99,6 +121,8 @@ class MonologueStreamParser:
                                 self.is_failsafe_triggered = True
                                 self.state = 1
                                 yield f"\n> {self.inner_monologue_buffer}\n"
+                                if self._check_public_limit(self.inner_monologue_buffer):
+                                    break
                         elif self._open_tag_seen:
                             # We've seen <ctrl94> already — accumulate in monologue
                             self.inner_monologue_buffer += chunk
@@ -112,10 +136,14 @@ class MonologueStreamParser:
                                 self.is_failsafe_triggered = True
                                 self.state = 1
                                 yield f"\n> {self.inner_monologue_buffer}\n"
+                                if self._check_public_limit(self.inner_monologue_buffer):
+                                    break
                         else:
                             # No tag seen yet: yield as public (idle State 0)
                             self.public_response_buffer += chunk
                             yield chunk
+                            if self._check_public_limit(chunk):
+                                break
                 else:
                     # State 1: Public Dialogue
                     if OPEN_TAG in chunk:
@@ -135,6 +163,8 @@ class MonologueStreamParser:
                             if len(parts) > 1 and parts[1]:
                                 self.public_response_buffer += parts[1]
                                 yield parts[1]
+                                if self._check_public_limit(parts[1]):
+                                    break
                         elif "<ctrl" in chunk and OPEN_TAG not in chunk:
                             # Malformed
                             logger.warning(
@@ -145,15 +175,21 @@ class MonologueStreamParser:
                             self.state = 1
                             self.public_response_buffer += self.inner_monologue_buffer
                             yield self.inner_monologue_buffer
+                            if self._check_public_limit(self.inner_monologue_buffer):
+                                break
                             self.inner_monologue_buffer = ""
                             self.public_response_buffer += chunk
                             yield chunk
+                            if self._check_public_limit(chunk):
+                                break
                         else:
                             self.inner_monologue_buffer += chunk
                             self.monologue_token_count += 1
                     else:
                         self.public_response_buffer += chunk
                         yield chunk
+                        if self._check_public_limit(chunk):
+                            break
         finally:
             # Unexpected EOS: stream ended without closing tag
             # Only flush if we actually entered monologue mode (saw an open tag and accumulated content)

@@ -67,6 +67,38 @@ async def get_logs(session_id: Optional[str] = None, level: Optional[str] = None
     return JSONResponse(content={"logs": logs})
 
 
+@router.get("/sessions/{session_id}/trace")
+async def get_session_trace(session_id: str):
+    """Agent-readable historical decision trace endpoint for an SPM session."""
+    telemetry = get_telemetry_collector()
+    trace = telemetry.get_session_trace(session_id)
+    return JSONResponse(content={"session_id": session_id, "trace": trace})
+
+
+@router.get("/stream/thoughts")
+async def stream_thoughts():
+    """SSE event stream broadcasting live inner monologue thoughts and routing decisions."""
+    import json, asyncio
+    from fastapi.responses import StreamingResponse
+
+    telemetry = get_telemetry_collector()
+    q = asyncio.Queue()
+    telemetry.subscribe_thoughts(q)
+
+    async def thought_event_generator():
+        try:
+            yield "data: {\"event\": \"connected\"}\n\n"
+            while True:
+                data = await q.get()
+                yield f"data: {json.dumps(data)}\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            telemetry.unsubscribe_thoughts(q)
+
+    return StreamingResponse(thought_event_generator(), media_type="text/event-stream")
+
+
 @router.post("/config")
 async def update_config(new_settings: Dict[str, Any]):
     """Update dynamic settings in config.json."""
