@@ -117,18 +117,10 @@ def _extract_session_id(request: Request, body: dict) -> str:
     chat_id = request.headers.get("X-Chat-ID") or request.headers.get("X-Conversation-ID")
     if chat_id:
         return chat_id
-    # Fallback to user + target character identifier for SillyTavern stability
+
     user_name = body.get("user") or "user"
-    messages = body.get("messages", [])
-    target_char = "default"
-    for m in messages:
-        if isinstance(m, dict) and m.get("role") == "system":
-            content = m.get("content", "")
-            if "You are " in content:
-                parts = content.split("You are ")
-                if len(parts) > 1:
-                    target_char = parts[1].split(".")[0].split(",")[0].strip().lower().replace(" ", "_")
-                    break
+    msg_objs = [ChatCompletionMessage(**m) if isinstance(m, dict) else m for m in body.get("messages", [])]
+    target_char = _extract_target_char(msg_objs)
     return f"st_{user_name}_{target_char}"
 
 
