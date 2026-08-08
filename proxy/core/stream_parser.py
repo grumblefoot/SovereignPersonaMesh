@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 OPEN_TAG = "<ctrl94>"
 CLOSE_TAG = "</ctrl94>"
-MAX_MONOLOGUE_TOKENS = 500
+MAX_MONOLOGUE_TOKENS = 8192
 
 
 class MonologueStreamParser:
