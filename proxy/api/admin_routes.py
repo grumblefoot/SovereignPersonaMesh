@@ -83,6 +83,12 @@ async def stream_thoughts():
 
     telemetry = get_telemetry_collector()
     q = asyncio.Queue()
+
+    # Replay recent thought history so UI immediately populates
+    recent_thoughts = telemetry.get_recent_thoughts()
+    for t in recent_thoughts:
+        q.put_nowait(t)
+
     telemetry.subscribe_thoughts(q)
 
     async def thought_event_generator():
