@@ -205,6 +205,7 @@ async def query_world_state(character_id: str, session_id: str = "default_sessio
         gating_level=GatingLevel.DIRECT,
         sensory_feed=f"You are inside {room.room_name}. {room.description}",
         distances=distances,
+        flavor_text=room.flavor_text,
     )
 
 
@@ -337,6 +338,7 @@ async def move_character(payload: CharacterMovePayload):
 class WorldConfigPayload(BaseModel):
     """Switch the active world to a different template."""
     template_key: str
+    flavor_text: Optional[str] = None
 
 
 @app.post("/api/v1/world/configure", response_model=CharacterResponse)
@@ -348,7 +350,11 @@ async def configure_world(payload: WorldConfigPayload):
             detail=f"Template '{payload.template_key}' not found",
         )
     session_id_for_config = payload.template_key
-    session_worlds[session_id_for_config] = {payload.template_key: world_builder.instantiate_world(payload.template_key)}
+    world_inst = world_builder.instantiate_world(payload.template_key)
+    if payload.flavor_text:
+        for rm in world_inst.values():
+            rm.flavor_text = payload.flavor_text
+    session_worlds[session_id_for_config] = {payload.template_key: world_inst}
     global current_world
     current_world = session_worlds[session_id_for_config][payload.template_key]
     return CharacterResponse(
@@ -419,6 +425,8 @@ def _compute_distance_and_barriers(
     # Check adjacency via exit lists
     actor_room_obj = current_world.get(actor_room)
     if actor_room_obj and target_room_id in actor_room_obj.exits:
+        if actor_room_obj.lighting == "abstract" or actor_room in ("central_nexus", "node_alpha", "node_beta"):
+            return (20.0, [_str_to_barrier("solid_wall")])
         return (15.0, [_str_to_barrier("closed_door")])
 
     # Not adjacent — distant

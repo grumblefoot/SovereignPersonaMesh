@@ -64,6 +64,7 @@ class RoomMetadata(BaseModel):
     exits: List[str] = Field(default_factory=list)
     present_characters: List[str] = Field(default_factory=list)
     nearby_objects: List[str] = Field(default_factory=list)
+    flavor_text: Optional[str] = None
 
 
 class CharacterWorldState(BaseModel):
@@ -72,6 +73,7 @@ class CharacterWorldState(BaseModel):
     gating_level: GatingLevel
     sensory_feed: str
     distances: Dict[str, float] = Field(default_factory=dict)
+    flavor_text: Optional[str] = None
 
 
 class SessionLockPayload(BaseModel):

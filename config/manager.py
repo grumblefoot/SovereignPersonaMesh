@@ -24,6 +24,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "SPM_PROXY_PORT": int(os.getenv("SPM_PROXY_PORT", "5050")),
     "SPM_HARDWARE_TIER": os.getenv("SPM_HARDWARE_TIER", "SOVEREIGN"),
     "EVENNIA_LIAISON_URL": os.getenv("EVENNIA_LIAISON_URL", "http://localhost:4005"),
+    "backend_max_tokens": int(os.getenv("BACKEND_MAX_TOKENS", "2048")),
 }
 
 
@@ -59,6 +60,7 @@ class SettingsManager:
             "SPM_PROXY_PORT": int(os.getenv("SPM_PROXY_PORT", DEFAULT_CONFIG["SPM_PROXY_PORT"])),
             "SPM_HARDWARE_TIER": os.getenv("SPM_HARDWARE_TIER", DEFAULT_CONFIG["SPM_HARDWARE_TIER"]),
             "EVENNIA_LIAISON_URL": os.getenv("EVENNIA_LIAISON_URL", DEFAULT_CONFIG["EVENNIA_LIAISON_URL"]),
+            "backend_max_tokens": int(os.getenv("BACKEND_MAX_TOKENS", DEFAULT_CONFIG["backend_max_tokens"])),
         }
 
     def write_settings(self, new_settings: Dict[str, Any]) -> Dict[str, Any]:

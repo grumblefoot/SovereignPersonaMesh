@@ -3,5 +3,6 @@
   "BACKEND_API_KEY": "",
   "SPM_PROXY_PORT": 5050,
   "SPM_HARDWARE_TIER": "SOVEREIGN",
-  "EVENNIA_LIAISON_URL": "http://localhost:4005"
+  "EVENNIA_LIAISON_URL": "http://localhost:4005",
+  "backend_max_tokens": 2048
 }

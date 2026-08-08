@@ -135,8 +135,8 @@ class TestHybridWorldBuilder:
 
     def test_match_low_score_defaults(self):
         b = HybridWorldBuilder()
-        key = b.match_template(["xyzzy", "plugh"], min_score=0.5)
-        assert key == "default_meeting_room"
+        key = b.match_template(["xyzzy", "plugh"], min_score=0.65)
+        assert key == "generic_void"
 
     def test_match_fuzzy_text(self):
         b = HybridWorldBuilder()

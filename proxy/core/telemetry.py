@@ -40,6 +40,9 @@ class TelemetryCollector:
         self._lock = threading.Lock()
         # Circular buffer: last N log entries
         self._log_buffer: deque = deque(maxlen=log_buffer_size)
+        # Decision trace storage for FR-007 observability
+        self._session_traces: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        self._thought_queues: List[Any] = []
 
     def reset(self) -> None:
         """Reset all telemetry state (useful for test isolation)."""
@@ -52,6 +55,43 @@ class TelemetryCollector:
             self._active_sessions = set()
             self._memory_tiers = {"hot": 0, "warm": 0, "cold": 0}
             self._log_buffer.clear()
+            self._session_traces.clear()
+            self._thought_queues.clear()
+
+    def record_turn_trace(self, session_id: str, trace_data: Dict[str, Any]) -> None:
+        """Record detailed turn decision trace for an agent/session."""
+        with self._lock:
+            trace_entry = {
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
+                **trace_data,
+            }
+            self._session_traces[session_id].append(trace_entry)
+
+    def get_session_trace(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return historical decision trace for a given session."""
+        with self._lock:
+            return list(self._session_traces.get(session_id, []))
+
+    def subscribe_thoughts(self, queue: Any) -> None:
+        """Register an SSE listener queue for live thought streams."""
+        with self._lock:
+            self._thought_queues.append(queue)
+
+    def unsubscribe_thoughts(self, queue: Any) -> None:
+        """Unregister an SSE listener queue."""
+        with self._lock:
+            if queue in self._thought_queues:
+                self._thought_queues.remove(queue)
+
+    def push_thought_event(self, session_id: str, payload: Dict[str, Any]) -> None:
+        """Push live monologue/gating event to registered SSE listeners."""
+        with self._lock:
+            queues = list(self._thought_queues)
+        for q in queues:
+            try:
+                q.put_nowait({"session_id": session_id, **payload})
+            except Exception:
+                pass
 
     def record_request(
         self,

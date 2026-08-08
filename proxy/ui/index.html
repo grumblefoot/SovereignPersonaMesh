@@ -56,6 +56,7 @@
     <h1>Sovereign Persona Mesh (SPM) Admin</h1>
     <div class="nav">
       <button class="active" onclick="showTab('dashboard')">Dashboard</button>
+      <button onclick="showTab('thoughts')">Thought Viewer</button>
       <button onclick="showTab('config')">Configuration</button>
       <button onclick="showTab('data')">Data Management</button>
     </div>
@@ -109,6 +110,46 @@
     </table>
   </div>
 
+  <!-- TAB 1.5: THOUGHT VIEWER -->
+  <div id="thoughts" class="tab-content">
+    <div style="display: grid; grid-template-columns: 1fr 1.5fr 1fr; gap: 16px;">
+      <!-- Left: Spatial Map & Vibe Panel -->
+      <div style="display: flex; flex-direction: column; gap: 16px;">
+        <div class="card">
+          <h3 style="margin-bottom: 12px;">Spatial Gating Map</h3>
+          <div id="spatial-map-container" style="font-size: 0.9rem; color: var(--text-muted);">
+            <p>Polling Evennia (Port 4005)...</p>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom: 12px;">Vibe Profiler Gauges</h3>
+          <div style="font-size: 0.85rem; margin-bottom: 8px;">Dialogue/Action Ratio: <strong id="vibe-ratio" style="color: var(--accent);">40/60</strong></div>
+          <div style="font-size: 0.85rem; margin-bottom: 8px;">Verbosity Baseline: <strong id="vibe-verbosity" style="color: var(--success);">180 words</strong></div>
+          <div style="font-size: 0.85rem;">Perspective: <strong id="vibe-perspective" style="color: var(--warning);">Third Person</strong></div>
+        </div>
+      </div>
+
+      <!-- Center: Live Monologue Stream -->
+      <div class="card">
+        <h3 style="margin-bottom: 12px;">Live &lt;ctrl94&gt; Thought Stream</h3>
+        <div id="thought-stream-box" style="height: 350px; background: #090d16; border: 1px solid var(--border); border-radius: 6px; padding: 12px; overflow-y: auto; font-family: monospace; font-size: 0.85rem; color: var(--accent);">
+          <em>Listening for live inner monologue thoughts...</em>
+        </div>
+      </div>
+
+      <!-- Right: RAG Vector Scoring Inspector -->
+      <div class="card">
+        <h3 style="margin-bottom: 12px;">RAG Score Inspector</h3>
+        <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px; background: #090d16; padding: 8px; border-radius: 4px;">
+          <code>Score = (1 - cos) * e^(-λΔt) * (1 + imp/10) * mult</code>
+        </div>
+        <div id="rag-inspector-box" style="font-size: 0.85rem; color: var(--text);">
+          <p style="color: var(--text-muted);">No recent RAG retrievals.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- TAB 2: CONFIGURATION -->
   <div id="config" class="tab-content">
     <div class="card" style="max-width: 600px;">
@@ -124,6 +165,10 @@
       <div class="form-group">
         <label>SPM Proxy Port</label>
         <input type="number" id="cfg-port" value="5050">
+      </div>
+      <div class="form-group">
+        <label>Backend Max Tokens (Hardware Boundary)</label>
+        <input type="number" id="cfg-backend-max-tokens" value="2048">
       </div>
       <button class="btn" onclick="saveConfig()">Save Configuration</button>
     </div>

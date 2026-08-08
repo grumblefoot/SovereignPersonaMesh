@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 
 from config.hardware_tiers import get_hardware_config, HardwareTierEnum
+from config.manager import get_settings_manager
 from proxy.core.fifo_queue import InferenceFIFOQueue
 from proxy.core.stream_parser import MonologueStreamParser
 from proxy.core.sensory_filter import ObserverInferenceGatingFilter
@@ -243,7 +244,11 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             yield "data: [DONE]\n\n"
         return StreamingResponse(empty_generator(), media_type="text/event-stream")
 
-    # --- Step 3: Build cognitive prompt ---
+    # --- Step 3: Token Decoupling & Cognitive prompt assembly ---
+    frontend_max_tokens = request.max_tokens or 300
+    settings = get_settings_manager().get_settings()
+    backend_max_tokens = settings.get("backend_max_tokens", 2048)
+
     system_prompt = "You are Luna, an intelligent character inside the Sovereign Persona Mesh."
     for m in request.messages:
         if m.role == "system":
@@ -255,7 +260,8 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         sensory_feed=sensory_feed,
         retrieved_memories=[],
         chat_history=[{"role": m.role, "content": m.content} for m in request.messages],
-        spatial_context="Location: The Cellar"
+        spatial_context="Location: The Cellar",
+        frontend_max_tokens=frontend_max_tokens,
     )
 
     stop = request.stop or ["</ctrl94>", "\nUser:"]
@@ -267,7 +273,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             prompt=formatted_prompt,
             model=request.model,
             temperature=request.temperature or 0.7,
-            max_tokens=request.max_tokens or 4096,
+            max_tokens=backend_max_tokens,
             stop=stop,
         )
         telemetry.record_request(session_id=session_id, gating_level=gating_level, latency=(time.time() - t0) * 1000)
@@ -285,12 +291,12 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
 
     # ---- Streaming path ----
     async def sse_event_generator():
-        parser = MonologueStreamParser()
+        parser = MonologueStreamParser(max_public_tokens=frontend_max_tokens)
         raw_stream = lemonade_client.generate_stream(
             prompt=formatted_prompt,
             model=request.model,
             temperature=request.temperature or 0.7,
-            max_tokens=request.max_tokens or 4096,
+            max_tokens=backend_max_tokens,
             stop=stop,
         )
 
