@@ -41,3 +41,6 @@ pgdata/
 .vscode/
 .DS_Store
 *.swp
+
+# Local Knowledge & Subagent Handoff
+hermesDev.md
