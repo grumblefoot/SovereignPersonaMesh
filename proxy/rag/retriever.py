@@ -22,11 +22,13 @@ class EpisodicRAGRetriever:
         query_embedding: List[float],
         top_k: int = 5,
         max_cosine_distance: float = 0.35,
-        session_id: str = "default_session"
+        session_id: str = "default_session",
+        query_text: str = ""
     ) -> List[Dict[str, Any]]:
         """
         Retrieves top K relevant episodic memory nodes from csa_memory_{character_id}.
         Strictly filters by session_id for zero-bleed session isolation.
+        Filters out query_text exact matches to prevent regenerated turn bleedthrough.
         Calculates RAG Score = (1 - cosine_dist) * exp(-lambda * delta_t) * (1 + importance/10) * access_count.
         """
         table_name = f"csa_memory_{character_id.lower()}"
@@ -35,6 +37,7 @@ class EpisodicRAGRetriever:
             await conn.execute("SELECT create_csa_memory_table($1);", character_id.lower())
 
             embedding_str = "[" + ",".join(map(str, query_embedding)) + "]"
+            clean_query = query_text.strip().lower() if query_text else ""
             query = f"""
                 SELECT id, sensory_input, inner_monologue, is_core_memory, importance_score, access_count,
                        (episodic_embedding <=> $1::vector) AS cosine_distance,
@@ -43,10 +46,11 @@ class EpisodicRAGRetriever:
                 WHERE episodic_embedding IS NOT NULL
                   AND (episodic_embedding <=> $1::vector) < $2
                   AND session_id = $3
+                  AND ($4 = '' OR LOWER(sensory_input) != $4)
                 ORDER BY cosine_distance ASC
                 LIMIT 20;
             """
-            records = await conn.fetch(query, embedding_str, max_cosine_distance, session_id)
+            records = await conn.fetch(query, embedding_str, max_cosine_distance, session_id, clean_query)
 
             scored_nodes = []
             for r in records:

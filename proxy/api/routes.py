@@ -255,10 +255,25 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             system_prompt = m.content
             break
 
+    # RAG Memory Retrieval (filters out query_text to eliminate regeneration bleed)
+    retrieved_memories = []
+    if _db_pool and user_text:
+        try:
+            query_emb = [0.0] * 384
+            retrieved_memories = await retriever.retrieve_memories(
+                character_id=target_char,
+                query_embedding=query_emb,
+                top_k=3,
+                session_id=session_id,
+                query_text=user_text,
+            )
+        except Exception as e:
+            logger.warning(f"[SPMProxy] Memory retrieval skipped: {e}")
+
     csa_messages = prompt_builder.build_csa_messages(
         system_prompt=system_prompt,
         sensory_feed=sensory_feed,
-        retrieved_memories=[],
+        retrieved_memories=retrieved_memories,
         chat_history=[{"role": m.role, "content": m.content} for m in request.messages],
         spatial_context="Location: The Cellar",
         frontend_max_tokens=frontend_max_tokens,
@@ -304,18 +319,43 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
 
         telemetry.record_request(session_id=session_id, gating_level=gating_level, latency=(time.time() - t0) * 1000)
         inner_monologue, public_resp = parser.get_final_buffers()
+
+        # Push inner monologue to Thought Monitor SSE stream
         if inner_monologue:
             telemetry.push_thought_event(session_id, {
                 "session_id": session_id,
                 "character": target_char,
                 "thought": inner_monologue,
             })
+
         telemetry.record_turn_trace(session_id, {
             "gating_level": gating_level,
             "target_char": target_char,
             "monologue_len": len(inner_monologue),
             "public_len": len(public_resp),
         })
+
+        # Persist finalized turn without duplicate bleed on regeneration
+        if _db_pool and public_resp:
+            try:
+                table_name = f"csa_memory_{target_char.lower()}"
+                async with _db_pool.acquire() as conn:
+                    await conn.execute("SELECT create_csa_memory_table($1);", target_char.lower())
+                    await conn.execute(
+                        f"DELETE FROM {table_name} WHERE session_id = $1 AND LOWER(sensory_input) = LOWER($2);",
+                        session_id, user_text
+                    )
+                    emb_str = "[" + ",".join(["0.0"] * 384) + "]"
+                    await conn.execute(
+                        f"""
+                        INSERT INTO {table_name} (session_id, character_id, sensory_input, inner_monologue, public_response, episodic_embedding)
+                        VALUES ($1, $2, $3, $4, $5, $6::vector);
+                        """,
+                        session_id, target_char, user_text, inner_monologue, public_resp, emb_str
+                    )
+            except Exception as e:
+                logger.warning(f"[SPMProxy] Failed to persist turn memory: {e}")
+
         logger.info(
             f"[SPMProxy] Turn finished for {target_char}. "
             f"Monologue chars: {len(inner_monologue)}, Public chars: {len(public_resp)}"
