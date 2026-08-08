@@ -273,6 +273,34 @@
       }
     }
 
+    function initThoughtStream() {
+      const box = document.getElementById('thought-stream-box');
+      if (!box) return;
+      try {
+        const evtSource = new EventSource('/admin/api/v1/stream/thoughts');
+        evtSource.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            const rawText = data.thought || data.chunk || '';
+            const char = data.character || 'csa';
+            if (box.innerHTML.includes('Listening for live inner monologue thoughts')) {
+              box.innerHTML = '';
+            }
+            const cleanText = rawText.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+            const div = document.createElement('div');
+            div.style.marginBottom = '12px';
+            div.style.padding = '8px';
+            div.style.background = '#0f172a';
+            div.style.borderRadius = '4px';
+            div.style.borderLeft = '3px solid var(--accent)';
+            div.innerHTML = `<div style="font-weight:bold; color:var(--warning); margin-bottom:4px;">💭 INNER MONOLOGUE [${char.toUpperCase()}]</div><div style="color:var(--text); line-height:1.4;">${cleanText}</div>`;
+            box.appendChild(div);
+            box.scrollTop = box.scrollHeight;
+          } catch(err) {}
+        };
+      } catch(e) {}
+    }
+
     setInterval(() => {
       fetchStats();
       fetchLogs();
@@ -280,6 +308,7 @@
     fetchStats();
     fetchLogs();
     fetchConfig();
+    initThoughtStream();
   </script>
 </body>
 </html>

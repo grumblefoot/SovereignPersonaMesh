@@ -255,7 +255,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             system_prompt = m.content
             break
 
-    formatted_prompt = prompt_builder.build_csa_prompt(
+    csa_messages = prompt_builder.build_csa_messages(
         system_prompt=system_prompt,
         sensory_feed=sensory_feed,
         retrieved_memories=[],
@@ -264,36 +264,18 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         frontend_max_tokens=frontend_max_tokens,
     )
 
-    stop = request.stop or ["</ctrl94>", "\nUser:"]
-
-    # --- Step 4: Routing by stream flag ---
-    if not request.stream:
-        public_resp = await fifo_queue.enqueue_and_execute(
-            _gather_public_response,
-            prompt=formatted_prompt,
-            model=request.model,
-            temperature=request.temperature or 0.7,
-            max_tokens=backend_max_tokens,
-            stop=stop,
-        )
-        telemetry.record_request(session_id=session_id, gating_level=gating_level, latency=(time.time() - t0) * 1000)
-        return JSONResponse(content={
-            "id": "chatcmpl-spm-turn",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": request.model,
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": public_resp},
-                "finish_reason": "stop"
-            }]
-        })
+    # Ensure </ctrl94> is NOT in LLM stop sequence list
+    raw_stop = request.stop or ["\nUser:", "\nHuman:", "\n<system>"]
+    if isinstance(raw_stop, list):
+        stop = [s for s in raw_stop if s != "</ctrl94>"]
+    else:
+        stop = raw_stop
 
     # ---- Streaming path ----
     async def sse_event_generator():
         parser = MonologueStreamParser(max_public_tokens=frontend_max_tokens)
         raw_stream = lemonade_client.generate_stream(
-            prompt=formatted_prompt,
+            messages=csa_messages,
             model=request.model,
             temperature=request.temperature or 0.7,
             max_tokens=backend_max_tokens,
@@ -322,6 +304,18 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
 
         telemetry.record_request(session_id=session_id, gating_level=gating_level, latency=(time.time() - t0) * 1000)
         inner_monologue, public_resp = parser.get_final_buffers()
+        if inner_monologue:
+            telemetry.push_thought_event(session_id, {
+                "session_id": session_id,
+                "character": target_char,
+                "thought": inner_monologue,
+            })
+        telemetry.record_turn_trace(session_id, {
+            "gating_level": gating_level,
+            "target_char": target_char,
+            "monologue_len": len(inner_monologue),
+            "public_len": len(public_resp),
+        })
         logger.info(
             f"[SPMProxy] Turn finished for {target_char}. "
             f"Monologue chars: {len(inner_monologue)}, Public chars: {len(public_resp)}"

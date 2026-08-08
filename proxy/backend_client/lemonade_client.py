@@ -38,24 +38,27 @@ class LemonadeLLMClient:
 
     async def generate_stream(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
         model: str = "google/gemma-4-26B-A4B-it",
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        stop: Optional[list] = None
+        stop: Optional[list] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Streams completion tokens asynchronously from Lemonade server over SSE.
         """
         if stop is None:
-            stop = ["</ctrl94>", "\nUser:"]
+            stop = ["\nUser:", "\nHuman:"]
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             target_model = await self._resolve_model(model, client)
 
+            req_messages = messages or [{"role": "user", "content": prompt or ""}]
+
             payload = {
                 "model": target_model,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": req_messages,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "stop": stop,
@@ -109,6 +112,7 @@ class LemonadeLLMClient:
                         yield f"Error from LLM Backend: {response.status_code}"
                         return
 
+                    in_reasoning = False
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
                             data_str = line[6:].strip()
@@ -118,15 +122,26 @@ class LemonadeLLMClient:
                                 data = json.loads(data_str)
                                 choices = data.get("choices", [])
                                 if choices:
-                                    text_chunk = (
-                                    choices[0].get("delta", {}).get("content") or
-                                    choices[0].get("delta", {}).get("reasoning_content") or
-                                    choices[0].get("text", "")
-                                )
-                                    if text_chunk:
-                                        yield text_chunk
+                                    delta = choices[0].get("delta", {})
+                                    reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                                    content = delta.get("content") or choices[0].get("text")
+
+                                    if reasoning:
+                                        if not in_reasoning:
+                                            in_reasoning = True
+                                            yield "<ctrl94>"
+                                        yield reasoning
+
+                                    if content:
+                                        if in_reasoning:
+                                            in_reasoning = False
+                                            yield "</ctrl94>"
+                                        yield content
                             except json.JSONDecodeError:
                                 continue
+
+                    if in_reasoning:
+                        yield "</ctrl94>"
             except Exception as e:
                 logger.error(f"[LemonadeClient] Stream connection error: {e}")
                 # Mock fallback for testing when backend isn't actively running

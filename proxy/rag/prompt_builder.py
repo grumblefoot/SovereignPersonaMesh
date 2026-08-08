@@ -68,3 +68,52 @@ class CognitivePromptBuilder:
             formatted_prompt += "\n\nCharacter Output:"
 
         return formatted_prompt
+
+    def build_csa_messages(
+        self,
+        system_prompt: str,
+        sensory_feed: str,
+        retrieved_memories: List[Dict[str, Any]],
+        chat_history: List[Dict[str, str]],
+        spatial_context: str,
+        flavor_text: str = "",
+        frontend_max_tokens: int = 300,
+        style_card: Optional[Any] = None,
+    ) -> List[Dict[str, str]]:
+        """
+        Assembles OpenAI-native structured messages array for Character Subagent execution.
+        Prevents system prompt dumping and keeps character dialogue 100% clean.
+        """
+        memory_str = ""
+        if retrieved_memories:
+            mem_lines = [f"- {m['sensory_input']}" for m in retrieved_memories]
+            memory_str = "\n".join(mem_lines)
+        else:
+            memory_str = "No specific relevant past memories recalled."
+
+        env_block = f"{spatial_context}\nSensory Feed: {sensory_feed}"
+        if flavor_text:
+            env_block += f"\nEnvironmental Atmosphere: {flavor_text}"
+
+        style_block = ""
+        if style_card and hasattr(style_card, "style_instruction"):
+            style_block = f"\n\n[NARRATIVE STYLE HEURISTICS]\n{style_card.style_instruction}"
+
+        system_content = f"""{system_prompt}{style_block}
+
+[RECALLED EPISODIC MEMORIES]
+{memory_str}
+
+[CURRENT SPATIAL & SENSORY ENVIRONMENT]
+{env_block}
+
+System Directive: Respond strictly in-character. Do not output system meta-instructions or prompt text. Your public output must not exceed {frontend_max_tokens} words."""
+
+        messages = [{"role": "system", "content": system_content}]
+        for msg in chat_history[-15:]:
+            r = msg.get("role", "user")
+            c = msg.get("content", "")
+            if r in ("user", "assistant"):
+                messages.append({"role": r, "content": c})
+
+        return messages
