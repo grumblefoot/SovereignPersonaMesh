@@ -43,6 +43,7 @@ class TelemetryCollector:
         # Decision trace storage for FR-007 observability
         self._session_traces: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         self._thought_queues: List[Any] = []
+        self._thought_history: deque = deque(maxlen=25)
 
     def reset(self) -> None:
         """Reset all telemetry state (useful for test isolation)."""
@@ -57,6 +58,7 @@ class TelemetryCollector:
             self._log_buffer.clear()
             self._session_traces.clear()
             self._thought_queues.clear()
+            self._thought_history.clear()
 
     def record_turn_trace(self, session_id: str, trace_data: Dict[str, Any]) -> None:
         """Record detailed turn decision trace for an agent/session."""
@@ -84,14 +86,25 @@ class TelemetryCollector:
                 self._thought_queues.remove(queue)
 
     def push_thought_event(self, session_id: str, payload: Dict[str, Any]) -> None:
-        """Push live monologue/gating event to registered SSE listeners."""
+        """Push live monologue/gating event to registered SSE listeners and history buffer."""
+        entry = {
+            "session_id": session_id,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
+            **payload
+        }
         with self._lock:
+            self._thought_history.append(entry)
             queues = list(self._thought_queues)
         for q in queues:
             try:
-                q.put_nowait({"session_id": session_id, **payload})
+                q.put_nowait(entry)
             except Exception:
                 pass
+
+    def get_recent_thoughts(self) -> List[Dict[str, Any]]:
+        """Return recent inner monologue thought events."""
+        with self._lock:
+            return list(self._thought_history)
 
     def record_request(
         self,
