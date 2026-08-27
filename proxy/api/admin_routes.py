@@ -29,6 +29,17 @@ def set_admin_db_pool(pool):
     _admin_db_pool = pool
 
 
+def get_admin_db_pool():
+    global _admin_db_pool
+    if _admin_db_pool is not None:
+        return _admin_db_pool
+    from proxy.api.routes import _db_pool
+    if _db_pool is not None:
+        _admin_db_pool = _db_pool
+        return _admin_db_pool
+    return None
+
+
 @router.get("/stats")
 async def get_admin_stats():
     """Return live system telemetry, active sessions, and database size."""
@@ -116,7 +127,8 @@ async def update_config(new_settings: Dict[str, Any]):
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
     """Hard delete all records for a specific session across all memory tables."""
-    if _admin_db_pool is None:
+    pool = get_admin_db_pool()
+    if pool is None:
         return JSONResponse(
             status_code=530,
             content={"status": "error", "message": "Database connection unavailable"}
@@ -124,7 +136,7 @@ async def delete_session(session_id: str):
 
     deleted_count = 0
     try:
-        async with _admin_db_pool.acquire() as conn:
+        async with pool.acquire() as conn:
             # Delete from spm_chat_imports
             await conn.execute("DELETE FROM spm_chat_imports WHERE session_id = $1;", session_id)
             # Delete from spm_cold_archives
@@ -164,14 +176,15 @@ async def delete_session(session_id: str):
 @router.delete("/factory_reset")
 async def factory_reset():
     """Truncate all character memory tables, bulk imports, cold archives, and reset telemetry metrics."""
-    if _admin_db_pool is None:
+    pool = get_admin_db_pool()
+    if pool is None:
         return JSONResponse(
             status_code=530,
             content={"status": "error", "message": "Database connection unavailable"}
         )
 
     try:
-        async with _admin_db_pool.acquire() as conn:
+        async with pool.acquire() as conn:
             # Truncate tracking tables
             await conn.execute("TRUNCATE TABLE spm_chat_imports RESTART IDENTITY CASCADE;")
             await conn.execute("TRUNCATE TABLE spm_cold_archives RESTART IDENTITY CASCADE;")

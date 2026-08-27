@@ -99,7 +99,18 @@ class CognitivePromptBuilder:
         if style_card and hasattr(style_card, "style_instruction"):
             style_block = f"\n\n[NARRATIVE STYLE HEURISTICS]\n{style_card.style_instruction}"
 
-        system_content = f"""{system_prompt}{style_block}
+        if self.config.inner_monologue_enabled:
+            system_content = f"""{system_prompt}{style_block}
+
+[RECALLED EPISODIC MEMORIES]
+{memory_str}
+
+[CURRENT SPATIAL & SENSORY ENVIRONMENT]
+{env_block}
+
+System Directive: You MUST begin your response immediately with <ctrl94>. Place all internal thoughts and planning strictly inside these tags. You MUST close with </ctrl94> before writing your public dialogue. Your public dialogue must not exceed {frontend_max_tokens} words."""
+        else:
+            system_content = f"""{system_prompt}{style_block}
 
 [RECALLED EPISODIC MEMORIES]
 {memory_str}

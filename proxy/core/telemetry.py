@@ -57,8 +57,15 @@ class TelemetryCollector:
             self._memory_tiers = {"hot": 0, "warm": 0, "cold": 0}
             self._log_buffer.clear()
             self._session_traces.clear()
-            self._thought_queues.clear()
             self._thought_history.clear()
+            queues = list(self._thought_queues)
+
+        reset_evt = {"event": "reset", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())}
+        for q in queues:
+            try:
+                q.put_nowait(reset_evt)
+            except Exception:
+                pass
 
     def record_turn_trace(self, session_id: str, trace_data: Dict[str, Any]) -> None:
         """Record detailed turn decision trace for an agent/session."""
@@ -113,8 +120,9 @@ class TelemetryCollector:
         latency: float = 0.0,
         rag_count: int = 0,
         status_code: int = 200,
+        location_name: Optional[str] = None,
     ) -> None:
-        """Record a completed request with its latency and gating classification."""
+        """Record a completed request with its latency, location, and gating classification."""
         with self._lock:
             self._total_requests += 1
             self._total_latency += latency
@@ -125,6 +133,7 @@ class TelemetryCollector:
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
                 "level": "INFO" if status_code < 400 else "ERROR",
                 "session_id": session_id,
+                "location_name": location_name or "The Cellar",
                 "gating_level": gating_level,
                 "latency_ms": round(latency, 2),
                 "rag_count": rag_count,

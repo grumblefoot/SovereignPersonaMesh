@@ -42,3 +42,7 @@ pytest tests/
 This project is open-source software made freely available under the terms of the [MIT License](LICENSE). 
 
 For details on our AI-assisted development workflow and acknowledgments, please see [CREDITS.md](CREDITS.md).
+
+## Known Issues & Backlog
+
+See [known_issues.md](known_issues.md) for the active defect log, session tracking issues, dashboard UI fixes, and upcoming feature roadmap.
