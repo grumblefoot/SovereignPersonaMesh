@@ -36,3 +36,9 @@ pytest tests/
 - **Sovereign Tier (Default)**: AMD Strix Halo 128GB Unified (Balanced 96GB GTT Profile).
 - **Performance Tier**: Discrete GPU VRAM >= 16GB / Host RAM >= 32GB.
 - **Experimental Tier**: Low resource 16GB shared memory.
+
+## License & Credits
+
+This project is open-source software made freely available under the terms of the [MIT License](LICENSE). 
+
+For details on our AI-assisted development workflow and acknowledgments, please see [CREDITS.md](CREDITS.md).
