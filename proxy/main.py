@@ -3,6 +3,7 @@ Main Entry Point for Sovereign Persona Mesh (SPM) FastAPI Proxy (Port 5050).
 """
 
 import os
+import asyncio
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,6 +74,51 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+@app.on_event("startup")
+async def startup_event():
+    import asyncpg
+    from proxy.api.routes import set_db_pool, _db_pool, _db_pool_explicitly_set
+    from proxy.api.admin_routes import set_admin_db_pool, _admin_db_pool
+
+    if _db_pool_explicitly_set or (_db_pool is not None and _admin_db_pool is not None):
+        return
+
+    host = os.getenv("POSTGRES_HOST", "localhost")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    db = os.getenv("POSTGRES_DB", "litellm_postgres")
+    user = os.getenv("POSTGRES_USER", "spm_user")
+    pwd = os.getenv("POSTGRES_PASSWORD", "spm_secure_password")
+    dsn = f"postgresql://{user}:{pwd}@{host}:{port}/{db}"
+    try:
+        pool = await asyncio.wait_for(asyncpg.create_pool(dsn=dsn, min_size=1, max_size=5), timeout=2.0)
+        app.state.db_pool = pool
+        if _db_pool is None:
+            set_db_pool(pool)
+        if _admin_db_pool is None:
+            set_admin_db_pool(pool)
+        logger.info("[SPMProxyMain] Database connection pool initialized and injected into routes & admin routes.")
+    except Exception as e:
+        logger.warning(f"[SPMProxyMain] Could not initialize DB pool on startup: {e}")
+
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    import proxy.api.routes
+    import proxy.api.admin_routes
+    if hasattr(app.state, "db_pool") and app.state.db_pool:
+        try:
+            await app.state.db_pool.close()
+        except Exception:
+            pass
+        app.state.db_pool = None
+    proxy.api.routes._db_pool = None
+    proxy.api.routes._db_pool_explicitly_set = False
+    proxy.api.admin_routes._admin_db_pool = None
+    logger.info("[SPMProxyMain] Database pool closed.")
+
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ BEGIN
             timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             sensory_input TEXT NOT NULL,
             inner_monologue TEXT,
+            public_response TEXT,
             episodic_embedding VECTOR(3584),
             importance_score INT DEFAULT 5,
             is_core_memory BOOLEAN DEFAULT FALSE,
@@ -39,6 +40,7 @@ BEGIN
             access_count INT DEFAULT 1,
             last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
+        EXECUTE format(''ALTER TABLE %I ADD COLUMN IF NOT EXISTS public_response TEXT;'', table_name);
     ', table_name);
 
     -- NOTE: pgvector index operators (HNSW/IVFFlat) are capped at 2000 dimensions.

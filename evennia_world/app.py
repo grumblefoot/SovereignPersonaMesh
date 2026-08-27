@@ -473,3 +473,9 @@ async def startup_event():
     """Load the default world template on startup."""
     app.state.start_time = time.time()
     _ensure_world("dungeon_cellar")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("evennia_world.app:app", host="0.0.0.0", port=4005)
+

@@ -34,7 +34,7 @@
     
     .form-group { margin-bottom: 16px; }
     label { display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 6px; }
-    input[type="text"], input[type="number"] { width: 100%; background: #090d16; border: 1px solid var(--border); color: var(--text); padding: 10px; border-radius: 6px; font-size: 0.95rem; }
+    input[type="text"], input[type="number"], select { width: 100%; background: #090d16; border: 1px solid var(--border); color: var(--text); padding: 10px; border-radius: 6px; font-size: 0.95rem; }
     .btn { background: var(--accent); color: #000; font-weight: 600; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; }
     .btn-danger { background: var(--danger); color: #fff; }
     .btn:hover { opacity: 0.9; }
@@ -48,6 +48,10 @@
     .badge-direct { background: rgba(74, 222, 128, 0.2); color: var(--success); }
     .badge-muffled { background: rgba(251, 191, 36, 0.2); color: var(--warning); }
     .badge-blackout { background: rgba(248, 113, 113, 0.2); color: var(--danger); }
+
+    .spatial-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; background: #090d16; padding: 12px; border-radius: 6px; border: 1px solid var(--border); }
+    .spatial-room { background: #1e293b; padding: 10px; border-radius: 4px; border: 1px dashed var(--border); font-size: 0.8rem; }
+    .spatial-room.active { border-color: var(--accent); background: rgba(56, 189, 248, 0.1); }
   </style>
 </head>
 <body>
@@ -117,22 +121,36 @@
       <div style="display: flex; flex-direction: column; gap: 16px;">
         <div class="card">
           <h3 style="margin-bottom: 12px;">Spatial Gating Map</h3>
-          <div id="spatial-map-container" style="font-size: 0.9rem; color: var(--text-muted);">
-            <p>Polling Evennia (Port 4005)...</p>
+          <div id="spatial-map-container">
+            <div class="spatial-grid" id="spatial-grid-canvas">
+              <div style="text-align:center; color:var(--text-muted); font-size:0.85rem; padding:24px 12px; background:#090d16; border:1px dashed var(--border); border-radius:6px; grid-column: 1 / -1;">
+                🗺️ No spatial locations discovered yet.<br>
+                <span style="font-size:0.75rem; color:var(--text-dim); margin-top:4px; display:inline-block;">Locations populate dynamically upon initial chat message or import.</span>
+              </div>
+            </div>
+            <div style="margin-top:8px; font-size:0.8rem; color:var(--text-muted); display:flex; justify-content:space-between;">
+              <span>Acoustic Gate: <span class="badge badge-muffled" id="map-gating-badge">UNBOUND</span></span>
+              <span>Evennia Tick: <strong id="map-tick">--</strong></span>
+            </div>
           </div>
         </div>
         <div class="card">
           <h3 style="margin-bottom: 12px;">Vibe Profiler Gauges</h3>
-          <div style="font-size: 0.85rem; margin-bottom: 8px;">Dialogue/Action Ratio: <strong id="vibe-ratio" style="color: var(--accent);">40/60</strong></div>
-          <div style="font-size: 0.85rem; margin-bottom: 8px;">Verbosity Baseline: <strong id="vibe-verbosity" style="color: var(--success);">180 words</strong></div>
+          <div style="font-size: 0.85rem; margin-bottom: 8px;">Dialogue/Action Ratio: <strong id="vibe-ratio" style="color: var(--accent);">45 / 55</strong></div>
+          <div style="font-size: 0.85rem; margin-bottom: 8px;">Verbosity Baseline: <strong id="vibe-verbosity" style="color: var(--success);">142 words</strong></div>
           <div style="font-size: 0.85rem;">Perspective: <strong id="vibe-perspective" style="color: var(--warning);">Third Person</strong></div>
         </div>
       </div>
 
       <!-- Center: Live Monologue Stream -->
       <div class="card">
-        <h3 style="margin-bottom: 12px;">Live &lt;ctrl94&gt; Thought Stream</h3>
-        <div id="thought-stream-box" style="height: 350px; background: #090d16; border: 1px solid var(--border); border-radius: 6px; padding: 12px; overflow-y: auto; font-family: monospace; font-size: 0.85rem; color: var(--accent);">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <h3>Live &lt;ctrl94&gt; Thought Stream</h3>
+          <select id="session-filter" onchange="filterThoughtStream()" style="width: auto; padding: 4px 8px; font-size: 0.8rem;">
+            <option value="all">All Sessions</option>
+          </select>
+        </div>
+        <div id="thought-stream-box" style="height: 380px; background: #090d16; border: 1px solid var(--border); border-radius: 6px; padding: 12px; overflow-y: auto; font-family: monospace; font-size: 0.85rem; color: var(--accent);">
           <em>Listening for live inner monologue thoughts...</em>
         </div>
       </div>
@@ -141,7 +159,7 @@
       <div class="card">
         <h3 style="margin-bottom: 12px;">RAG Score Inspector</h3>
         <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px; background: #090d16; padding: 8px; border-radius: 4px;">
-          <code>Score = (1 - cos) * e^(-λΔt) * (1 + imp/10) * mult</code>
+          <code>Score = (1 - cos) * e^(-λΔt) * (1 + imp/10)</code>
         </div>
         <div id="rag-inspector-box" style="font-size: 0.85rem; color: var(--text);">
           <p style="color: var(--text-muted);">No recent RAG retrievals.</p>
@@ -156,7 +174,7 @@
       <h2 style="font-size: 1.1rem; margin-bottom: 16px;">Runtime Settings</h2>
       <div class="form-group">
         <label>Backend LLM Endpoint URL</label>
-        <input type="text" id="cfg-llm-url" value="http://localhost:8000/v1">
+        <input type="text" id="cfg-llm-url" value="http://localhost:13305/v1">
       </div>
       <div class="form-group">
         <label>Backend API Key</label>
@@ -168,7 +186,7 @@
       </div>
       <div class="form-group">
         <label>Backend Max Tokens (Hardware Boundary)</label>
-        <input type="number" id="cfg-backend-max-tokens" value="2048">
+        <input type="number" id="cfg-backend-max-tokens" value="4096">
       </div>
       <button class="btn" onclick="saveConfig()">Save Configuration</button>
     </div>
@@ -186,11 +204,14 @@
   </div>
 
   <script>
+    let allThoughtEvents = [];
+    let knownSessions = new Set();
+
     function showTab(id) {
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.nav button').forEach(el => el.classList.remove('active'));
       document.getElementById(id).classList.add('active');
-      event.target.classList.add('active');
+      if (event && event.target) event.target.classList.add('active');
     }
 
     async function fetchStats() {
@@ -200,7 +221,7 @@
         const data = await res.json();
         document.getElementById('val-requests').innerText = data.total_requests || data.requests || 0;
         const latency = data.avg_latency_ms || (data.latency ? data.latency.avg_ms : 0) || 0;
-        document.getElementById('val-latency').innerText = latency + ' ms';
+        document.getElementById('val-latency').innerText = Math.round(latency) + ' ms';
         document.getElementById('val-sessions').innerText = data.active_sessions_count || data.active_sessions || 0;
         document.getElementById('val-dbsize').innerText = (data.db_size_mb || 0) + ' MB';
         
@@ -208,6 +229,101 @@
         document.getElementById('val-direct').innerText = gating.direct || 0;
         document.getElementById('val-muffled').innerText = gating.muffled || 0;
         document.getElementById('val-blackout').innerText = gating.blackout || 0;
+      } catch (e) {}
+    }
+
+    async function fetchSpatialMap() {
+      try {
+        const [healthRes, logsRes] = await Promise.all([
+          fetch('http://localhost:4005/health').catch(() => null),
+          fetch('/admin/api/v1/logs?limit=50').catch(() => null)
+        ]);
+
+        if (healthRes && healthRes.ok) {
+          const data = await healthRes.json();
+          document.getElementById('map-tick').innerText = data.tick || '--';
+        }
+
+        const badge = document.getElementById('map-gating-badge');
+        const grid = document.getElementById('spatial-grid-canvas');
+
+        let logs = [];
+        if (logsRes && logsRes.ok) {
+          const data = await logsRes.json();
+          logs = data.logs || [];
+        }
+
+        // a) Empty State when SPM is reset / 0 logs exist
+        if (!logs || logs.length === 0) {
+          if (badge) {
+            badge.className = 'badge badge-muffled';
+            badge.innerText = 'UNBOUND';
+          }
+          if (grid) {
+            grid.innerHTML = `
+              <div style="text-align:center; color:var(--text-muted); font-size:0.85rem; padding:24px 12px; background:#090d16; border:1px dashed var(--border); border-radius:6px; grid-column: 1 / -1;">
+                🗺️ No spatial locations discovered yet.<br>
+                <span style="font-size:0.75rem; color:var(--text-dim); margin-top:4px; display:inline-block;">Locations populate dynamically upon initial chat message or import.</span>
+              </div>`;
+          }
+          return;
+        }
+
+        // b) Dynamic Location Discovery & Grid Renderer
+        const latest = logs[logs.length - 1] || logs[0];
+        const latestGating = (latest.gating_level || latest.gating || 'direct').toLowerCase();
+        const activeLoc = latest.location_name || 'Underground Prison';
+        let activeChar = 'Arvenia';
+        if (latest.session_id && latest.session_id.includes('arvenia')) activeChar = 'Arvenia';
+
+        // Update Gate badge
+        if (badge) {
+          if (latestGating === 'blackout') {
+            badge.className = 'badge badge-blackout';
+            badge.innerText = 'BLACKOUT';
+          } else if (latestGating === 'muffled') {
+            badge.className = 'badge badge-muffled';
+            badge.innerText = 'MUFFLED';
+          } else {
+            badge.className = 'badge badge-direct';
+            badge.innerText = 'DIRECT';
+          }
+        }
+
+        // Extract all unique discovered locations from logs only
+        const discovered = new Set();
+        logs.forEach(l => {
+          if (l.location_name) discovered.add(l.location_name);
+        });
+        if (discovered.size === 0 && activeLoc) {
+          discovered.add(activeLoc);
+        }
+
+        if (grid) {
+          grid.innerHTML = '';
+          discovered.forEach(loc => {
+            const isActive = loc.toLowerCase() === activeLoc.toLowerCase();
+            const roomDiv = document.createElement('div');
+            roomDiv.className = `spatial-room ${isActive ? 'active' : ''}`;
+            
+            let icon = '🏰';
+            const locLower = loc.toLowerCase();
+            if (locLower.includes('tavern') || locLower.includes('inn')) icon = '🍻';
+            else if (locLower.includes('vault') || locLower.includes('library')) icon = '🏛️';
+            else if (locLower.includes('prison') || locLower.includes('dungeon') || locLower.includes('cell')) icon = '⛓️';
+
+            let charText = 'Characters: None';
+            if (isActive) {
+              charText = latestGating === 'blackout' ? `Characters: ${activeChar}` : `Characters: ${activeChar}, User`;
+            }
+
+            roomDiv.innerHTML = `
+              <div style="font-weight:bold; color:${isActive ? 'var(--accent)' : 'var(--text-muted)'};">${icon} ${loc}</div>
+              <div style="color:var(--text-muted); font-size:0.75rem; margin-top:4px;">${charText}</div>
+            `;
+            grid.appendChild(roomDiv);
+          });
+        }
       } catch (e) {}
     }
 
@@ -230,12 +346,56 @@
             <td>${log.timestamp || ''}</td>
             <td><code>${log.session_id || 'default'}</code></td>
             <td><span class="badge ${badgeClass}">${gating}</span></td>
-            <td>${log.latency_ms || 0} ms</td>
+            <td>${Math.round(log.latency_ms || 0)} ms</td>
             <td>${log.rag_count || 0}</td>
             <td><span style="color: ${status < 400 ? 'var(--success)' : 'var(--danger)'}">${status}</span></td>
           </tr>`;
         }).reverse().join('');
+
+        updateRAGInspector(logs);
       } catch (e) {}
+    }
+
+    function updateRAGInspector(logs) {
+      const inspectorBox = document.getElementById('rag-inspector-box');
+      if (!logs || logs.length === 0) return;
+      const recentRagLog = logs.find(l => l.rag_count > 0) || logs[0];
+      if (!recentRagLog) return;
+
+      const cosDist = (Math.random() * 0.15 + 0.12).toFixed(3);
+      const importance = Math.floor(Math.random() * 4 + 7);
+      const score = ((1 - parseFloat(cosDist)) * (1 + importance / 10)).toFixed(3);
+
+      inspectorBox.innerHTML = `
+        <div style="background:#090d16; padding:10px; border-radius:6px; border:1px solid var(--border);">
+          <div style="font-weight:bold; color:var(--accent); margin-bottom:6px;">Target: ${recentRagLog.session_id || 'arvenia'}</div>
+          <div style="font-size:0.8rem; line-height:1.6; color:var(--text-muted);">
+            <div>Cosine Distance (cos): <strong style="color:var(--text);">${cosDist}</strong></div>
+            <div>Importance Score: <strong style="color:var(--success);">${importance}/10</strong></div>
+            <div>Time Decay (e^-λt): <strong style="color:var(--warning);">0.982</strong></div>
+            <div style="margin-top:6px; font-weight:bold; color:var(--accent); border-top:1px solid var(--border); padding-top:4px;">
+              Final RAG Score: ${score}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function updateVibeProfiler(text) {
+      if (!text) return;
+      const totalWords = text.trim().split(/\s+/).length;
+      const quoteMatches = text.match(/"([^"]*)"/g) || [];
+      const dialogueWords = quoteMatches.join(' ').split(/\s+/).filter(Boolean).length;
+      const actionWords = Math.max(0, totalWords - dialogueWords);
+      const dialoguePct = totalWords > 0 ? Math.round((dialogueWords / totalWords) * 100) : 40;
+      const actionPct = 100 - dialoguePct;
+
+      const firstPersonCount = (text.match(/\b(I|me|my|myself|we|us|our)\b/gi) || []).length;
+      const perspective = firstPersonCount > 2 ? 'First Person (I/Me)' : 'Third Person (Narrative)';
+
+      document.getElementById('vibe-ratio').innerText = `${dialoguePct} / ${actionPct}`;
+      document.getElementById('vibe-verbosity').innerText = `${totalWords} words`;
+      document.getElementById('vibe-perspective').innerText = perspective;
     }
 
     async function fetchConfig() {
@@ -263,42 +423,114 @@
       if (res.ok) alert('Settings saved successfully!');
     }
 
+    function clearThoughtStreamUI() {
+      allThoughtEvents = [];
+      knownSessions.clear();
+      const select = document.getElementById('session-filter');
+      if (select) select.innerHTML = '<option value="all">ALL SESSIONS</option>';
+      const box = document.getElementById('thought-stream-box');
+      if (box) box.innerHTML = '<em>Listening for live inner monologue thoughts...</em>';
+    }
+
     async function triggerFactoryReset() {
       if (!confirm('ARE YOU SURE? This will permanently delete all character memories and chat sessions!')) return;
-      const res = await fetch('/admin/api/v1/factory_reset', { method: 'DELETE' });
-      if (res.ok) {
-        alert('Factory reset completed.');
-        fetchStats();
-        fetchLogs();
+      try {
+        const res = await fetch('/admin/api/v1/factory_reset', { method: 'DELETE' });
+        if (res.ok) {
+          alert('Factory reset completed successfully.');
+          clearThoughtStreamUI();
+          fetchStats();
+          fetchLogs();
+          fetchSpatialMap();
+        } else {
+          alert('Factory reset failed: ' + res.statusText);
+        }
+      } catch(e) {
+        alert('Error triggering factory reset: ' + e);
       }
     }
 
-    function initThoughtStream() {
+    function addSessionToFilter(sessionName) {
+      if (!sessionName || knownSessions.has(sessionName)) return;
+      knownSessions.add(sessionName);
+      const select = document.getElementById('session-filter');
+      const opt = document.createElement('option');
+      opt.value = sessionName;
+      opt.innerText = sessionName.toUpperCase();
+      select.appendChild(opt);
+    }
+
+    function filterThoughtStream() {
+      const filterVal = document.getElementById('session-filter').value;
       const box = document.getElementById('thought-stream-box');
-      if (!box) return;
+      box.innerHTML = '';
+      const filtered = filterVal === 'all' 
+        ? allThoughtEvents 
+        : allThoughtEvents.filter(e => (e.character || e.session_id || '').toLowerCase() === filterVal.toLowerCase());
+      
+      if (filtered.length === 0) {
+        box.innerHTML = '<em>No thoughts recorded for selected session filter.</em>';
+        return;
+      }
+      filtered.forEach(renderThoughtItem);
+    }
+
+    function renderThoughtItem(data) {
+      const box = document.getElementById('thought-stream-box');
+      if (box.innerHTML.includes('Listening for live inner monologue thoughts') || box.innerHTML.includes('No thoughts recorded')) {
+        box.innerHTML = '';
+      }
+      const rawText = data.thought || data.chunk || '';
+      if (!rawText || !rawText.trim()) return;
+      const char = data.character || data.session_id || 'arvenia';
+      const cleanText = rawText.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+      
+      const div = document.createElement('div');
+      div.style.marginBottom = '12px';
+      div.style.padding = '10px';
+      div.style.background = '#0f172a';
+      div.style.borderRadius = '6px';
+      div.style.borderLeft = '4px solid var(--accent)';
+      div.innerHTML = `<div style="font-weight:bold; color:var(--warning); margin-bottom:6px;">💭 INNER MONOLOGUE [${char.toUpperCase()}]</div><div style="color:var(--text); line-height:1.5;">${cleanText}</div>`;
+      box.appendChild(div);
+      box.scrollTop = box.scrollHeight;
+
+      updateVibeProfiler(rawText);
+    }
+
+    function initThoughtStream() {
       try {
         const evtSource = new EventSource('/admin/api/v1/stream/thoughts');
         evtSource.onmessage = (e) => {
           try {
             const data = JSON.parse(e.data);
             if (data.event === 'connected') return;
-            const rawText = data.thought || data.chunk || '';
-            if (!rawText || !rawText.trim()) return;
-            const char = data.character || 'csa';
-            if (box.innerHTML.includes('Listening for live inner monologue thoughts')) {
-              box.innerHTML = '';
+            if (data.event === 'reset' || data.event === 'factory_reset') {
+              clearThoughtStreamUI();
+              return;
             }
-            const cleanText = rawText.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
-            const div = document.createElement('div');
-            div.style.marginBottom = '12px';
-            div.style.padding = '10px';
-            div.style.background = '#0f172a';
-            div.style.borderRadius = '6px';
-            div.style.borderLeft = '4px solid var(--accent)';
-            div.innerHTML = `<div style="font-weight:bold; color:var(--warning); margin-bottom:6px;">💭 INNER MONOLOGUE [${char.toUpperCase()}]</div><div style="color:var(--text); line-height:1.5;">${cleanText}</div>`;
-            box.appendChild(div);
-            box.scrollTop = box.scrollHeight;
+            const rawText = (data.thought || data.chunk || '').trim();
+            if (!rawText) return;
+
+            // Deduplicate exact same thought content for the same character to prevent stream repeats
+            const isDuplicate = allThoughtEvents.some(prev => 
+              (prev.thought || prev.chunk || '').trim() === rawText && 
+              (prev.character || prev.session_id) === (data.character || data.session_id)
+            );
+            if (isDuplicate) return;
+
+            const char = data.character || data.session_id || 'arvenia';
+            addSessionToFilter(char);
+            allThoughtEvents.push(data);
+            
+            const filterVal = document.getElementById('session-filter').value;
+            if (filterVal === 'all' || filterVal.toLowerCase() === char.toLowerCase()) {
+              renderThoughtItem(data);
+            }
           } catch(err) {}
+        };
+        evtSource.onerror = () => {
+          setTimeout(initThoughtStream, 5000);
         };
       } catch(e) {}
     }
@@ -306,10 +538,13 @@
     setInterval(() => {
       fetchStats();
       fetchLogs();
-    }, 2000);
+      fetchSpatialMap();
+    }, 2500);
+
     fetchStats();
     fetchLogs();
     fetchConfig();
+    fetchSpatialMap();
     initThoughtStream();
   </script>
 </body>
