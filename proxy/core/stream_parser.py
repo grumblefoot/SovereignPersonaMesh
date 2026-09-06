@@ -46,6 +46,9 @@ OPEN_TAG_REGEX = re.compile(
     r'<details\b[^>]*>?|'
     r'<\|thought\|>|<\|start_thought\|>|<\|channel:thought\|>|<\|monologue\|>|<\|ctrl94\|>|<\|reasoning\|>|'
     r'\[Thought\]|\[Monologue\]|\[Thinking\]|\[Inner Monologue\]|\[Thought Process\]|\[Reasoning\]|'
+    r'\*+(?:Thought|Monologue|Thinking|Check|Self-Correction|Drafting|Thought Process|Internal Monologue|Reasoning|Plan|Analysis|Strategy):\*+|'
+    r'(?:\*|\b)(?:Thought|Monologue|Thinking|Check|Self-Correction|Drafting|Thought Process|Internal Monologue|Reasoning|Plan|Analysis|Strategy):\s*|'
+    r'\b(?:[A-Z][a-z0-9_\'\s]{0,30})?reaction should be\b|'
     r'"?You MUST begin your response immediately with\s*<ctrl94[^"\n]*"?|'
     r'\[Dialogue and Narration\]'
     r')',
@@ -69,7 +72,10 @@ CLOSE_TAG_REGEX = re.compile(
     r'</scratchpad>?|'
     r'</details>?|'
     r'<\|end_thought\|>|<\|end_of_thought\|>|<\|end_monologue\|>|</\|thought\|>|</\|monologue\|>|'
-    r'\[/Thought\]|\[/Monologue\]|\[/Thinking\]|\[/Inner Monologue\]|\[/Thought Process\]|\[/Reasoning\]'
+    r'\[/Thought\]|\[/Monologue\]|\[/Thinking\]|\[/Inner Monologue\]|\[/Thought Process\]|\[/Reasoning\]|'
+    r'\[Public\]|\[Public Response\]|\[Public Dialogue\]|\[Dialogue\]|\[Response\]|\[Plan\]|'
+    r'\*+(?:Public|Public Response|Public Dialogue|Dialogue|Response|Narration|Canon Response|Plan):\*+|'
+    r'(?:\*|\b)(?:Public|Public Response|Public Dialogue|Dialogue|Response|Narration|Canon Response|Plan):\s*'
     r')',
     re.IGNORECASE
 )
@@ -81,12 +87,13 @@ MONOLOGUE_HEADER_REGEX = re.compile(
     r'>\s*|'
     r'[\*\-_•]\s*|'
     r'\d+[\.\)]\s*|'
-    r'\([^\)]*(?:Thought|Monologue|Thinking|Self-Correction|Check|Drafting|Persona)[^\)]*\)|'
-    r'\[[^\]]*(?:Thought|Monologue|Thinking|Self-Correction|Check|Drafting|Persona)[^\]]*\]|'
-    r'\*+(?:Thought|Public|Monologue|Thinking|Check|Self-Correction|Drafting):\*+|'
-    r'(?:Thought|Public|Monologue|Thinking|Check|Self-Correction|Drafting|Thought Process|Internal Monologue|Reasoning):|'
+    r'\([^\)]*(?:Thought|Monologue|Thinking|Self-Correction|Check|Drafting|Persona|Plan|Analysis)[^\)]*\)|'
+    r'\[[^\]]*(?:Thought|Monologue|Thinking|Self-Correction|Check|Drafting|Persona|Plan|Analysis)[^\]]*\]|'
+    r'\*+(?:Thought|Public|Monologue|Thinking|Check|Self-Correction|Drafting|Thought Process|Internal Monologue|Reasoning|Plan|Analysis|Strategy):\*+|'
+    r'(?:Thought|Public|Monologue|Thinking|Check|Self-Correction|Drafting|Thought Process|Internal Monologue|Reasoning|Plan|Analysis|Strategy):|'
     r'System Directive:|'
-    r'\[Dialogue and Narration\]'
+    r'\[Dialogue and Narration\]|'
+    r'a mix of\b|a blend of\b|a combination of\b'
     r')',
     re.IGNORECASE
 )
@@ -128,39 +135,105 @@ class MonologueStreamParser:
         lines = [line[2:] if line.startswith("> ") else line for line in cleaned.split("\n")]
         return "\n".join(lines).strip()
 
-    def _clean_public(self, text: str) -> str:
-        """Filters out tags, blockquotes (>), and monologue headers from public response."""
-        if not text:
-            return ""
-        cleaned = OPEN_TAG_REGEX.sub("", text)
+    def _clean_public_line(self, line: str) -> Optional[str]:
+        """
+        Cleans a single line of public text.
+        Returns the cleaned string, or None if the entire line should be dropped (e.g. it's meta-commentary).
+        """
+        if not line.strip():
+            return line
+            
+        cleaned = OPEN_TAG_REGEX.sub("", line)
         cleaned = CLOSE_TAG_REGEX.sub("", cleaned)
         for tag in OPEN_TAGS + CLOSE_TAGS:
             cleaned = cleaned.replace(tag, "")
-        if not cleaned:
+            
+        if not cleaned.strip():
             return ""
-        lines = []
-        has_content = False
-        for line in cleaned.split("\n"):
-            if MONOLOGUE_HEADER_REGEX.search(line) or line.strip() == ".":
-                continue
-            lines.append(line)
-            if line:
-                has_content = True
-        if not has_content:
-            return ""
-        return "\n".join(lines)
+            
+        if MONOLOGUE_HEADER_REGEX.search(cleaned) or cleaned.strip() == ".":
+            return None
+            
+        if re.search(
+            r'\b(?:reaction should be|should lean into|should be a blend of|internal plan|planning notes|perceives (?:her|him|them)self as|has just insulted|is vain and)\b',
+            cleaned,
+            re.IGNORECASE
+        ):
+            return None
+            
+        if re.search(
+            r'^\s*(?:a mix of|a blend of|a combination of|an expression of|an array of|reacting to|responding to|given that|in this turn)\b|'
+            r'\b(?:perceives (?:her|him|them)self|insulted (?:her|his|their) appearance|echoing common|peasant misconceptions|supreme elegance|meta-commentary|character motivation|vibe profiling|has just insulted)\b',
+            cleaned,
+            re.IGNORECASE
+        ):
+            return None
+            
+        if re.match(r'^\s*(?:Plan|Strategy|Analysis|Draft|Notes):\s*$', cleaned, re.IGNORECASE):
+            return None
+            
+        return cleaned
+
+    def _process_public_output(self, text: str, force_flush: bool = False) -> List[str]:
+        """
+        Appends text to the line buffer and extracts cleaned complete lines.
+        If force_flush is True, also extracts any remaining text without a newline.
+        """
+        self._line_buffer += text
+        outputs = []
+        while "\n" in self._line_buffer:
+            line, self._line_buffer = self._line_buffer.split("\n", 1)
+            c_line = self._clean_public_line(line)
+            if c_line is not None:
+                outputs.append(c_line + "\n")
+        
+        if force_flush and self._line_buffer:
+            c_tail = self._clean_public_line(self._line_buffer)
+            if c_tail is not None:
+                outputs.append(c_tail)
+            self._line_buffer = ""
+            
+        return outputs
 
     def _strip_monologue_bleed(self, text: str) -> str:
         """Sanitizes public response buffer of leftover tags, trailing blockquote thoughts, or monologue bleed."""
         if not text:
             return ""
+        # If text contains an explicit 'Plan:' or section divider, extract narrative content after it
+        m_plan = re.search(r'\b(?:Plan|Strategy|Analysis|Draft|Notes):\s*', text, re.IGNORECASE)
+        if m_plan:
+            after_plan = text[m_plan.end():].strip()
+            if after_plan:
+                text = after_plan
+
         cleaned = OPEN_TAG_REGEX.sub("", text)
         cleaned = CLOSE_TAG_REGEX.sub("", cleaned)
         for tag in OPEN_TAGS + CLOSE_TAGS:
             cleaned = cleaned.replace(tag, "")
+
+        # Split into paragraphs to detect un-tagged opening meta-analysis / character state summaries
+        paragraphs = [p.strip() for p in cleaned.split("\n\n") if p.strip()]
+        if len(paragraphs) > 1:
+            p0 = paragraphs[0]
+            # Check if first paragraph is meta-analysis / prompt reflection / character state breakdown
+            if re.search(
+                r'^\s*(?:a mix of|a blend of|a combination of|an expression of|an array of|reacting to|responding to|given that|in this turn)\b|'
+                r'\b(?:perceives (?:her|him|them)self|insulted (?:her|his|their) appearance|echoing common|peasant misconceptions|supreme elegance|meta-commentary|character motivation|vibe profiling|has just insulted|is vain and)\b',
+                p0,
+                re.IGNORECASE
+            ):
+                cleaned = "\n\n".join(paragraphs[1:])
+
         lines = []
         for line in cleaned.split("\n"):
             if MONOLOGUE_HEADER_REGEX.search(line) or line.strip() == ".":
+                continue
+            # Drop lines that are LLM internal prompt analysis or guidelines
+            if re.search(
+                r'\b(?:reaction should be|should lean into|should be a blend of|internal plan|planning notes|perceives (?:her|him|them)self as|has just insulted)\b',
+                line,
+                re.IGNORECASE
+            ):
                 continue
             lines.append(line)
         result = "\n".join(lines).strip()
@@ -217,15 +290,17 @@ class MonologueStreamParser:
                         m_open = OPEN_TAG_REGEX.search(self._stream_buffer)
                         if m_open:
                             pre = self._stream_buffer[:m_open.start()]
-                            if pre:
-                                c_pre = self._clean_public(pre)
-                                if c_pre:
-                                    truncated = self._check_public_limit(c_pre)
-                                    self.public_response_buffer += c_pre
-                                    yield c_pre
+                            if pre or self._line_buffer:
+                                outputs = self._process_public_output(pre, force_flush=True)
+                                for out in outputs:
+                                    truncated = self._check_public_limit(out)
+                                    self.public_response_buffer += out
+                                    yield out
                                     if truncated:
                                         stop_stream = True
                                         break
+                                if stop_stream:
+                                    break
                             self._stream_buffer = self._stream_buffer[m_open.end():]
                             self.state = 0
                             self._in_monologue = True
@@ -236,14 +311,16 @@ class MonologueStreamParser:
                             else:
                                 self._stream_buffer = ""
                             if clean_txt:
-                                c_clean = self._clean_public(clean_txt)
-                                if c_clean:
-                                    truncated = self._check_public_limit(c_clean)
-                                    self.public_response_buffer += c_clean
-                                    yield c_clean
+                                outputs = self._process_public_output(clean_txt, force_flush=False)
+                                for out in outputs:
+                                    truncated = self._check_public_limit(out)
+                                    self.public_response_buffer += out
+                                    yield out
                                     if truncated:
                                         stop_stream = True
                                         break
+                                if stop_stream:
+                                    break
                             break
 
                     if self.state == 0:
@@ -279,14 +356,21 @@ class MonologueStreamParser:
 
             if self._stream_buffer and not stop_stream:
                 if self.state == 1:
-                    c_tail = self._clean_public(self._stream_buffer)
-                    if c_tail:
-                        if not self._check_public_limit(c_tail):
-                            self.public_response_buffer += c_tail
-                            yield c_tail
+                    outputs = self._process_public_output(self._stream_buffer, force_flush=True)
+                    for out in outputs:
+                        if not self._check_public_limit(out):
+                            self.public_response_buffer += out
+                            yield out
                 else:
                     self.inner_monologue_buffer += self._stream_buffer
                 self._stream_buffer = ""
+
+            if self.state == 1 and self._line_buffer and not stop_stream:
+                outputs = self._process_public_output("", force_flush=True)
+                for out in outputs:
+                    if not self._check_public_limit(out):
+                        self.public_response_buffer += out
+                        yield out
 
         finally:
             if self.state == 0 and self.inner_monologue_buffer:
@@ -294,9 +378,20 @@ class MonologueStreamParser:
                 if mono_text:
                     self._monologue_sections.append(mono_text)
                     if not self.public_response_buffer:
-                        self.is_failsafe_triggered = True
-                        self.public_response_buffer += mono_text
-                        yield mono_text
+                        # Check if mono_text contains an implicit public section split
+                        m_close = CLOSE_TAG_REGEX.search(mono_text)
+                        if m_close:
+                            clean_pub = self._strip_monologue_bleed(mono_text[m_close.end():])
+                            if clean_pub:
+                                self.public_response_buffer += clean_pub
+                                yield clean_pub
+                        else:
+                            # Failsafe: sanitize raw thought markers/quotes before falling back
+                            clean_pub = self._strip_monologue_bleed(mono_text)
+                            if clean_pub:
+                                self.is_failsafe_triggered = True
+                                self.public_response_buffer += clean_pub
+                                yield clean_pub
                 self.inner_monologue_buffer = ""
                 self.state = 1
                 logger.info(f"[StreamParser] EOS reached in monologue mode. Monologue captured.")
