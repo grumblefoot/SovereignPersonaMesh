@@ -360,7 +360,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
 
 SYSTEM DIRECTIVE: You are the GAME MASTER. You MUST write your internal thoughts strictly inside <think>...</think> tags. Cross-reference the user's input against the ACTIVE LORE.
 - If the user violates an Invariant (e.g. hallucinating), note it in your scratchpad.
-- If the user violates a Trigger/Game Over rule (e.g. attacking), note the [RULE VIOLATION] in your scratchpad. If a warning is required, you MUST write it INSIDE your scratchpad using exactly this format: [GM WARNING: your warning message here]
+- If the user violates a Trigger/Game Over rule (e.g. attacking), note the [RULE VIOLATION] in your scratchpad. If a warning is required, you MUST write a warning addressed to the player INSIDE your scratchpad using exactly this format: [GM WARNING: your warning message to the player here]
 
 CRITICAL FORMATTING RULE:
 After completing your GM scratchpad, YOU MUST CLOSE THE TAG AND SEPARATE YOUR DIALOGUE. Output exactly:
