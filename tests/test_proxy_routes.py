@@ -297,7 +297,9 @@ class TestChatCompletionsEndpoint:
             ]
         }
 
-        with patch("proxy.api.routes.evennia_client.submit_action", new_callable=AsyncMock) as mock_action:
+        with patch("proxy.api.routes.evennia_client.submit_action", new_callable=AsyncMock) as mock_action, \
+             patch("proxy.api.routes.lemonade_client.generate_stream") as mock_llm:
+
             mock_action.return_value = {
                 "success": True,
                 "action_tick": 1426,
@@ -312,18 +314,25 @@ class TestChatCompletionsEndpoint:
                 ]
             }
 
+            async def mock_stream(*args, **kwargs):
+                yield "Hello!"
+
+            mock_llm.side_effect = mock_stream
+
             resp = client.post("/v1/chat/completions", json=payload)
             assert resp.status_code == 200
             assert "text/event-stream" in resp.headers["content-type"]
 
     def test_chat_completions_no_messages(self, client):
-        """Empty messages list should still produce a valid (bypass) response."""
+        """Empty messages list should still produce a valid response."""
         payload = {
             "model": "google/gemma-4-26B-A4B-it",
             "messages": []
         }
 
-        with patch("proxy.api.routes.evennia_client.submit_action", new_callable=AsyncMock) as mock_action:
+        with patch("proxy.api.routes.evennia_client.submit_action", new_callable=AsyncMock) as mock_action, \
+             patch("proxy.api.routes.lemonade_client.generate_stream") as mock_llm:
+
             mock_action.return_value = {
                 "success": True,
                 "action_tick": 1427,
@@ -337,6 +346,11 @@ class TestChatCompletionsEndpoint:
                     }
                 ]
             }
+
+            async def mock_stream(*args, **kwargs):
+                yield "Default response"
+
+            mock_llm.side_effect = mock_stream
 
             resp = client.post("/v1/chat/completions", json=payload)
             assert resp.status_code == 200
