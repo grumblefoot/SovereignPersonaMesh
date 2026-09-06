@@ -91,3 +91,31 @@ CREATE TABLE IF NOT EXISTS spm_cold_archives (
 
 CREATE INDEX IF NOT EXISTS idx_cold_archives_session ON spm_cold_archives(session_id);
 CREATE INDEX IF NOT EXISTS idx_cold_archives_character ON spm_cold_archives(character_id);
+
+-- ======================================================================
+-- Dynamic Schema Helper Function for Character Lore Rules
+-- Usage: SELECT create_csa_lore_rules_table('luna');
+-- ======================================================================
+CREATE OR REPLACE FUNCTION create_csa_lore_rules_table(char_id TEXT)
+RETURNS VOID AS $$
+DECLARE
+    table_name TEXT := 'csa_lore_rules_' || lower(char_id);
+BEGIN
+    EXECUTE format('
+        CREATE TABLE IF NOT EXISTS %I (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            rule_text TEXT NOT NULL,
+            rule_type VARCHAR(50) NOT NULL, -- invariant, conditional_trigger, game_over
+            rule_embedding VECTOR(3584),
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+    ', table_name);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Initialize default demo tables
+SELECT create_csa_lore_rules_table('rowan');
+SELECT create_csa_lore_rules_table('domino');
+SELECT create_csa_lore_rules_table('luna');
+SELECT create_csa_lore_rules_table('seamus');
+SELECT create_csa_lore_rules_table('arvenia');

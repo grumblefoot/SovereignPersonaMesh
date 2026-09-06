@@ -172,6 +172,68 @@ class TelemetryCollector:
                 "source": source,
             })
 
+    async def hydrate_from_db(self, pool: Any) -> None:
+        """Hydrate in-memory telemetry buffers from the database on startup."""
+        if not pool:
+            return
+        
+        try:
+            import logging
+            logger = logging.getLogger(__name__)
+            async with pool.acquire() as conn:
+                tables = await conn.fetch(
+                    "SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'csa_memory_%';"
+                )
+                if not tables:
+                    return
+                
+                queries = []
+                for t in tables:
+                    table_name = t["table_name"]
+                    char_name = table_name.replace("csa_memory_", "")
+                    queries.append(
+                        f"SELECT '{char_name}' AS character, session_id, timestamp, sensory_input, inner_monologue, public_response "
+                        f"FROM {table_name}"
+                    )
+                
+                union_query = " UNION ALL ".join(queries)
+                final_query = f"SELECT * FROM ({union_query}) AS all_memories ORDER BY timestamp DESC LIMIT 25;"
+                
+                records = await conn.fetch(final_query)
+                
+                with self._lock:
+                    for r in reversed(records):
+                        char_name = r["character"]
+                        session_id = r["session_id"]
+                        
+                        entry = {
+                            "session_id": session_id,
+                            "timestamp": r["timestamp"].strftime("%Y-%m-%dT%H:%M:%S") if r["timestamp"] else None,
+                            "character": char_name,
+                            "sensory_input": r["sensory_input"],
+                            "inner_monologue": r["inner_monologue"],
+                            "public_response": r["public_response"]
+                        }
+                        
+                        self._thought_history.append(entry)
+                        self._session_traces[session_id].append(entry)
+                        self._active_sessions.add(session_id)
+                        
+                        self._log_buffer.append({
+                            "timestamp": entry["timestamp"],
+                            "level": "INFO",
+                            "session_id": session_id,
+                            "location_name": "Hydrated from DB",
+                            "gating_level": "unknown",
+                            "latency_ms": 0.0,
+                            "rag_count": 0,
+                            "status_code": 200,
+                        })
+            logger.info("[Telemetry] Hydrated telemetry buffers from database.")
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"[Telemetry] DB Hydration failed: {e}")
+
     # -- Query --
 
     def get_stats(self, db_pool: Optional[Any] = None) -> Dict[str, Any]:

@@ -4,6 +4,7 @@ Formats custom prompts for Character Subagents (CSAs) strictly adhering to token
 """
 
 from typing import List, Dict, Any
+import re
 from config.hardware_tiers import HardwareConfig, HARDWARE_TIERS, HardwareTierEnum
 
 
@@ -124,6 +125,10 @@ System Directive: Respond strictly in-character. Do not output system meta-instr
         for msg in chat_history[-15:]:
             r = msg.get("role", "user")
             c = msg.get("content", "")
+            if r == "assistant" and self.config.inner_monologue_enabled:
+                c = re.sub(r'Internal Monologue/Planning:\s*\n*', '', c, flags=re.IGNORECASE)
+                if "<ctrl94>" not in c:
+                    c = f"<ctrl94> *Processing context...* </ctrl94>\n{c}"
             if r in ("user", "assistant"):
                 messages.append({"role": r, "content": c})
 

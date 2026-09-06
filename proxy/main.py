@@ -98,6 +98,11 @@ async def startup_event():
             set_db_pool(pool)
         if _admin_db_pool is None:
             set_admin_db_pool(pool)
+        
+        # Hydrate telemetry buffers from the DB
+        from proxy.core.telemetry import get_telemetry_collector
+        await get_telemetry_collector().hydrate_from_db(pool)
+        
         logger.info("[SPMProxyMain] Database connection pool initialized and injected into routes & admin routes.")
     except Exception as e:
         logger.warning(f"[SPMProxyMain] Could not initialize DB pool on startup: {e}")

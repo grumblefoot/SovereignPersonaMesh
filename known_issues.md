@@ -88,3 +88,30 @@
 | P1 | BUG-005 | Spatial Gating Map | 🟢 FIXED | Active room grid visualizer |
 | P1 | BUG-007 | RAG Inspector Telemetry | 🟢 FIXED | Live formula breakdown |
 | P2 | FEAT-006| Web Admin Session Filter | 🟢 FIXED | Session selector dropdown |
+
+---
+
+## 🔮 Design Discussions & Future Work
+
+### [DESIGN-001] "Metagaming" & Telepathy / Internal Thought Filtering
+**Problem:** Currently, SillyTavern sends user actions, spoken dialogue, and *internal thoughts* (usually formatted with asterisks) in a single plaintext block. Because this entire block is processed as the `sensory_feed`, characters (even non-telepathic ones) can "read" the user's thoughts and react to them, breaking RP immersion.
+
+**Challenges:**
+1. **Formatting is Unpredictable:** Regex filters are fragile because users employ vastly different formatting styles (or no formatting at all) for actions vs. thoughts.
+2. **Performance Constraints (SLA):** Adding a second LLM in the critical path (User -> Scrubber LLM -> SPM -> Main LLM) to clean the text would double the Time-to-First-Token (TTFT) and violate the <5ms proxy SLA, especially on edge hardware.
+
+**Proposed Architecture (Asynchronous Background Scrubber):**
+- To preserve TTFT, the SPM immediately forwards the *raw* user text to the Main LLM for the active turn (allowing slight metagaming in the immediate response, which is often acceptable or unnoticed).
+- **Concurrently**, an asynchronous background task (similar to the `ImportWorker`) dispatches the raw text to a tiny, fast model (e.g., `gemma-2-2b` or smaller) via the backend.
+- The scrubber model's prompt: *"Extract only observable physical actions and spoken words. Remove all internal thoughts."*
+- **Result:** Future memory retrievals for this event will contain *only* the physical actions, preventing the character from remembering or acting upon the user's internal thoughts in future turns.
+
+---
+
+### [DESIGN-002] State of the World Updates & Auto-Populating GM Rules
+**Problem:** Currently, GM rules (`invariants` and `game_over` conditions) must be manually defined via SQL or the Admin UI. This creates friction for users wanting zero-config setup for imported chats or new characters. Furthermore, static rules prevent the scenario from organically evolving (e.g., if an invariant states a character is in a castle, but they later leave, the GM will falsely flag violations).
+
+**Proposed Architecture (Human-in-the-Loop Auto-Extraction):**
+1. **Initial Extraction (Background Task):** When a new chat or import begins, an asynchronous background task runs the character card and/or chat history through the LLM with an extraction prompt to generate candidate `invariants` and `game_over` rules.
+2. **Admin Dashboard Approval:** To prevent "poisoning the well" with hallucinated invariants, extracted rules are set to `pending` and presented in the SPM Admin UI for the user to approve, edit, or reject before they become active.
+3. **Periodic State of the World Reviews:** To allow characters and the narrative to grow (e.g., character arcs like Bilbo or Sun Wukong), Hermes or a background LLM task periodically reviews the recent chat history (e.g., every 15 turns). It proposes updates to the active invariants to reflect the evolving world state, ensuring the GM remains a dynamic referee.

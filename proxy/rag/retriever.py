@@ -91,3 +91,39 @@ class EpisodicRAGRetriever:
 
             logger.info(f"[RAGRetriever] Retrieved {len(top_memories)} memory nodes for {character_id} (session={session_id}).")
             return top_memories
+
+    async def retrieve_lore_rules(
+        self,
+        character_id: str,
+        query_embedding: List[float],
+        max_cosine_distance: float = 0.35
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Retrieves active lore rules for a character.
+        Returns all 'invariant' rules, and 'conditional_trigger'/'game_over' rules that match the query embedding.
+        """
+        table_name = f"csa_lore_rules_{character_id.lower()}"
+        async with self.db_pool.acquire() as conn:
+            # Ensure table exists (create if missing)
+            await conn.execute("SELECT create_csa_lore_rules_table($1);", character_id.lower())
+            
+            # Fetch Invariants
+            invariants_query = f"SELECT id, rule_text, rule_type FROM {table_name} WHERE rule_type = 'invariant';"
+            invariant_records = await conn.fetch(invariants_query)
+            
+            # Fetch Conditional Triggers / Game Over
+            embedding_str = "[" + ",".join(map(str, query_embedding)) + "]"
+            triggers_query = f"""
+                SELECT id, rule_text, rule_type, (rule_embedding <=> $1::vector) AS cosine_distance
+                FROM {table_name}
+                WHERE rule_type IN ('conditional_trigger', 'game_over')
+                  AND rule_embedding IS NOT NULL
+                  AND (rule_embedding <=> $1::vector) < $2
+                ORDER BY cosine_distance ASC;
+            """
+            trigger_records = await conn.fetch(triggers_query, embedding_str, max_cosine_distance)
+            
+            return {
+                "invariants": [dict(r) for r in invariant_records],
+                "triggers": [dict(r) for r in trigger_records]
+            }
