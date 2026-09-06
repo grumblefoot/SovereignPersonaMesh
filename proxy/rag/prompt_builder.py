@@ -4,6 +4,7 @@ Formats custom prompts for Character Subagents (CSAs) strictly adhering to token
 """
 
 from typing import List, Dict, Any
+import re
 from config.hardware_tiers import HardwareConfig, HARDWARE_TIERS, HardwareTierEnum
 
 
@@ -99,7 +100,18 @@ class CognitivePromptBuilder:
         if style_card and hasattr(style_card, "style_instruction"):
             style_block = f"\n\n[NARRATIVE STYLE HEURISTICS]\n{style_card.style_instruction}"
 
-        system_content = f"""{system_prompt}{style_block}
+        if self.config.inner_monologue_enabled:
+            system_content = f"""{system_prompt}{style_block}
+
+[RECALLED EPISODIC MEMORIES]
+{memory_str}
+
+[CURRENT SPATIAL & SENSORY ENVIRONMENT]
+{env_block}
+
+System Directive: You MUST begin your response immediately with <ctrl94>. Place all internal thoughts and planning strictly inside these tags. You MUST close with </ctrl94> before writing your public dialogue. Your public dialogue must not exceed {frontend_max_tokens} words."""
+        else:
+            system_content = f"""{system_prompt}{style_block}
 
 [RECALLED EPISODIC MEMORIES]
 {memory_str}
@@ -113,6 +125,10 @@ System Directive: Respond strictly in-character. Do not output system meta-instr
         for msg in chat_history[-15:]:
             r = msg.get("role", "user")
             c = msg.get("content", "")
+            if r == "assistant" and self.config.inner_monologue_enabled:
+                c = re.sub(r'Internal Monologue/Planning:\s*\n*', '', c, flags=re.IGNORECASE)
+                if "<ctrl94>" not in c:
+                    c = f"<ctrl94> *Processing context...* </ctrl94>\n{c}"
             if r in ("user", "assistant"):
                 messages.append({"role": r, "content": c})
 

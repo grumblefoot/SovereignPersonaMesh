@@ -34,12 +34,14 @@ router = APIRouter()
 
 # Module-level db_pool reference — set by tests via set_db_pool()
 _db_pool = None
+_db_pool_explicitly_set = False
 
 
 def set_db_pool(pool):
     """Inject a db_pool into the routes module (used by tests)."""
-    global _db_pool
+    global _db_pool, _db_pool_explicitly_set
     _db_pool = pool
+    _db_pool_explicitly_set = True
 
 # Service components
 fifo_queue = InferenceFIFOQueue()
@@ -75,15 +77,34 @@ async def list_models():
     }
 
 
+import re
+
+
 def _extract_target_char(messages: List[ChatCompletionMessage]) -> str:
-    """Extract the target character identifier from messages."""
+    """Extract the target character identifier from system prompts or message metadata."""
+    if not messages:
+        return "default"
     for msg in reversed(messages):
-        if msg.role == "system" and "Character:" in msg.content:
-            target_char = msg.content.split("Character:")[1].split("\n")[0].strip().lower()
-            return target_char
+        if msg.role == "system" and msg.content:
+            content = msg.content
+            # Pattern 1: [CharName's Personality=...]
+            match = re.search(r"\[([A-Za-z0-9_\-\s]+)'s\s+Personality=", content, re.IGNORECASE)
+            if match:
+                return match.group(1).strip().lower()
+            # Pattern 2: [Character: CharName] or Character: CharName
+            match = re.search(r"(?:\[Character:\s*|Character:\s*)([A-Za-z0-9_\-\s]+)(?:\]|\n|$)", content, re.IGNORECASE)
+            if match:
+                return match.group(1).strip().lower()
+            # Pattern 3: [<CharName>:] or [<CharName>'s ...]
+            match = re.search(r"\[([A-Za-z0-9_\-\s]+)(?:'s|:)", content)
+            if match:
+                char_name = match.group(1).strip().lower()
+                if char_name not in ("scenario", "system", "user", "assistant", "context"):
+                    return char_name
         elif msg.name:
-            return msg.name.lower()
-    return "luna"
+            return msg.name.strip().lower()
+    return "default"
+
 
 
 async def _gather_public_response(prompt: str, model: str, temperature: float,
@@ -141,14 +162,18 @@ async def _check_bulk_import(
       - session_id is new (not in spm_chat_imports)
       - message count exceeds BULK_IMPORT_THRESHOLD (10)
     """
-    if db_pool is None:
+    if db_pool is None or getattr(db_pool, "_closed", False):
         return False
 
-    # Only check on first request to a new session
-    worker = BulkImportWorker(db_pool)
-    existing = await worker.check_import_status(session_id)
-    if existing:
-        return False  # Already being imported or completed
+    try:
+        # Only check on first request to a new session
+        worker = BulkImportWorker(db_pool)
+        existing = await worker.check_import_status(session_id)
+        if existing:
+            return False  # Already being imported or completed
+    except Exception as e:
+        logger.warning(f"[ImportWorker] Check import status skipped: {e}")
+        return False
 
     if len(request.messages) > BULK_IMPORT_THRESHOLD:
         target_char = _extract_target_char(request.messages)
@@ -175,6 +200,29 @@ async def _check_bulk_import(
     return False
 
 
+def _extract_location_from_messages(messages: List[Any], system_prompt: str = "") -> str:
+    """Dynamically extract location/room name from system prompt or message history."""
+    import re
+    full_text = system_prompt + "\n" + "\n".join([getattr(m, 'content', '') or '' for m in messages if hasattr(m, 'content')])
+    
+    m = re.search(r'(?:Location|Setting|Room|Area):\s*([^\n\.,;\]]+)', full_text, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    
+    m2 = re.search(r'\[(?:LOC|LOCATION|Setting):\s*([^\]]+)\]', full_text, re.IGNORECASE)
+    if m2:
+        return m2.group(1).strip()
+
+    kw_match = re.search(r'\b(prison|dungeon|cell|cellar|chamber|vault|archive|room|hall|tower|courtyard|castle|tavern|inn|fortress)\b', full_text, re.IGNORECASE)
+    if kw_match:
+        matched_kw = kw_match.group(1).capitalize()
+        if matched_kw.lower() in ["cell", "cellar", "dungeon", "prison"]:
+            return "Underground Prison"
+        return matched_kw
+
+    return "Starting Location"
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest, req: Request):
     """
@@ -183,6 +231,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     Triggers async bulk import when > 10 messages detected for a new session.
     """
     t0 = time.time()
+    logger.info(f"[SillyIntoSPMLog] Request payload: {request.model_dump()}")
 
     # Extract session ID for FR-001 session isolation
     session_id = _extract_session_id(req, request.model_dump())
@@ -209,14 +258,18 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     gating_level = "direct"
     consequences = world_res.get("consequences", [])
     for c in consequences:
-        if c.get("recipient_id") == target_char:
+        recip = c.get("recipient_id", "").lower()
+        if recip == target_char or target_char == "default" or len(consequences) == 1:
             sensory_feed = c.get("sensory_feed", user_text)
             gating_level = c.get("gating_level", "direct")
             break
 
     # --- Step 2: Observer Inference Gating & Bypass Protocol ---
+    system_prompt = next((m.content for m in request.messages if m.role == "system"), "You are Luna.")
+    location_name = _extract_location_from_messages(request.messages, system_prompt)
+
     telemetry = get_telemetry_collector()
-    telemetry.record_request(session_id=session_id, gating_level=gating_level, latency=(time.time() - t0) * 1000)
+    telemetry.record_request(session_id=session_id, location_name=location_name, gating_level=gating_level, latency=(time.time() - t0) * 1000)
 
     if gating_level.lower() in ["null", "blackout"]:
         logger.info(f"[SPMProxy] Character {target_char} turn bypassed (gating={gating_level}). Zero inference cost.")
@@ -251,7 +304,8 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     retrieved_memories = []
     if _db_pool and user_text:
         try:
-            query_emb = [0.0] * 384
+            retriever = EpisodicRAGRetriever(_db_pool)
+            query_emb = await embedder.generate_embedding(user_text)
             retrieved_memories = await retriever.retrieve_memories(
                 character_id=target_char,
                 query_embedding=query_emb,
@@ -261,6 +315,17 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             )
         except Exception as e:
             logger.warning(f"[SPMProxy] Memory retrieval skipped: {e}")
+
+    # RAG Lore Retrieval
+    retrieved_lore = {"invariants": [], "triggers": []}
+    if _db_pool and user_text:
+        try:
+            retrieved_lore = await retriever.retrieve_lore_rules(
+                character_id=target_char,
+                query_embedding=query_emb,
+            )
+        except Exception as e:
+            logger.warning(f"[SPMProxy] Lore retrieval skipped: {e}")
 
     csa_messages = prompt_builder.build_csa_messages(
         system_prompt=system_prompt,
@@ -277,10 +342,107 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         stop = [s for s in raw_stop if s != "</ctrl94>"]
     else:
         stop = raw_stop
+        
+    # --- Inject Active Lore ---
+    lore_text_parts = []
+    for inv in retrieved_lore.get("invariants", []):
+        lore_text_parts.append(f"- [Invariant] {inv['rule_text']}")
+    for trig in retrieved_lore.get("triggers", []):
+        lore_text_parts.append(f"- [Trigger] {trig['rule_text']}")
+    
+    active_lore_str = ""
+    if lore_text_parts:
+        active_lore_str = "\n\n[ACTIVE LORE]\n" + "\n".join(lore_text_parts)
+
+    # --- Inject Assistant Prefill (Only if Monologue is enabled) ---
+    if prompt_builder.config.inner_monologue_enabled:
+        directive = f"""{active_lore_str}
+
+SYSTEM DIRECTIVE: You are the GAME MASTER. You MUST write your internal thoughts strictly inside <think>...</think> tags. Cross-reference the user's input against the ACTIVE LORE.
+- If the user violates an Invariant (e.g. hallucinating), note it in your scratchpad.
+- If the user violates a Trigger/Game Over rule (e.g. attacking), note the [RULE VIOLATION] in your scratchpad. If a warning is required, you MUST write a warning addressed to the player INSIDE your scratchpad using exactly this format: [GM WARNING: your warning message to the player here]
+
+CRITICAL FORMATTING RULE:
+After completing your GM scratchpad, YOU MUST CLOSE THE TAG AND SEPARATE YOUR DIALOGUE. Output exactly:
+</think>
+
+---
+
+After the horizontal rule, switch to the CHARACTER'S PERSPECTIVE.
+- For Lore Violations: Forcefully reject the hallucination in your public dialogue.
+- For Rule Violations: React appropriately to enforce the rule. Do NOT write the GM Warning in your public dialogue; the system will extract it from your scratchpad automatically."""
+        if csa_messages and csa_messages[-1]["role"] == "user":
+            csa_messages[-1]["content"] += directive
+        else:
+            csa_messages.append({"role": "user", "content": directive.strip()})
+        csa_messages.append({"role": "assistant", "content": "<think>\n"})
+        init_state = 0
+    else:
+        init_state = 1
+    
+    logger.info(f"[SPMIntoBackendLog] Sending to Backend (model={request.model}): {csa_messages}")
+
+    # ---- Non-streaming path ----
+    if request.stream is False:
+        parser = MonologueStreamParser(max_public_tokens=frontend_max_tokens, initial_state=init_state)
+        raw_stream = lemonade_client.generate_stream(
+            messages=csa_messages,
+            model=request.model,
+            temperature=request.temperature or 0.7,
+            max_tokens=backend_max_tokens,
+            stop=stop,
+        )
+        async for chunk in parser.process_token_stream(raw_stream):
+            pass
+        inner_monologue, public_resp = parser.get_final_buffers()
+
+        logger.info(f"[BackendReturnSPMLog] Monologue: {inner_monologue} | Public: {public_resp}")
+
+        if inner_monologue:
+            telemetry.push_thought_event(session_id, {
+                "session_id": session_id,
+                "character": target_char,
+                "thought": inner_monologue,
+            })
+
+        if _db_pool and public_resp:
+            try:
+                table_name = f"csa_memory_{target_char.lower()}"
+                async with _db_pool.acquire() as conn:
+                    await conn.execute("SELECT create_csa_memory_table($1);", target_char.lower())
+                    await conn.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS public_response TEXT;")
+                    await conn.execute(
+                        f"DELETE FROM {table_name} WHERE session_id = $1 AND LOWER(sensory_input) = LOWER($2);",
+                        session_id, user_text
+                    )
+                    emb = await embedder.generate_embedding(user_text)
+                    emb_str = "[" + ",".join(map(str, emb)) + "]"
+                    await conn.execute(
+                        f"""
+                        INSERT INTO {table_name} (session_id, sensory_input, inner_monologue, public_response, episodic_embedding)
+                        VALUES ($1, $2, $3, $4, $5::vector);
+                        """,
+                        session_id, user_text, inner_monologue, public_resp, emb_str
+                    )
+            except Exception as e:
+                logger.warning(f"[SPMProxy] Failed to persist turn memory: {e}")
+
+        logger.info(f"[SPMReturnSillyLog] Returning to SillyTavern: {public_resp}")
+        return JSONResponse(content={
+            "id": "chatcmpl-spm-turn",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": request.model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": public_resp},
+                "finish_reason": "stop"
+            }]
+        })
 
     # ---- Streaming path ----
     async def sse_event_generator():
-        parser = MonologueStreamParser(max_public_tokens=frontend_max_tokens)
+        parser = MonologueStreamParser(max_public_tokens=frontend_max_tokens, initial_state=init_state)
         raw_stream = lemonade_client.generate_stream(
             messages=csa_messages,
             model=request.model,
@@ -312,6 +474,9 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         telemetry.record_request(session_id=session_id, gating_level=gating_level, latency=(time.time() - t0) * 1000)
         inner_monologue, public_resp = parser.get_final_buffers()
 
+        logger.info(f"[BackendReturnSPMLog] Monologue: {inner_monologue} | Public: {public_resp}")
+        logger.info(f"[SPMReturnSillyLog] Sent streaming chunks to SillyTavern. Final public response: {public_resp}")
+
         # Push inner monologue to Thought Monitor SSE stream
         if inner_monologue:
             telemetry.push_thought_event(session_id, {
@@ -333,17 +498,19 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                 table_name = f"csa_memory_{target_char.lower()}"
                 async with _db_pool.acquire() as conn:
                     await conn.execute("SELECT create_csa_memory_table($1);", target_char.lower())
+                    await conn.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS public_response TEXT;")
                     await conn.execute(
                         f"DELETE FROM {table_name} WHERE session_id = $1 AND LOWER(sensory_input) = LOWER($2);",
                         session_id, user_text
                     )
-                    emb_str = "[" + ",".join(["0.0"] * 384) + "]"
+                    emb = await embedder.generate_embedding(user_text)
+                    emb_str = "[" + ",".join(map(str, emb)) + "]"
                     await conn.execute(
                         f"""
-                        INSERT INTO {table_name} (session_id, character_id, sensory_input, inner_monologue, public_response, episodic_embedding)
-                        VALUES ($1, $2, $3, $4, $5, $6::vector);
+                        INSERT INTO {table_name} (session_id, sensory_input, inner_monologue, public_response, episodic_embedding)
+                        VALUES ($1, $2, $3, $4, $5::vector);
                         """,
-                        session_id, target_char, user_text, inner_monologue, public_resp, emb_str
+                        session_id, user_text, inner_monologue, public_resp, emb_str
                     )
             except Exception as e:
                 logger.warning(f"[SPMProxy] Failed to persist turn memory: {e}")

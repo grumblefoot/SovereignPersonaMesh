@@ -335,30 +335,42 @@ class TestProxySessionExtraction:
 
     def test_header_precedence(self):
         """X-Session-ID header takes highest precedence."""
-        with TestClient(proxy_app) as client:
-            resp = client.post("/v1/chat/completions", json={
-                "model": "google/gemma-4-26B-A4B-it",
-                "messages": [{"role": "user", "content": "test"}],
-            }, headers={"X-Session-ID": "header-session-99"})
-            assert resp.status_code == 200
+        with patch("proxy.api.routes.lemonade_client.generate_stream") as mock_stream:
+            async def dummy_gen(*args, **kwargs):
+                yield "Test response"
+            mock_stream.side_effect = dummy_gen
+            with TestClient(proxy_app) as client:
+                resp = client.post("/v1/chat/completions", json={
+                    "model": "google/gemma-4-26B-A4B-it",
+                    "messages": [{"role": "user", "content": "test"}],
+                }, headers={"X-Session-ID": "header-session-99"})
+                assert resp.status_code == 200
 
     def test_body_fallback(self):
         """When no header, body session_id should be used."""
-        with TestClient(proxy_app) as client:
-            resp = client.post("/v1/chat/completions", json={
-                "model": "google/gemma-4-26B-A4B-it",
-                "messages": [{"role": "user", "content": "test"}],
-            })
-            assert resp.status_code == 200
+        with patch("proxy.api.routes.lemonade_client.generate_stream") as mock_stream:
+            async def dummy_gen(*args, **kwargs):
+                yield "Test response"
+            mock_stream.side_effect = dummy_gen
+            with TestClient(proxy_app) as client:
+                resp = client.post("/v1/chat/completions", json={
+                    "model": "google/gemma-4-26B-A4B-it",
+                    "messages": [{"role": "user", "content": "test"}],
+                })
+                assert resp.status_code == 200
 
     def test_default_session_fallback(self):
         """When no header and no body session_id, default_session should be used."""
-        with TestClient(proxy_app) as client:
-            resp = client.post("/v1/chat/completions", json={
-                "model": "google/gemma-4-26B-A4B-it",
-                "messages": [{"role": "user", "content": "test"}],
-            }, headers={"X-Session-ID": ""})
-            assert resp.status_code == 200
+        with patch("proxy.api.routes.lemonade_client.generate_stream") as mock_stream:
+            async def dummy_gen(*args, **kwargs):
+                yield "Test response"
+            mock_stream.side_effect = dummy_gen
+            with TestClient(proxy_app) as client:
+                resp = client.post("/v1/chat/completions", json={
+                    "model": "google/gemma-4-26B-A4B-it",
+                    "messages": [{"role": "user", "content": "test"}],
+                }, headers={"X-Session-ID": ""})
+                assert resp.status_code == 200
 
     def test_extract_session_id_function(self):
         """Direct unit test of _extract_session_id() precedence chain."""

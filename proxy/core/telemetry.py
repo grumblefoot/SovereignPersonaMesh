@@ -57,8 +57,15 @@ class TelemetryCollector:
             self._memory_tiers = {"hot": 0, "warm": 0, "cold": 0}
             self._log_buffer.clear()
             self._session_traces.clear()
-            self._thought_queues.clear()
             self._thought_history.clear()
+            queues = list(self._thought_queues)
+
+        reset_evt = {"event": "reset", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())}
+        for q in queues:
+            try:
+                q.put_nowait(reset_evt)
+            except Exception:
+                pass
 
     def record_turn_trace(self, session_id: str, trace_data: Dict[str, Any]) -> None:
         """Record detailed turn decision trace for an agent/session."""
@@ -113,8 +120,9 @@ class TelemetryCollector:
         latency: float = 0.0,
         rag_count: int = 0,
         status_code: int = 200,
+        location_name: Optional[str] = None,
     ) -> None:
-        """Record a completed request with its latency and gating classification."""
+        """Record a completed request with its latency, location, and gating classification."""
         with self._lock:
             self._total_requests += 1
             self._total_latency += latency
@@ -125,6 +133,7 @@ class TelemetryCollector:
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
                 "level": "INFO" if status_code < 400 else "ERROR",
                 "session_id": session_id,
+                "location_name": location_name or "The Cellar",
                 "gating_level": gating_level,
                 "latency_ms": round(latency, 2),
                 "rag_count": rag_count,
@@ -162,6 +171,68 @@ class TelemetryCollector:
                 "session_id": session_id,
                 "source": source,
             })
+
+    async def hydrate_from_db(self, pool: Any) -> None:
+        """Hydrate in-memory telemetry buffers from the database on startup."""
+        if not pool:
+            return
+        
+        try:
+            import logging
+            logger = logging.getLogger(__name__)
+            async with pool.acquire() as conn:
+                tables = await conn.fetch(
+                    "SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'csa_memory_%';"
+                )
+                if not tables:
+                    return
+                
+                queries = []
+                for t in tables:
+                    table_name = t["table_name"]
+                    char_name = table_name.replace("csa_memory_", "")
+                    queries.append(
+                        f"SELECT '{char_name}' AS character, session_id, timestamp, sensory_input, inner_monologue, public_response "
+                        f"FROM {table_name}"
+                    )
+                
+                union_query = " UNION ALL ".join(queries)
+                final_query = f"SELECT * FROM ({union_query}) AS all_memories ORDER BY timestamp DESC LIMIT 25;"
+                
+                records = await conn.fetch(final_query)
+                
+                with self._lock:
+                    for r in reversed(records):
+                        char_name = r["character"]
+                        session_id = r["session_id"]
+                        
+                        entry = {
+                            "session_id": session_id,
+                            "timestamp": r["timestamp"].strftime("%Y-%m-%dT%H:%M:%S") if r["timestamp"] else None,
+                            "character": char_name,
+                            "sensory_input": r["sensory_input"],
+                            "inner_monologue": r["inner_monologue"],
+                            "public_response": r["public_response"]
+                        }
+                        
+                        self._thought_history.append(entry)
+                        self._session_traces[session_id].append(entry)
+                        self._active_sessions.add(session_id)
+                        
+                        self._log_buffer.append({
+                            "timestamp": entry["timestamp"],
+                            "level": "INFO",
+                            "session_id": session_id,
+                            "location_name": "Hydrated from DB",
+                            "gating_level": "unknown",
+                            "latency_ms": 0.0,
+                            "rag_count": 0,
+                            "status_code": 200,
+                        })
+            logger.info("[Telemetry] Hydrated telemetry buffers from database.")
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"[Telemetry] DB Hydration failed: {e}")
 
     # -- Query --
 

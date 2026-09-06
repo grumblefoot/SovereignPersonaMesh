@@ -254,6 +254,33 @@ class BulkImportWorker:
                                 True,
                                 1,
                             )
+                            # Record discovered spatial locations during bulk import for dynamic UI map
+                            content_txt = msg.get("content", "")
+                            import re
+                            discovered_loc = None
+                            m = re.search(r'(?:Location|Setting|Room|Area):\s*([^\n\.,;\]]+)', content_txt, re.IGNORECASE)
+                            if m:
+                                discovered_loc = m.group(1).strip()
+                            else:
+                                kw_match = re.search(r'\b(prison|dungeon|cell|cellar|chamber|vault|archive|room|hall|tower|courtyard|castle|tavern|inn|fortress)\b', content_txt, re.IGNORECASE)
+                                if kw_match:
+                                    matched_kw = kw_match.group(1).capitalize()
+                                    if matched_kw.lower() in ["cell", "cellar", "dungeon", "prison"]:
+                                        discovered_loc = "Underground Prison"
+                                    else:
+                                        discovered_loc = matched_kw
+
+                            if discovered_loc:
+                                try:
+                                    from proxy.core.telemetry import get_telemetry_collector
+                                    get_telemetry_collector().record_request(
+                                        session_id=session_id,
+                                        location_name=discovered_loc,
+                                        gating_level="direct",
+                                        latency=0.0
+                                    )
+                                except Exception:
+                                    pass
 
                     # Update progress
                     processed = min(end, total)
