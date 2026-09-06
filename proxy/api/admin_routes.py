@@ -40,6 +40,29 @@ def get_admin_db_pool():
     return None
 
 
+async def ensure_db_pool():
+    global _admin_db_pool
+    if _admin_db_pool is not None:
+        return _admin_db_pool
+    import os, asyncio, asyncpg
+    from proxy.api.routes import set_db_pool
+    host = os.getenv("POSTGRES_HOST", "localhost")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    db = os.getenv("POSTGRES_DB", "litellm_postgres")
+    user = os.getenv("POSTGRES_USER", "spm_user")
+    pwd = os.getenv("POSTGRES_PASSWORD", "spm_secure_password")
+    dsn = f"postgresql://{user}:{pwd}@{host}:{port}/{db}"
+    try:
+        pool = await asyncio.wait_for(asyncpg.create_pool(dsn=dsn, min_size=1, max_size=5), timeout=2.0)
+        set_admin_db_pool(pool)
+        set_db_pool(pool)
+        logger.info("[AdminAPI] Lazy database connection pool successfully established.")
+        return pool
+    except Exception as e:
+        logger.warning(f"[AdminAPI] Failed lazy DB connection attempt: {e}")
+        return None
+
+
 @router.get("/stats")
 async def get_admin_stats():
     """Return live system telemetry, active sessions, and database size."""
@@ -177,6 +200,8 @@ async def delete_session(session_id: str):
 async def factory_reset():
     """Truncate all character memory tables, bulk imports, cold archives, and reset telemetry metrics."""
     pool = get_admin_db_pool()
+    if pool is None:
+        pool = await ensure_db_pool()
     if pool is None:
         return JSONResponse(
             status_code=530,
