@@ -227,6 +227,9 @@ class MonologueStreamParser:
 
         lines = []
         for line in cleaned.split("\n"):
+            if line.strip().startswith("**GM Warning:**"):
+                lines.append(line)
+                continue
             if MONOLOGUE_HEADER_REGEX.search(line) or line.strip() == ".":
                 continue
             # Drop lines that are LLM internal prompt analysis or guidelines
