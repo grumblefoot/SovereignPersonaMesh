@@ -304,7 +304,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     if _db_pool and user_text:
         try:
             retriever = EpisodicRAGRetriever(_db_pool)
-            query_emb = [0.0] * 384
+            query_emb = await embedder.generate_embedding(user_text)
             retrieved_memories = await retriever.retrieve_memories(
                 character_id=target_char,
                 query_embedding=query_emb,
@@ -363,7 +363,8 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                         f"DELETE FROM {table_name} WHERE session_id = $1 AND LOWER(sensory_input) = LOWER($2);",
                         session_id, user_text
                     )
-                    emb_str = "[" + ",".join(["0.0"] * 384) + "]"
+                    emb = await embedder.generate_embedding(user_text)
+                    emb_str = "[" + ",".join(map(str, emb)) + "]"
                     await conn.execute(
                         f"""
                         INSERT INTO {table_name} (session_id, sensory_input, inner_monologue, public_response, episodic_embedding)
@@ -446,7 +447,8 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                         f"DELETE FROM {table_name} WHERE session_id = $1 AND LOWER(sensory_input) = LOWER($2);",
                         session_id, user_text
                     )
-                    emb_str = "[" + ",".join(["0.0"] * 384) + "]"
+                    emb = await embedder.generate_embedding(user_text)
+                    emb_str = "[" + ",".join(map(str, emb)) + "]"
                     await conn.execute(
                         f"""
                         INSERT INTO {table_name} (session_id, sensory_input, inner_monologue, public_response, episodic_embedding)
