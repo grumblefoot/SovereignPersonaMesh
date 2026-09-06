@@ -116,3 +116,41 @@ class TestFR004Observability:
                 resp_reset = client.delete("/admin/api/v1/factory_reset")
                 assert resp_reset.status_code == 200
                 assert resp_reset.json()["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_telemetry_hydration_from_db(self):
+        """Test that hydrate_from_db correctly populates thought_history."""
+        import datetime
+        mock_conn = AsyncMock()
+        
+        # Mock table listing
+        mock_conn.fetch.side_effect = [
+            [{"table_name": "csa_memory_arvenia"}],
+            [
+                {
+                    "character": "arvenia",
+                    "session_id": "sess_123",
+                    "timestamp": datetime.datetime(2026, 1, 1, 12, 0, 0),
+                    "sensory_input": "Hello",
+                    "inner_monologue": "Thinking...",
+                    "public_response": "Hi!"
+                }
+            ]
+        ]
+        
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__.return_value = mock_conn
+        mock_cm.__aexit__.return_value = None
+        
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value = mock_cm
+
+        collector = TelemetryCollector(log_buffer_size=10)
+        collector.reset()
+        await collector.hydrate_from_db(mock_pool)
+
+        thoughts = collector.get_recent_thoughts()
+        assert len(thoughts) == 1
+        assert thoughts[0]["character"] == "arvenia"
+        assert thoughts[0]["session_id"] == "sess_123"
+        assert thoughts[0]["sensory_input"] == "Hello"

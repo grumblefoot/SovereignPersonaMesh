@@ -24,8 +24,8 @@ CLOSE_TAGS = [
     "<|end_thought|>", "<|end_of_thought|>", "<|end_monologue|>", "</|thought|>", "</|monologue|>",
     "[/Thought]", "[/Monologue]", "[/Thinking]", "[/Inner Monologue]", "[/Thought Process]", "[/Reasoning]"
 ]
-OPEN_TAG = "<ctrl94>"
-CLOSE_TAG = "</ctrl94>"
+OPEN_TAG = "<think>"
+CLOSE_TAG = "</think>"
 MAX_MONOLOGUE_TOKENS = 8192
 
 # Robust Regexes to catch malformed tags, missing brackets, markdown backticks, prompt directive echoes, and section headers
@@ -75,7 +75,8 @@ CLOSE_TAG_REGEX = re.compile(
     r'\[/Thought\]|\[/Monologue\]|\[/Thinking\]|\[/Inner Monologue\]|\[/Thought Process\]|\[/Reasoning\]|'
     r'\[Public\]|\[Public Response\]|\[Public Dialogue\]|\[Dialogue\]|\[Response\]|\[Plan\]|'
     r'\*+(?:Public|Public Response|Public Dialogue|Dialogue|Response|Narration|Canon Response|Plan):\*+|'
-    r'(?:\*|\b)(?:Public|Public Response|Public Dialogue|Dialogue|Response|Narration|Canon Response|Plan):\s*'
+    r'(?:\*|\b)(?:Public|Public Response|Public Dialogue|Dialogue|Response|Narration|Canon Response|Plan):\s*|'
+    r'(?:^|\n)---+\s*(?:\n|$)'
     r')',
     re.IGNORECASE
 )
@@ -200,7 +201,7 @@ class MonologueStreamParser:
         if not text:
             return ""
         # If text contains an explicit 'Plan:' or section divider, extract narrative content after it
-        m_plan = re.search(r'\b(?:Plan|Strategy|Analysis|Draft|Notes):\s*', text, re.IGNORECASE)
+        m_plan = re.search(r'\b(?:Plan|Strategy|Analysis|Draft|Notes|Planning|Internal Monologue):\s*', text, re.IGNORECASE)
         if m_plan:
             after_plan = text[m_plan.end():].strip()
             if after_plan:
@@ -217,7 +218,7 @@ class MonologueStreamParser:
             p0 = paragraphs[0]
             # Check if first paragraph is meta-analysis / prompt reflection / character state breakdown
             if re.search(
-                r'^\s*(?:a mix of|a blend of|a combination of|an expression of|an array of|reacting to|responding to|given that|in this turn)\b|'
+                r'^\s*(?:a mix of|a blend of|a combination of|an expression of|an array of|reacting to|responding to|given that|in this turn|the user\'s response)\b|'
                 r'\b(?:perceives (?:her|him|them)self|insulted (?:her|his|their) appearance|echoing common|peasant misconceptions|supreme elegance|meta-commentary|character motivation|vibe profiling|has just insulted|is vain and)\b',
                 p0,
                 re.IGNORECASE
@@ -234,6 +235,12 @@ class MonologueStreamParser:
                 line,
                 re.IGNORECASE
             ):
+                continue
+            # Aggressively drop bulleted meta-commentary lines
+            if re.match(r'^\s*[-*]\s+(?:Arvenia\'s )?(?:Reaction|Characterization|Action|Goal|Internal|Response|Note):', line, re.IGNORECASE):
+                continue
+            # Also drop stray bullet points that just say "She should..." or "He is..." if it looks like planning
+            if re.match(r'^\s*[-*]\s+(?:She|He|It) (?:should|needs to|will) ', line, re.IGNORECASE):
                 continue
             lines.append(line)
         result = "\n".join(lines).strip()
@@ -328,6 +335,7 @@ class MonologueStreamParser:
                         if m_close:
                             mono_part = self._stream_buffer[:m_close.start()]
                             full_mono = self.inner_monologue_buffer + mono_part
+                            
                             m_txt = self._clean_monologue(full_mono)
                             if m_txt:
                                 self._monologue_sections.append(m_txt)
@@ -358,9 +366,11 @@ class MonologueStreamParser:
                 if self.state == 1:
                     outputs = self._process_public_output(self._stream_buffer, force_flush=True)
                     for out in outputs:
-                        if not self._check_public_limit(out):
-                            self.public_response_buffer += out
-                            yield out
+                        truncated = self._check_public_limit(out)
+                        self.public_response_buffer += out
+                        yield out
+                        if truncated:
+                            break
                 else:
                     self.inner_monologue_buffer += self._stream_buffer
                 self._stream_buffer = ""
@@ -368,9 +378,11 @@ class MonologueStreamParser:
             if self.state == 1 and self._line_buffer and not stop_stream:
                 outputs = self._process_public_output("", force_flush=True)
                 for out in outputs:
-                    if not self._check_public_limit(out):
-                        self.public_response_buffer += out
-                        yield out
+                    truncated = self._check_public_limit(out)
+                    self.public_response_buffer += out
+                    yield out
+                    if truncated:
+                        break
 
         finally:
             if self.state == 0 and self.inner_monologue_buffer:
@@ -386,15 +398,23 @@ class MonologueStreamParser:
                                 self.public_response_buffer += clean_pub
                                 yield clean_pub
                         else:
-                            # Failsafe: sanitize raw thought markers/quotes before falling back
+                            logger.warning("[StreamParser] Unclosed monologue tag at EOF. Defaulting buffer to public.")
+                            self.is_failsafe_triggered = True
                             clean_pub = self._strip_monologue_bleed(mono_text)
                             if clean_pub:
-                                self.is_failsafe_triggered = True
                                 self.public_response_buffer += clean_pub
                                 yield clean_pub
                 self.inner_monologue_buffer = ""
                 self.state = 1
                 logger.info(f"[StreamParser] EOS reached in monologue mode. Monologue captured.")
+
+            # Extract GM Warning from monologue sections and yield it at the very end
+            all_monologue = "\n\n".join([s for s in self._monologue_sections if s])
+            m_warn = re.search(r'\[GM WARNING:\s*(.*?)\]', all_monologue, re.IGNORECASE | re.DOTALL)
+            if m_warn:
+                warning_text = f"\n\n**GM Warning:** {m_warn.group(1).strip()}"
+                self.public_response_buffer += warning_text
+                yield warning_text
 
     def get_final_buffers(self) -> Tuple[str, str]:
         """Returns (inner_monologue, public_response)."""

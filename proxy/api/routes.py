@@ -231,6 +231,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     Triggers async bulk import when > 10 messages detected for a new session.
     """
     t0 = time.time()
+    logger.info(f"[SillyIntoSPMLog] Request payload: {request.model_dump()}")
 
     # Extract session ID for FR-001 session isolation
     session_id = _extract_session_id(req, request.model_dump())
@@ -315,6 +316,17 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         except Exception as e:
             logger.warning(f"[SPMProxy] Memory retrieval skipped: {e}")
 
+    # RAG Lore Retrieval
+    retrieved_lore = {"invariants": [], "triggers": []}
+    if _db_pool and user_text:
+        try:
+            retrieved_lore = await retriever.retrieve_lore_rules(
+                character_id=target_char,
+                query_embedding=query_emb,
+            )
+        except Exception as e:
+            logger.warning(f"[SPMProxy] Lore retrieval skipped: {e}")
+
     csa_messages = prompt_builder.build_csa_messages(
         system_prompt=system_prompt,
         sensory_feed=sensory_feed,
@@ -330,9 +342,47 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         stop = [s for s in raw_stop if s != "</ctrl94>"]
     else:
         stop = raw_stop
+        
+    # --- Inject Active Lore ---
+    lore_text_parts = []
+    for inv in retrieved_lore.get("invariants", []):
+        lore_text_parts.append(f"- [Invariant] {inv['rule_text']}")
+    for trig in retrieved_lore.get("triggers", []):
+        lore_text_parts.append(f"- [Trigger] {trig['rule_text']}")
     
+    active_lore_str = ""
+    if lore_text_parts:
+        active_lore_str = "\n\n[ACTIVE LORE]\n" + "\n".join(lore_text_parts)
+
+    # --- Inject Assistant Prefill (Only if Monologue is enabled) ---
+    if prompt_builder.config.inner_monologue_enabled:
+        directive = f"""{active_lore_str}
+
+SYSTEM DIRECTIVE: You are the GAME MASTER. You MUST write your internal thoughts strictly inside <think>...</think> tags. Cross-reference the user's input against the ACTIVE LORE.
+- If the user violates an Invariant (e.g. hallucinating), note it in your scratchpad.
+- If the user violates a Trigger/Game Over rule (e.g. attacking), note the [RULE VIOLATION] in your scratchpad. If a warning is required, you MUST write it INSIDE your scratchpad using exactly this format: [GM WARNING: your warning message here]
+
+CRITICAL FORMATTING RULE:
+After completing your GM scratchpad, YOU MUST CLOSE THE TAG AND SEPARATE YOUR DIALOGUE. Output exactly:
+</think>
+
+---
+
+After the horizontal rule, switch to the CHARACTER'S PERSPECTIVE.
+- For Lore Violations: Forcefully reject the hallucination in your public dialogue.
+- For Rule Violations: React appropriately to enforce the rule. Do NOT write the GM Warning in your public dialogue; the system will extract it from your scratchpad automatically."""
+        if csa_messages and csa_messages[-1]["role"] == "user":
+            csa_messages[-1]["content"] += directive
+        else:
+            csa_messages.append({"role": "user", "content": directive.strip()})
+        csa_messages.append({"role": "assistant", "content": "<think>\n"})
+        init_state = 0
+    else:
+        init_state = 1
+    
+    logger.info(f"[SPMIntoBackendLog] Sending to Backend (model={request.model}): {csa_messages}")
+
     # ---- Non-streaming path ----
-    init_state = 0 if prompt_builder.config.inner_monologue_enabled else 1
     if request.stream is False:
         parser = MonologueStreamParser(max_public_tokens=frontend_max_tokens, initial_state=init_state)
         raw_stream = lemonade_client.generate_stream(
@@ -345,6 +395,8 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         async for chunk in parser.process_token_stream(raw_stream):
             pass
         inner_monologue, public_resp = parser.get_final_buffers()
+
+        logger.info(f"[BackendReturnSPMLog] Monologue: {inner_monologue} | Public: {public_resp}")
 
         if inner_monologue:
             telemetry.push_thought_event(session_id, {
@@ -375,6 +427,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             except Exception as e:
                 logger.warning(f"[SPMProxy] Failed to persist turn memory: {e}")
 
+        logger.info(f"[SPMReturnSillyLog] Returning to SillyTavern: {public_resp}")
         return JSONResponse(content={
             "id": "chatcmpl-spm-turn",
             "object": "chat.completion",
@@ -420,6 +473,9 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
 
         telemetry.record_request(session_id=session_id, gating_level=gating_level, latency=(time.time() - t0) * 1000)
         inner_monologue, public_resp = parser.get_final_buffers()
+
+        logger.info(f"[BackendReturnSPMLog] Monologue: {inner_monologue} | Public: {public_resp}")
+        logger.info(f"[SPMReturnSillyLog] Sent streaming chunks to SillyTavern. Final public response: {public_resp}")
 
         # Push inner monologue to Thought Monitor SSE stream
         if inner_monologue:
