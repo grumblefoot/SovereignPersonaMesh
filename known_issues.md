@@ -118,9 +118,11 @@
 
 ### Issue: LLM GM_Action Bleedthrough (Parser Vulnerability)
 **Date:** 2026-09-07
-**Status:** Parked (Pending Pivot Parser implementation)
+**Status:** 🟢 RESOLVED (`proxy/core/stream_parser.py` & `proxy/api/routes.py`)
 **Description:**
-The LLM frequently ignores closing tags (`</think>`) and transition markers (`[SCENE START]`, `---`) when finishing its scratchpad. Because our `MonologueStreamParser` rigidly waits for a closing tag to switch states, it remains in the monologue state until EOF. This triggers a fail-safe that dumps the entire buffer, causing raw `[GM_ACTION]` JSON tags to bleed into the frontend chat interface.
+The LLM frequently ignores closing tags (`</think>`) and transition markers (`[SCENE START]`, `---`) when finishing its scratchpad. Because our `MonologueStreamParser` rigidly waits for a closing tag to switch states, it remained in the monologue state until EOF. This triggered a fail-safe that dumped the entire buffer, causing raw `[GM_ACTION]` JSON tags to bleed into the frontend chat interface. Furthermore, the LLM sometimes wrote planning notes (e.g., "I need to describe...") after the closing tag.
 
-**Proposed Solution (Pivot Parser):**
-Hermes audited the flow and proposed replacing the state-machine parser with a **Content-Based Pivot Parser**. The parser will scan for the *last* `[GM_ACTION: ...]` tag and use it as a pivot point. Everything before the last action is stripped (as internal logic), and everything after it is streamed as public narrative. 
+**Resolution (Surgical Pivot Parser & Dual-Layer Filtering):**
+1. **Surgical Pivot Parser:** Implemented an EOF fallback in `stream_parser.py`. If the stream finishes without closing `</think>`, it scans the buffer for the *last* `[GM_ACTION]` tag, designating everything before it as monologue, and yielding only text after the pivot.
+2. **Prompt Directive Tuning:** Stricter rules in `proxy/api/routes.py` enforcing no planning outside `<think>` tags.
+3. **Aggressive Regex Heuristics:** Expanded `_strip_monologue_bleed()` to catch "I need to", "The user is", and "Room Details". 
