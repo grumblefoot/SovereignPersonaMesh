@@ -164,6 +164,8 @@ async def delete_session(session_id: str):
             await conn.execute("DELETE FROM spm_chat_imports WHERE session_id = $1;", session_id)
             # Delete from spm_cold_archives
             await conn.execute("DELETE FROM spm_cold_archives WHERE session_id = $1;", session_id)
+            # Delete from world_state_sessions
+            await conn.execute("DELETE FROM world_state_sessions WHERE session_id = $1;", session_id)
 
             # Query all csa_memory tables
             tables = await conn.fetch(
@@ -213,6 +215,7 @@ async def factory_reset():
             # Truncate tracking tables
             await conn.execute("TRUNCATE TABLE spm_chat_imports RESTART IDENTITY CASCADE;")
             await conn.execute("TRUNCATE TABLE spm_cold_archives RESTART IDENTITY CASCADE;")
+            await conn.execute("TRUNCATE TABLE world_state_sessions RESTART IDENTITY CASCADE;")
 
             # Truncate all csa_memory tables
             tables = await conn.fetch(
@@ -227,6 +230,14 @@ async def factory_reset():
         telemetry = get_telemetry_collector()
         telemetry.reset()
 
+        # Clear Evennia in-memory cache
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.delete("http://localhost:4005/api/v1/world/admin/reset")
+        except Exception as e:
+            logger.warning(f"[AdminAPI] Failed to reset Evennia cache: {e}")
+
         logger.warning("[AdminAPI] FACTORY RESET TRIGGERED — all memory tables truncated and telemetry reset.")
         return JSONResponse(content={
             "status": "success",
@@ -235,3 +246,26 @@ async def factory_reset():
     except Exception as e:
         logger.error(f"[AdminAPI] Error executing factory reset: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/shutdown")
+async def shutdown_system():
+    """Cleanly shut down the SPM proxy and Evennia game services."""
+    import os, signal, asyncio
+    logger.warning("[AdminAPI] Received shutdown request. Shutting down services...")
+    
+    # Run a background task to cleanly exit after responding
+    async def _shutdown():
+        await asyncio.sleep(1)
+        # Stop Postgres Docker container
+        os.system('docker stop spm-postgres')
+        # Send SIGTERM to evennia_world.app
+        os.system('pkill -SIGTERM -f "python -m evennia_world.app"')
+        # Send SIGTERM to proxy.main (kills master process)
+        os.system('pkill -SIGTERM -f "python -m proxy.main"')
+        
+    asyncio.create_task(_shutdown())
+    
+    return JSONResponse(content={
+        "status": "success",
+        "message": "Shutting down SPM and Game services gracefully."
+    })
