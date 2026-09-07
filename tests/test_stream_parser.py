@@ -15,8 +15,8 @@ from proxy.core.stream_parser import MonologueStreamParser, OPEN_TAG, CLOSE_TAG,
 async def test_normal_monologue_then_public():
     """Standard flow: monologue tags, transition to public, yield only public."""
     async def mock_chunks():
-        yield "<ctrl94>I should stay hidden."
-        yield " The shadows protect me.</ctrl94>"
+        yield "<thinking>I should stay hidden."
+        yield " The shadows protect me.</thinking>"
         yield " I step forward from the dark."
 
     parser = MonologueStreamParser()
@@ -35,9 +35,9 @@ async def test_normal_monologue_then_public():
 async def test_multiple_monologue_sections():
     """Two separate monologue-public cycles in one stream."""
     async def mock_chunks():
-        yield "<ctrl94>First thought.</ctrl94>"
+        yield "<thinking>First thought.</thinking>"
         yield " First public line."
-        yield "<ctrl94>Second thought.</ctrl94>"
+        yield "<thinking>Second thought.</thinking>"
         yield " Second public line."
 
     parser = MonologueStreamParser()
@@ -93,7 +93,7 @@ async def test_empty_stream():
 async def test_close_tag_immediately():
     """Monologue is empty; close tag arrives on first chunk."""
     async def mock_chunks():
-        yield "<ctrl94></ctrl94>Immediate public."
+        yield "<thinking></thinking>Immediate public."
 
     parser = MonologueStreamParser()
     public_chunks = []
@@ -107,7 +107,7 @@ async def test_close_tag_immediately():
 async def test_public_text_after_close_in_same_chunk():
     """Public text immediately follows closing tag in same chunk."""
     async def mock_chunks():
-        yield "<ctrl94>thought text.</ctrl94>Public right away."
+        yield "<thinking>thought text.</thinking>Public right away."
 
     parser = MonologueStreamParser()
     public_chunks = []
@@ -131,7 +131,7 @@ async def test_max_monologue_tokens_triggers_passthrough():
     prefixed with '> ...'.
     """
     async def mock_chunks():
-        yield "<ctrl94>"
+        yield "<thinking>"
         for i in range(MAX_MONOLOGUE_TOKENS):
             yield f"word{i} "
         yield "overflow "
@@ -151,7 +151,7 @@ async def test_max_monologue_tokens_triggers_passthrough():
 async def test_max_monologue_yields_prefixed_monologue():
     """The buffered monologue is emitted prefixed with '> ...' before passthrough."""
     async def mock_chunks():
-        yield "<ctrl94>"
+        yield "<thinking>"
         for i in range(MAX_MONOLOGUE_TOKENS + 1):
             yield "word "
 
@@ -173,7 +173,7 @@ async def test_max_monologue_yields_prefixed_monologue():
 async def test_unexpected_eos_in_monologue():
     """Stream ends while still in State 0 — auto-close and flush monologue as public."""
     async def mock_chunks():
-        yield "<ctrl94>I never finished my thought"
+        yield "<thinking>I never finished my thought"
 
     parser = MonologueStreamParser()
     public_chunks = []
@@ -205,7 +205,7 @@ async def test_unexpected_eos_empty_buffer():
 async def test_unexpected_eos_does_not_double_yield():
     """If stream ends after State 1 transition, no extra flush happens."""
     async def mock_chunks():
-        yield "<ctrl94>done.</ctrl94>Public."
+        yield "<thinking>done.</thinking>Public."
 
     parser = MonologueStreamParser()
     public_chunks = []
@@ -224,7 +224,7 @@ async def test_unexpected_eos_does_not_double_yield():
 async def test_malformed_ctrl_tag_triggers_passthrough():
     """A malformed <ctrl9 tag (no closing tag) triggers passthrough."""
     async def mock_chunks():
-        yield "<ctrl94>partial "
+        yield "<thinking>partial "
         yield "<ctrl9 incoherent text"
 
     parser = MonologueStreamParser()
@@ -239,9 +239,9 @@ async def test_malformed_ctrl_tag_triggers_passthrough():
 
 @pytest.mark.asyncio
 async def test_normal_close_tag_is_not_malformed():
-    """A proper </ctrl94> close tag does NOT trigger passthrough."""
+    """A proper </thinking> close tag does NOT trigger passthrough."""
     async def mock_chunks():
-        yield "<ctrl94>thought</ctrl94>public text"
+        yield "<thinking>thought</thinking>public text"
 
     parser = MonologueStreamParser()
     public_chunks = []
@@ -256,10 +256,10 @@ async def test_normal_close_tag_is_not_malformed():
 async def test_passthrough_mode_ignores_future_tags():
     """Once in passthrough mode, subsequent tags are passed through as-is."""
     async def mock_chunks():
-        yield "<ctrl94>"
+        yield "<thinking>"
         for i in range(MAX_MONOLOGUE_TOKENS + 1):
             yield "word "
-        yield "<ctrl94>fake monologue</ctrl94>should appear"
+        yield "<thinking>fake monologue</thinking>should appear"
 
     parser = MonologueStreamParser()
     public_chunks = []
@@ -267,7 +267,7 @@ async def test_passthrough_mode_ignores_future_tags():
         public_chunks.append(chunk)
 
     combined = "".join(public_chunks)
-    assert "<ctrl94>fake monologue</ctrl94>" in combined
+    assert "<thinking>fake monologue</thinking>" in combined
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +278,7 @@ async def test_passthrough_mode_ignores_future_tags():
 async def test_get_final_buffers_returns_tuple():
     """get_final_buffers returns a (str, str) tuple."""
     async def mock_chunks():
-        yield "<ctrl94>mono</ctrl94>pub"
+        yield "<thinking>mono</thinking>pub"
 
     parser = MonologueStreamParser()
     async for chunk in parser.process_token_stream(mock_chunks()):

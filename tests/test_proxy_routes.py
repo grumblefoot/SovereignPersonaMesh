@@ -36,7 +36,7 @@ class TestStreamParserFailSafe:
     @pytest.mark.asyncio
     async def test_normal_monologue_stripping(self):
         async def mock_llm_stream():
-            yield "<ctrl94>I must analyze the room carefully.</ctrl94> "
+            yield "<thinking>I must analyze the room carefully.</thinking> "
             yield "I see a wooden chest in the corner."
 
         parser = MonologueStreamParser()
@@ -52,7 +52,7 @@ class TestStreamParserFailSafe:
     @pytest.mark.asyncio
     async def test_unexpected_eos_failsafe(self):
         async def mock_incomplete_stream():
-            yield "<ctrl94>I am thinking but stream cuts off"
+            yield "<thinking>I am thinking but stream cuts off"
 
         parser = MonologueStreamParser()
         public_tokens = []
@@ -66,7 +66,7 @@ class TestStreamParserFailSafe:
     @pytest.mark.asyncio
     async def test_max_token_exceeded_failsafe(self):
         async def mock_long_monologue_stream():
-            yield "<ctrl94>"
+            yield "<thinking>"
             for _ in range(550):
                 yield "word "
 
@@ -134,7 +134,7 @@ class TestChatCompletionsEndpoint:
             }
 
             async def mock_stream(*args, **kwargs):
-                yield "<ctrl94>I observe the user.</ctrl94> "
+                yield "<thinking>I observe the user.</thinking> "
                 yield "I see the dimly lit cellar."
 
             mock_llm.side_effect = mock_stream
@@ -235,7 +235,7 @@ class TestChatCompletionsEndpoint:
             }
 
             async def mock_stream(*args, **kwargs):
-                yield "<ctrl94>Thinking...</ctrl94> "
+                yield "<thinking>Thinking...</thinking> "
                 yield "I see a candle."
 
             mock_llm.side_effect = mock_stream

@@ -14,7 +14,7 @@ from proxy.rag.prompt_builder import CognitivePromptBuilder
 class TestBatchChatAnalyzer:
     def test_parse_message_payload_clean(self):
         analyzer = BatchChatAnalyzer()
-        raw = '<ctrl94>I should speak softly to Rowan.</ctrl94> "Hello Rowan," Luna whispered.'
+        raw = '<thinking>I should speak softly to Rowan.</thinking> "Hello Rowan," Luna whispered.'
         result = analyzer.parse_message_payload(raw)
 
         assert result["is_clean"] is True
@@ -24,7 +24,7 @@ class TestBatchChatAnalyzer:
 
     def test_parse_message_payload_pre_thought_bleed(self):
         analyzer = BatchChatAnalyzer()
-        raw = 'Garbage text before tag <ctrl94>Planning turn...</ctrl94> "Hello."'
+        raw = 'Garbage text before tag <thinking>Planning turn...</thinking> "Hello."'
         result = analyzer.parse_message_payload(raw)
 
         assert result["is_clean"] is False
@@ -32,7 +32,7 @@ class TestBatchChatAnalyzer:
 
     def test_parse_message_payload_missing_closing_tag(self):
         analyzer = BatchChatAnalyzer()
-        raw = '<ctrl94>Thinking about secret plans without closing tag'
+        raw = '<thinking>Thinking about secret plans without closing tag'
         result = analyzer.parse_message_payload(raw)
 
         assert result["is_clean"] is False
@@ -40,7 +40,7 @@ class TestBatchChatAnalyzer:
 
     def test_parse_message_payload_omniscient_bleed(self):
         analyzer = BatchChatAnalyzer(hidden_variables=["secret_key_123"])
-        raw = '<ctrl94>I know the key.</ctrl94> "The secret_key_123 is hidden in the cellar."'
+        raw = '<thinking>I know the key.</thinking> "The secret_key_123 is hidden in the cellar."'
         result = analyzer.parse_message_payload(raw)
 
         assert result["is_clean"] is False
@@ -52,8 +52,8 @@ class TestBatchChatAnalyzer:
             output_path = os.path.join(tmpdir, "output.jsonl")
 
             with open(input_path, "w", encoding="utf-8") as f:
-                f.write(json.dumps({"name": "User", "mes": "<ctrl94>Plan A.</ctrl94> \"Public response.\""}) + "\n")
-                f.write(json.dumps({"name": "User", "mes": "Bad text <ctrl94>Unclosed"}) + "\n")
+                f.write(json.dumps({"name": "User", "mes": "<thinking>Plan A.</thinking> \"Public response.\""}) + "\n")
+                f.write(json.dumps({"name": "User", "mes": "Bad text <thinking>Unclosed"}) + "\n")
 
             analyzer = BatchChatAnalyzer()
             count = analyzer.export_cot_dataset(input_path, output_path)
@@ -105,4 +105,4 @@ class TestHierarchicalPromptAssembly:
         assert "[System Note: Write descriptively.]" in prompt
         assert "[NARRATIVE STYLE HEURISTICS]" in prompt
         assert card.style_instruction in prompt
-        assert "System Directive: You must begin your response immediately with <ctrl94>." in prompt
+        assert "System Directive: You must begin your response immediately with <thinking>." in prompt
