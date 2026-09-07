@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 import re
 from config.hardware_tiers import HardwareConfig, HARDWARE_TIERS, HardwareTierEnum
 from proxy.rag.gm_actions import default_gm_registry
+from core.resource_manager import strings
 
 OPEN_THINK_TAG = "<think>"
 CLOSE_THINK_TAG = "</think>"
@@ -40,28 +41,24 @@ class CognitivePromptBuilder:
             mem_lines = [f"- {m['sensory_input']}" for m in retrieved_memories]
             memory_str = "\n".join(mem_lines)
         else:
-            memory_str = "No specific relevant past memories recalled."
+            memory_str = strings.get("rag.no_memories_fallback")
 
         env_block = f"{spatial_context}\nSensory Feed: {sensory_feed}"
         if flavor_text:
-            env_block += f"\nEnvironmental Atmosphere: {flavor_text}"
+            env_block += strings.get("rag.environmental_atmosphere", flavor_text=flavor_text)
 
         style_block = ""
         if style_card and hasattr(style_card, "style_instruction"):
-            style_block = f"\n\n[NARRATIVE STYLE HEURISTICS]\n{style_card.style_instruction}"
+            style_block = strings.get("rag.style_heuristics", style_instruction=style_card.style_instruction)
 
-        formatted_prompt = f"""<system>
-{system_prompt}{style_block}
+        formatted_prompt = strings.get(
+            "rag.csa_prompt_system_block",
+            system_prompt=system_prompt,
+            style_block=style_block,
+            memory_str=memory_str,
+            env_block=env_block
+        )
 
-[RECALLED EPISODIC MEMORIES]
-{memory_str}
-
-[CURRENT SPATIAL & SENSORY ENVIRONMENT]
-{env_block}
-</system>
-
-[RECENT CONVERSATIONAL HISTORY]
-"""
         for msg in chat_history[-15:]:
             role = msg.get("role", "user")
             content = msg.get("content", "")
@@ -71,23 +68,13 @@ class CognitivePromptBuilder:
         gm_instructions = "\n".join([a.prompt_fragment for a in gm_actions])
 
         if self.config.inner_monologue_enabled:
-            formatted_prompt += f"""
-
-System Directive: You must begin your response immediately with <think>. Place all internal thoughts and planning strictly inside these tags. You must close with </think> before writing your public dialogue. Your public dialogue must not exceed {frontend_max_tokens} words.
-CRITICAL RULE: As the underlying AI, you manage the backend world state for ALL characters (including the user). If ANY character (including the user) moves to a new location in the narrative, you MUST use the MOVE action. If a location is described that does not exist in the spatial context, you MUST use the CREATE_ROOM action. You must keep the backend world state in sync with the narrative.
-When performing a Game Master action, you MUST output exactly: [GM_ACTION: {{"type": "...", ...}}] on its own line INSIDE your <think> block. Do not wrap in markdown.
-Example of a valid thought block with GM action:
-<think>
-[SCENE START] Vardus moves to the cellar.
-[GM_ACTION: {{"type": "CREATE_ROOM", "room_id": "cellar", "name": "The Cellar", "desc": "A cold, damp basement"}}]
-[GM_ACTION: {{"type": "MOVE", "entity": "Vardus", "room_id": "cellar"}}]
-Now I will reply.
-</think>
-Available GM Actions:
-{gm_instructions}
-"""
+            formatted_prompt += strings.get(
+                "rag.monologue_directive",
+                frontend_max_tokens=frontend_max_tokens,
+                gm_instructions=gm_instructions
+            )
         else:
-            formatted_prompt += "\n\nCharacter Output:"
+            formatted_prompt += strings.get("rag.no_monologue_directive")
 
         return formatted_prompt
 
@@ -111,50 +98,38 @@ Available GM Actions:
             mem_lines = [f"- {m['sensory_input']}" for m in retrieved_memories]
             memory_str = "\n".join(mem_lines)
         else:
-            memory_str = "No specific relevant past memories recalled."
+            memory_str = strings.get("rag.no_memories_fallback")
 
         env_block = f"{spatial_context}\nSensory Feed: {sensory_feed}"
         if flavor_text:
-            env_block += f"\nEnvironmental Atmosphere: {flavor_text}"
+            env_block += strings.get("rag.environmental_atmosphere", flavor_text=flavor_text)
 
         style_block = ""
         if style_card and hasattr(style_card, "style_instruction"):
-            style_block = f"\n\n[NARRATIVE STYLE HEURISTICS]\n{style_card.style_instruction}"
+            style_block = strings.get("rag.style_heuristics", style_instruction=style_card.style_instruction)
 
         gm_actions = default_gm_registry.get_all_active()
         gm_instructions = "\n".join([a.prompt_fragment for a in gm_actions])
 
+        system_content = strings.get(
+            "rag.csa_messages_system_block",
+            system_prompt=system_prompt,
+            style_block=style_block,
+            memory_str=memory_str,
+            env_block=env_block
+        )
+
         if self.config.inner_monologue_enabled:
-            system_content = f"""{system_prompt}{style_block}
-
-[RECALLED EPISODIC MEMORIES]
-{memory_str}
-
-[CURRENT SPATIAL & SENSORY ENVIRONMENT]
-{env_block}
-
-System Directive: You MUST begin your response immediately with <think>. Place all internal thoughts and planning strictly inside these tags. You MUST close with </think> before writing your public dialogue. Your public dialogue must not exceed {frontend_max_tokens} words.
-CRITICAL RULE: As the underlying AI, you manage the backend world state for ALL characters (including the user). If ANY character (including the user) moves to a new location in the narrative, you MUST use the MOVE action. If a location is described that does not exist in the spatial context, you MUST use the CREATE_ROOM action. You must keep the backend world state in sync with the narrative.
-When performing a Game Master action, you MUST output exactly: [GM_ACTION: {{"type": "...", ...}}] on its own line INSIDE your <think> block. Do not wrap in markdown.
-Example of a valid thought block with GM action:
-<think>
-[SCENE START] Vardus moves to the cellar.
-[GM_ACTION: {{"type": "CREATE_ROOM", "room_id": "cellar", "name": "The Cellar", "desc": "A cold, damp basement"}}]
-[GM_ACTION: {{"type": "MOVE", "entity": "Vardus", "room_id": "cellar"}}]
-Now I will reply.
-</think>
-Available GM Actions:
-{gm_instructions}"""
+            system_content += strings.get(
+                "rag.monologue_directive_strict",
+                frontend_max_tokens=frontend_max_tokens,
+                gm_instructions=gm_instructions
+            )
         else:
-            system_content = f"""{system_prompt}{style_block}
-
-[RECALLED EPISODIC MEMORIES]
-{memory_str}
-
-[CURRENT SPATIAL & SENSORY ENVIRONMENT]
-{env_block}
-
-System Directive: Respond strictly in-character. Do not output system meta-instructions or prompt text. Your public output must not exceed {frontend_max_tokens} words."""
+            system_content += strings.get(
+                "rag.no_monologue_directive_strict",
+                frontend_max_tokens=frontend_max_tokens
+            )
 
         messages = [{"role": "system", "content": system_content}]
         for msg in chat_history[-15:]:
@@ -163,7 +138,7 @@ System Directive: Respond strictly in-character. Do not output system meta-instr
             if r == "assistant" and self.config.inner_monologue_enabled:
                 c = re.sub(r'Internal Monologue/Planning:\s*\n*', '', c, flags=re.IGNORECASE)
                 if OPEN_THINK_TAG not in c:
-                    c = f"{OPEN_THINK_TAG} *Processing context...* {CLOSE_THINK_TAG}\n{c}"
+                    c = strings.get("rag.dummy_think_block", open_tag=OPEN_THINK_TAG, close_tag=CLOSE_THINK_TAG, content=c)
             if r in ("user", "assistant"):
                 messages.append({"role": r, "content": c})
 

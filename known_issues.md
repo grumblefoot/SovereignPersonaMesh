@@ -138,3 +138,26 @@ The SPM project needed higher test coverage to prevent regressions and safely al
 1. **Targeted Coverage Expansion:** Added comprehensive unit tests targeting missing branches in `evennia_world/app.py`, `proxy/api/routes.py`, `proxy/core/stream_parser.py`, `proxy/core/telemetry.py`, and `proxy/backend_client/lemonade_client.py`.
 2. **Mocking External Dependencies:** Leveraged `AsyncMock` and FastAPI `TestClient` to test edge cases, error fallbacks, and 404/500 HTTP failures in the backend clients.
 3. **90% Coverage Target Reached:** 313 unit/integration tests now execute and pass across the repo. Test coverage successfully increased to exactly 90% (2283 statements).
+
+---
+
+### Issue: Sleep Cycle Consolidation Integration Test Gap
+**Date:** 2026-09-07
+**Status:** 🟡 BACKLOG
+**Description:**
+Despite achieving 90% test coverage and having unit tests for `scripts/sleep_cycle.py`, a silent regression occurred in production. The `MemoryConsolidationWorker` incorrectly appended an extra `/v1/` to the LLM backend URL, causing a 404 HTTP error. Because the exception handler defaulted to a hardcoded fallback string, generic fallback memories were persisted as `is_core_memory = TRUE` in the PostgreSQL database.
+**Resolution / Next Steps:**
+1. **Fix Deployed:** The URL concatenation logic was patched (V0.4.1).
+2. **Action Item:** Design a robust End-to-End integration test for the sleep cycle that runs against a live or perfectly mocked Lemonade Server endpoint to catch routing layer errors, rather than blindly mocking the `httpx.AsyncClient` which masked this 404 URL pathing bug.
+
+---
+
+### [DESIGN-003] Global Strings Refactor (Hardcoded String Elimination)
+**Date:** 2026-09-07
+**Status:** 🟡 BACKLOG (Scoping)
+**Description:**
+The SPM codebase currently relies on a massive amount of hardcoded strings scattered throughout the proxy routing, prompts, and world engine (e.g., `proxy/api/routes.py`, `proxy/rag/prompt_builder.py`, `evennia_world/app.py`, `scripts/sleep_cycle.py`). This creates a brittle architecture where changing a prompt rule, logging format, or error message requires digging through core logic, increasing the risk of parser bugs or regressions.
+**Proposed Architecture (Resource Manager):**
+1. **Centralized Assets:** Move all user-facing text, LLM prompts, fallback messages, and API error strings into a centralized `res/strings/` JSON/YAML resource directory.
+2. **String Manager:** Implement a `ResourceManager` to load these at runtime and expose them via dot-notation (e.g., `strings.prompts.sleep_cycle_template`, `strings.errors.unauthorized`).
+3. **Rollout:** Since the repository has hit 90% test coverage, it is now mathematically safe to execute this large-scale refactor with a safety net protecting the business logic.

@@ -19,6 +19,7 @@ from datetime import datetime
 
 from config.hardware_tiers import get_hardware_config, HardwareTierEnum
 from scripts.onnx_embedder import CPUEmbeddingEngine
+from core.resource_manager import strings
 
 logger = logging.getLogger(__name__)
 
@@ -122,12 +123,7 @@ class BulkImportWorker:
         """Register a new import job and return the import_id."""
         async with self.db_pool.acquire() as conn:
             result = await conn.fetchrow(
-                """
-                INSERT INTO spm_chat_imports
-                    (session_id, character_id, status, total_messages, processed_messages)
-                VALUES ($1, $2, 'pending', $3, 0)
-                RETURNING import_id;
-                """,
+                strings.get("sql.register_import"),
                 session_id,
                 character_id,
                 total_messages,
@@ -150,14 +146,7 @@ class BulkImportWorker:
         """Update import job status in the database."""
         async with self.db_pool.acquire() as conn:
             await conn.execute(
-                """
-                UPDATE spm_chat_imports
-                SET status = $1,
-                    processed_messages = COALESCE($2, processed_messages),
-                    error_log = COALESCE($3, error_log),
-                    updated_at = NOW()
-                WHERE import_id = $4::uuid;
-                """,
+                strings.get("sql.update_import"),
                 status,
                 processed_messages,
                 error_log,
@@ -208,7 +197,7 @@ class BulkImportWorker:
             # Step 2: Ensure the character memory table exists
             async with self.db_pool.acquire() as conn:
                 await conn.execute(
-                    "SELECT create_csa_memory_table($1);", character_id.lower()
+                    strings.get("sql.create_csa_memory_table"), character_id.lower()
                 )
 
             # Step 3: Process in dynamic batches
@@ -234,17 +223,11 @@ class BulkImportWorker:
                     # Insert into character memory table
                     async with self.db_pool.acquire() as conn:
                         await conn.execute(
-                            "SELECT create_csa_memory_table($1);", character_id.lower()
+                            strings.get("sql.create_csa_memory_table"), character_id.lower()
                         )
                         for i, msg in enumerate(batch):
                             await conn.execute(
-                                f"""
-                                INSERT INTO csa_memory_{character_id.lower()}
-                                    (session_id, sensory_input, episodic_embedding,
-                                     inner_monologue, importance_score, is_core_memory,
-                                     is_subjective, access_count)
-                                VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
-                                """,
+                                strings.get("sql.insert_csa_memory", table_suffix=character_id.lower()),
                                 session_id,
                                 msg.get("content", ""),
                                 "[" + ",".join(map(str, embeddings[i])) + "]",
@@ -334,13 +317,7 @@ class BulkImportWorker:
         """Query the current status of an import job for a session."""
         async with self.db_pool.acquire() as conn:
             row = await conn.fetchrow(
-                """
-                SELECT import_id, session_id, character_id, status,
-                       total_messages, processed_messages, error_log,
-                       created_at, updated_at
-                FROM spm_chat_imports
-                WHERE session_id = $1;
-                """,
+                strings.get("sql.check_import_status"),
                 session_id,
             )
             if row:
@@ -361,13 +338,7 @@ class BulkImportWorker:
         """Return all import jobs, ordered by created_at descending."""
         async with self.db_pool.acquire() as conn:
             rows = await conn.fetch(
-                """
-                SELECT import_id, session_id, character_id, status,
-                       total_messages, processed_messages, error_log,
-                       created_at, updated_at
-                FROM spm_chat_imports
-                ORDER BY created_at DESC;
-                """
+                strings.get("sql.get_all_imports")
             )
             result = []
             for r in rows:
