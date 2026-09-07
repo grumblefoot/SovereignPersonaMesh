@@ -390,6 +390,7 @@ SYSTEM DIRECTIVE: You are the GAME MASTER. You MUST write your internal thoughts
 - If the user violates a Trigger/Game Over rule, note the [RULE VIOLATION] in your scratchpad and issue a [GM WARNING: ...]
 - If ANY character (including the user) moves to a new location, you MUST output [GM_ACTION: {{"type": "MOVE", "entity": "...", "room_id": "..."}}] inside your <think> block.
 - If a described location doesn't exist, output [GM_ACTION: {{"type": "CREATE_ROOM", "room_id": "...", "name": "...", "desc": "..."}}] inside your <think> block.
+- Evaluate if your planned response puppets the user. You MUST NOT describe the user's actions, feelings, or dialogue.
 
 CRITICAL FORMATTING RULE:
 After completing your GM scratchpad and GM actions, YOU MUST CLOSE THE TAG AND SEPARATE YOUR DIALOGUE. Output exactly:
@@ -399,7 +400,8 @@ After completing your GM scratchpad and GM actions, YOU MUST CLOSE THE TAG AND S
 
 After the horizontal rule, switch to the CHARACTER'S PERSPECTIVE.
 - For Lore Violations: Forcefully reject the hallucination in your public dialogue.
-- For Rule Violations: React appropriately to enforce the rule. Do NOT write the GM Warning in your public dialogue."""
+- For Rule Violations: React appropriately to enforce the rule. Do NOT write the GM Warning in your public dialogue.
+- Anti-Puppeting: NEVER act, speak, or think for the user's character. Only describe your own character's actions and the environment."""
         if csa_messages and csa_messages[-1]["role"] == "user":
             csa_messages[-1]["content"] += directive
         else:
