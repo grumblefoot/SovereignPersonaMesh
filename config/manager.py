@@ -24,7 +24,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "SPM_PROXY_PORT": int(os.getenv("SPM_PROXY_PORT", "5050")),
     "SPM_HARDWARE_TIER": os.getenv("SPM_HARDWARE_TIER", "SOVEREIGN"),
     "EVENNIA_LIAISON_URL": os.getenv("EVENNIA_LIAISON_URL", "http://localhost:4005"),
-    "backend_max_tokens": int(os.getenv("BACKEND_MAX_TOKENS", "2048")),
+    "backend_max_tokens": int(os.getenv("BACKEND_MAX_TOKENS", "128000")),
 }
 
 

@@ -5,9 +5,13 @@ Uses HybridWorldBuilder for dynamic world state and SpatialConstraintsMatrix for
 """
 
 import time
-from fastapi import FastAPI, HTTPException
+import json
+import asyncio
+import logging
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
+import asyncpg
 
 from .models import (
     ActionPayload, ActionResponse, SensoryConsequence, GatingLevel,
@@ -24,6 +28,16 @@ app = FastAPI(title="Evennia World State Engine Liaison API", version="0.2.0")
 lock_manager = SessionLockManager()
 world_builder = HybridWorldBuilder()
 action_tick_counter: int = 1420
+
+# Database config
+DB_CONFIG = {
+    "user": "spm_user",
+    "password": "spm_secure_password",
+    "database": "litellm_postgres",
+    "host": "localhost",
+    "port": 5432
+}
+_db_pool = None
 
 # Room-to-template mapping for the active world
 current_world: Dict[str, RoomMetadata] = {}
@@ -54,6 +68,41 @@ def _get_session_world(session_id: str, template_key: str = "dungeon_cellar") ->
     return session_worlds[session_id].get(template_key)
 
 
+# ── Database Persistence Helpers ────────────────────────────────────────
+
+async def _persist_room(session_id: str, template_key: str, room_id: str, room: RoomMetadata):
+    """Persist a single room state to PostgreSQL."""
+    if not _db_pool:
+        return
+    try:
+        async with _db_pool.acquire() as conn:
+            query = """
+                INSERT INTO world_state_sessions (session_id, template_key, room_id, room_data, action_tick)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (session_id, template_key, room_id)
+                DO UPDATE SET 
+                    room_data = EXCLUDED.room_data, 
+                    action_tick = EXCLUDED.action_tick, 
+                    updated_at = CURRENT_TIMESTAMP
+            """
+            await conn.execute(query, session_id, template_key, room_id, room.model_dump_json(), action_tick_counter)
+    except Exception as e:
+        logging.error(f"Failed to persist room {room_id}: {e}")
+
+async def _log_objective_action(session_id: str, action_tick: int, actor_id: str, location_id: str, action_type: str, raw_event: str):
+    """Log an objective action to PostgreSQL."""
+    if not _db_pool:
+        return
+    try:
+        async with _db_pool.acquire() as conn:
+            query = """
+                INSERT INTO objective_world_log (session_id, action_tick, actor_id, location_id, action_type, raw_event)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            """
+            await conn.execute(query, session_id, action_tick, actor_id, location_id, action_type, raw_event)
+    except Exception as e:
+        logging.error(f"Failed to log objective action: {e}")
+
 # ── Health check ────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -70,7 +119,7 @@ async def health_check():
 # ── Action evaluation ───────────────────────────────────────────────────
 
 @app.post("/api/v1/world/action", response_model=ActionResponse)
-async def submit_action(payload: ActionPayload):
+async def submit_action(payload: ActionPayload, background_tasks: BackgroundTasks):
     """
     Evaluates physical intentions (speak|whisper|move|manipulate).
     Returns action_tick and sensory feeds for recipient characters based on
@@ -90,6 +139,17 @@ async def submit_action(payload: ActionPayload):
 
     # Find which room the actor is in
     actor_room = _find_actor_room(payload.character_id, payload.session_id)
+    loc_id = actor_room if actor_room else "unknown"
+
+    background_tasks.add_task(
+        _log_objective_action,
+        payload.session_id,
+        action_tick_counter,
+        payload.character_id,
+        loc_id,
+        payload.action_type.value,
+        payload.raw_text
+    )
 
     consequences: list[SensoryConsequence] = []
     seen_ids: set[str] = set()
@@ -116,6 +176,8 @@ async def submit_action(payload: ActionPayload):
                 actor_id=payload.character_id,
                 recipient_id=char_id,
                 is_target=is_target,
+                session_id=payload.session_id,
+                action_tick=action_tick_counter,
             )
 
             if gating != GatingLevel.BLACKOUT:
@@ -229,6 +291,45 @@ async def handle_session_lock(payload: SessionLockPayload):
         raise HTTPException(status_code=400, detail="Invalid lock_action")
 
 
+# ── Dynamic Room Creation ─────────────────────────────────────────────
+
+class CreateRoomPayload(BaseModel):
+    """Payload to create a new room on the fly."""
+    room_id: str
+    room_name: str
+    description: str
+    template_key: str = "dungeon_cellar"
+    session_id: str = "default_session"
+
+@app.post("/api/v1/world/rooms")
+async def create_room(payload: CreateRoomPayload, background_tasks: BackgroundTasks):
+    """Create a new room dynamically and add it to the session world."""
+    _ensure_world(payload.template_key, payload.session_id)
+    world = _get_session_world(payload.session_id, payload.template_key)
+    
+    if payload.room_id in world:
+        raise HTTPException(status_code=409, detail=f"Room '{payload.room_id}' already exists.")
+        
+    new_room = RoomMetadata(
+        room_id=payload.room_id,
+        room_name=payload.room_name,
+        description=payload.description,
+        lighting="normal",
+        exits=[],
+        present_characters=[],
+        nearby_objects=[]
+    )
+    world[payload.room_id] = new_room
+    
+    background_tasks.add_task(_persist_room, payload.session_id, payload.template_key, payload.room_id, new_room)
+    
+    return {
+        "success": True,
+        "message": f"Room '{payload.room_name}' created successfully.",
+        "room_id": payload.room_id
+    }
+
+
 # ── Character management ────────────────────────────────────────────────
 
 class CharacterMovePayload(BaseModel):
@@ -247,7 +348,7 @@ class CharacterResponse(BaseModel):
 
 
 @app.post("/api/v1/world/characters", response_model=CharacterResponse)
-async def add_character_to_world(payload: CharacterMovePayload):
+async def add_character_to_world(payload: CharacterMovePayload, background_tasks: BackgroundTasks):
     """Add a character to a specific room in the world template."""
     # Ensure the template exists
     if payload.template_key not in world_builder.templates:
@@ -273,6 +374,9 @@ async def add_character_to_world(payload: CharacterMovePayload):
         if payload.character_id not in current_world[payload.room_id].present_characters:
             current_world[payload.room_id].present_characters.append(payload.character_id)
 
+    session_id = payload.session_id if hasattr(payload, 'session_id') else "default_session"
+    background_tasks.add_task(_persist_room, session_id, payload.template_key, payload.room_id, current_world[payload.room_id] if payload.room_id in current_world else room)
+
     return CharacterResponse(
         success=True,
         message=f"Character '{payload.character_id}' added to room '{payload.room_id}'",
@@ -282,12 +386,32 @@ async def add_character_to_world(payload: CharacterMovePayload):
 
 
 @app.delete("/api/v1/world/characters/{character_id}", response_model=CharacterResponse)
-async def remove_character_from_world(character_id: str, template_key: str = "dungeon_cellar"):
+async def remove_character_from_world(character_id: str, background_tasks: BackgroundTasks, template_key: str = "dungeon_cellar", session_id: str = "default_session"):
     """Remove a character from all rooms in a template."""
+    modified_rooms = set()
     for room_id in world_builder.templates.get(template_key, {}):
-        world_builder.remove_character_from_room(template_key, room_id, character_id)
+        if character_id in world_builder.templates[template_key][room_id].present_characters:
+            world_builder.remove_character_from_room(template_key, room_id, character_id)
+            modified_rooms.add((template_key, room_id))
 
-    _remove_character_from_all_rooms(character_id)
+    target_worlds = [current_world]
+    if session_id in session_worlds:
+        for tmpl_dict in session_worlds[session_id].values():
+            target_worlds.append(tmpl_dict)
+    for w in target_worlds:
+        for r_id, r in list(w.items()):
+            if character_id in r.present_characters:
+                r.present_characters.remove(character_id)
+                modified_rooms.add((template_key, r_id))
+                
+    for tmpl_key, r_id in modified_rooms:
+        room_obj = None
+        if session_id in session_worlds and tmpl_key in session_worlds[session_id] and r_id in session_worlds[session_id][tmpl_key]:
+            room_obj = session_worlds[session_id][tmpl_key][r_id]
+        elif r_id in current_world:
+            room_obj = current_world[r_id]
+        if room_obj:
+            background_tasks.add_task(_persist_room, session_id, tmpl_key, r_id, room_obj)
 
     return CharacterResponse(
         success=True,
@@ -314,16 +438,52 @@ async def list_characters(template_key: str = "dungeon_cellar"):
 
 
 @app.post("/api/v1/world/move", response_model=CharacterResponse)
-async def move_character(payload: CharacterMovePayload):
+async def move_character(payload: CharacterMovePayload, background_tasks: BackgroundTasks):
     """Move an existing character from their current room to a new one."""
+    session_id = payload.session_id if hasattr(payload, 'session_id') else "default_session"
+    
+    # Track which rooms were modified to persist them
+    modified_rooms = set()
     # Remove from all rooms first, then add to destination
     for tmpl_key in world_builder.templates:
         for room_id in list(world_builder.templates[tmpl_key].keys()):
-            world_builder.remove_character_from_room(tmpl_key, room_id, payload.character_id)
+            if payload.character_id in world_builder.templates[tmpl_key][room_id].present_characters:
+                world_builder.remove_character_from_room(tmpl_key, room_id, payload.character_id)
+                modified_rooms.add((tmpl_key, room_id))
+            
+    # Remove from session worlds
+    target_worlds = [current_world]
+    if session_id in session_worlds:
+        for tmpl_dict in session_worlds[session_id].values():
+            target_worlds.append(tmpl_dict)
+    for w in target_worlds:
+        for r_id, r in list(w.items()):
+            if payload.character_id in r.present_characters:
+                r.present_characters.remove(payload.character_id)
+                modified_rooms.add((payload.template_key, r_id))
 
     world_builder.add_character_to_room(
         payload.template_key, payload.room_id, payload.character_id,
     )
+    
+    if current_world and payload.room_id in current_world:
+        if payload.character_id not in current_world[payload.room_id].present_characters:
+            current_world[payload.room_id].present_characters.append(payload.character_id)
+    elif session_id in session_worlds and payload.template_key in session_worlds[session_id]:
+        room_obj = session_worlds[session_id][payload.template_key].get(payload.room_id)
+        if room_obj and payload.character_id not in room_obj.present_characters:
+            room_obj.present_characters.append(payload.character_id)
+            
+    modified_rooms.add((payload.template_key, payload.room_id))
+    
+    for tmpl_key, r_id in modified_rooms:
+        room_obj = None
+        if session_id in session_worlds and tmpl_key in session_worlds[session_id] and r_id in session_worlds[session_id][tmpl_key]:
+            room_obj = session_worlds[session_id][tmpl_key][r_id]
+        elif r_id in current_world:
+            room_obj = current_world[r_id]
+        if room_obj:
+            background_tasks.add_task(_persist_room, session_id, tmpl_key, r_id, room_obj)
 
     return CharacterResponse(
         success=True,
@@ -355,6 +515,19 @@ async def configure_world(payload: WorldConfigPayload):
         for rm in world_inst.values():
             rm.flavor_text = payload.flavor_text
     session_worlds[session_id_for_config] = {payload.template_key: world_inst}
+    
+    # Try to load existing rooms for this session from database
+    if _db_pool:
+        try:
+            async with _db_pool.acquire() as conn:
+                rows = await conn.fetch("SELECT room_id, room_data FROM world_state_sessions WHERE session_id = $1 AND template_key = $2", session_id_for_config, payload.template_key)
+                for row in rows:
+                    room_id = row['room_id']
+                    room_data = json.loads(row['room_data'])
+                    session_worlds[session_id_for_config][payload.template_key][room_id] = RoomMetadata(**room_data)
+        except Exception as e:
+            logging.error(f"Failed to load existing world state: {e}")
+
     global current_world
     current_world = session_worlds[session_id_for_config][payload.template_key]
     return CharacterResponse(
@@ -367,6 +540,15 @@ async def configure_world(payload: WorldConfigPayload):
 async def list_templates():
     """List all available world templates."""
     return {"templates": world_builder.list_templates()}
+
+
+@app.delete("/api/v1/world/admin/reset")
+async def reset_world_state():
+    """Clear in-memory cache of world state for factory reset."""
+    session_worlds.clear()
+    global current_world
+    current_world = {}
+    return {"status": "success", "message": "In-memory world state cache cleared"}
 
 
 # ── Lock info ───────────────────────────────────────────────────────────
@@ -470,9 +652,29 @@ def _remove_character_from_all_rooms(character_id: str, session_id: str = "defau
 
 @app.on_event("startup")
 async def startup_event():
-    """Load the default world template on startup."""
+    """Load the default world template on startup and init db pool."""
     app.state.start_time = time.time()
+    
+    global _db_pool
+    try:
+        _db_pool = await asyncpg.create_pool(
+            **DB_CONFIG,
+            min_size=5,
+            max_size=20,
+            command_timeout=30,
+        )
+        logging.info("Evennia World State Engine connected to PostgreSQL")
+    except Exception as e:
+        logging.error(f"Failed to create asyncpg pool: {e}")
+        
     _ensure_world("dungeon_cellar")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global _db_pool
+    if _db_pool:
+        await _db_pool.close()
+        logging.info("Closed asyncpg pool")
 
 
 if __name__ == "__main__":

@@ -119,3 +119,20 @@ SELECT create_csa_lore_rules_table('domino');
 SELECT create_csa_lore_rules_table('luna');
 SELECT create_csa_lore_rules_table('seamus');
 SELECT create_csa_lore_rules_table('arvenia');
+
+-- ======================================================================
+-- V0.4 World State Sessions
+-- ======================================================================
+CREATE TABLE IF NOT EXISTS world_state_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id VARCHAR(255) NOT NULL,
+    template_key VARCHAR(255) NOT NULL,
+    room_id VARCHAR(255) NOT NULL,
+    room_data JSONB NOT NULL,
+    action_tick BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(session_id, template_key, room_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_world_state_session ON world_state_sessions(session_id, template_key);
