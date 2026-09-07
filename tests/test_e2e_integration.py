@@ -9,7 +9,7 @@ Seven test groups:
   1. Service readiness probes
   2. Character registration in Evennia dungeon_cellar
   3. OpenAI /v1/chat/completions request simulating SillyTavern payload
-  4. Real-time monologue stripping (<ctrl94>) verification in SSE stream
+  4. Real-time monologue stripping (<thinking>) verification in SSE stream
   5. PostgreSQL verification: csa_memory_seraphina turn persistence
   6. RAG memory retrieval injection on follow-up turn
   7. Zero-inference blackout bypass verification when character is distant
@@ -249,7 +249,7 @@ class TestSillyTavernChatCompletion:
             }
 
             async def mock_stream(*args, **kwargs):
-                yield "<ctrl94>Let me examine that key...</ctrl94> "
+                yield "<thinking>Let me examine that key...</thinking> "
                 yield "It has runes on it. It might open the old chest."
 
             mock_llm.side_effect = mock_stream
@@ -345,7 +345,7 @@ class TestMonologueStripping:
             }
 
             async def mock_stream(*args, **kwargs):
-                yield "<ctrl94>I should be cautious.</ctrl94> "
+                yield "<thinking>I should be cautious.</thinking> "
                 yield "I see a torch on the wall."
 
             mock_llm.side_effect = mock_stream
@@ -377,9 +377,9 @@ class TestMonologueStripping:
     @pytest.mark.asyncio
     async def test_parser_two_state_machine_directly(self):
         async def mock_stream():
-            yield "<ctrl94>First thought.</ctrl94> "
+            yield "<thinking>First thought.</thinking> "
             yield "First public response. "
-            yield "<ctrl94>Second thought.</ctrl94> "
+            yield "<thinking>Second thought.</thinking> "
             yield "Second public response."
 
         parser = MonologueStreamParser()

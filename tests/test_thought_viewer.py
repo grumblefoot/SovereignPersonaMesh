@@ -39,11 +39,11 @@ class TestTelemetryCollectorTraces:
         q = asyncio.Queue()
         telemetry.subscribe_thoughts(q)
 
-        telemetry.push_thought_event("session_xyz", {"chunk": "<ctrl94>Planning turn..."})
+        telemetry.push_thought_event("session_xyz", {"chunk": "<thinking>Planning turn..."})
 
         event = q.get_nowait()
         assert event["session_id"] == "session_xyz"
-        assert event["chunk"] == "<ctrl94>Planning turn..."
+        assert event["chunk"] == "<thinking>Planning turn..."
 
         telemetry.unsubscribe_thoughts(q)
 

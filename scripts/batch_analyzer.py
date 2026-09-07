@@ -2,7 +2,7 @@
 Batch .jsonl Chat Record Parser & Hermes Anomaly Auditor (scripts/batch_analyzer.py).
 
 Streams SillyTavern .jsonl export files line-by-line to prevent memory bloat on large chat logs.
-Splits mes payloads into pre_thought_garbage, inner_monologue (<ctrl94>), and public_dialogue.
+Splits mes payloads into pre_thought_garbage, inner_monologue (<thinking>), and public_dialogue.
 Flags anomaly tags (MISSING_CLOSING_TAG, PRE_PLANNING_BLEED, OMNISCIENT_BLEED).
 Exports pristine Chain-of-Thought datasets via --export-cot CLI flag for fine-tuning.
 """
@@ -29,18 +29,20 @@ class BatchChatAnalyzer:
         inner_monologue = ""
         public_dialogue = text
 
-        has_open_tag = "<ctrl94>" in text
-        has_close_tag = "</ctrl94>" in text
+        has_open_tag = "<thinking>" in text
+        has_close_tag = "</thinking>" in text
 
         if has_open_tag:
-            parts = text.split("<ctrl94>", 1)
+            open_tag = "<thinking>"
+            close_tag = "</thinking>"
+            parts = text.split(open_tag, 1)
             pre_thought_garbage = parts[0].strip()
             if pre_thought_garbage:
                 anomalies.append("PRE_PLANNING_BLEED")
 
             after_open = parts[1]
-            if "</ctrl94>" in after_open:
-                mono_parts = after_open.split("</ctrl94>", 1)
+            if close_tag in after_open:
+                mono_parts = after_open.split(close_tag, 1)
                 inner_monologue = mono_parts[0].strip()
                 public_dialogue = mono_parts[1].strip()
             else:
