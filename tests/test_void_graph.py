@@ -90,6 +90,7 @@ class TestVoidGraphSpatialGating:
             raw_text="Can anyone hear me?",
             actor_id="rowan",
             recipient_id="luna",
+            action_tick=10,
         )
         assert gating == GatingLevel.BLACKOUT
         assert feed == ""

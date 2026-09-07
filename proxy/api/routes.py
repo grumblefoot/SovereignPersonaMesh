@@ -399,6 +399,8 @@ After completing your GM scratchpad and GM actions, YOU MUST CLOSE THE TAG AND S
 ---
 
 After the horizontal rule, switch to the CHARACTER'S PERSPECTIVE.
+DO NOT write any more plans, analysis, or 'I need to' notes outside of the <think> tags.
+The text after </think> must ONLY be narrative and dialogue.
 - For Lore Violations: Forcefully reject the hallucination in your public dialogue.
 - For Rule Violations: React appropriately to enforce the rule. Do NOT write the GM Warning in your public dialogue.
 - Anti-Puppeting: NEVER act, speak, or think for the user's character. Only describe your own character's actions and the environment."""

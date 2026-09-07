@@ -105,4 +105,4 @@ class TestHierarchicalPromptAssembly:
         assert "[System Note: Write descriptively.]" in prompt
         assert "[NARRATIVE STYLE HEURISTICS]" in prompt
         assert card.style_instruction in prompt
-        assert "System Directive: You must begin your response immediately with <thinking>." in prompt
+        assert "System Directive: You must begin your response immediately with <think>." in prompt

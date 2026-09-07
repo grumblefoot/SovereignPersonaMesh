@@ -39,7 +39,7 @@ class TestPromptSuffixInjection:
             spatial_context="Location: Cellar",
             frontend_max_tokens=150,
         )
-        assert "System Directive: You must begin your response immediately with <thinking>." in prompt
+        assert "System Directive: You must begin your response immediately with <think>." in prompt
         assert "Your public dialogue must not exceed 150 words." in prompt
 
 
