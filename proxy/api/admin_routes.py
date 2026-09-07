@@ -262,6 +262,8 @@ async def shutdown_system():
         subprocess.run(['pkill', '-TERM', '-f', r'python -m evennia_world.app'], check=False)
         # Send SIGTERM to proxy.main (kills master process)
         subprocess.run(['pkill', '-TERM', '-f', r'python -m proxy.main'], check=False)
+        # Also kill any orphaned Uvicorn multiprocessing workers
+        subprocess.run(['pkill', '-TERM', '-f', r'multiprocessing.spawn'], check=False)
 
     asyncio.create_task(_shutdown())
     
