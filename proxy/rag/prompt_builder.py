@@ -8,8 +8,8 @@ import re
 from config.hardware_tiers import HardwareConfig, HARDWARE_TIERS, HardwareTierEnum
 from proxy.rag.gm_actions import default_gm_registry
 
-OPEN_THINK_TAG = "<thinking>"
-CLOSE_THINK_TAG = "</thinking>"
+OPEN_THINK_TAG = "<think>"
+CLOSE_THINK_TAG = "</think>"
 
 
 class CognitivePromptBuilder:
@@ -73,16 +73,16 @@ class CognitivePromptBuilder:
         if self.config.inner_monologue_enabled:
             formatted_prompt += f"""
 
-System Directive: You must begin your response immediately with <thinking>. Place all internal thoughts and planning strictly inside these tags. You must close with </thinking> before writing your public dialogue. Your public dialogue must not exceed {frontend_max_tokens} words.
+System Directive: You must begin your response immediately with <think>. Place all internal thoughts and planning strictly inside these tags. You must close with </think> before writing your public dialogue. Your public dialogue must not exceed {frontend_max_tokens} words.
 CRITICAL RULE: As the underlying AI, you manage the backend world state for ALL characters (including the user). If ANY character (including the user) moves to a new location in the narrative, you MUST use the MOVE action. If a location is described that does not exist in the spatial context, you MUST use the CREATE_ROOM action. You must keep the backend world state in sync with the narrative.
-When performing a Game Master action, you MUST output exactly: [GM_ACTION: {{"type": "...", ...}}] on its own line INSIDE your <thinking> block. Do not wrap in markdown.
+When performing a Game Master action, you MUST output exactly: [GM_ACTION: {{"type": "...", ...}}] on its own line INSIDE your <think> block. Do not wrap in markdown.
 Example of a valid thought block with GM action:
-<thinking>
+<think>
 [SCENE START] Vardus moves to the cellar.
 [GM_ACTION: {{"type": "CREATE_ROOM", "room_id": "cellar", "name": "The Cellar", "desc": "A cold, damp basement"}}]
 [GM_ACTION: {{"type": "MOVE", "entity": "Vardus", "room_id": "cellar"}}]
 Now I will reply.
-</thinking>
+</think>
 Available GM Actions:
 {gm_instructions}
 """
@@ -133,16 +133,16 @@ Available GM Actions:
 [CURRENT SPATIAL & SENSORY ENVIRONMENT]
 {env_block}
 
-System Directive: You MUST begin your response immediately with <thinking>. Place all internal thoughts and planning strictly inside these tags. You MUST close with </thinking> before writing your public dialogue. Your public dialogue must not exceed {frontend_max_tokens} words.
+System Directive: You MUST begin your response immediately with <think>. Place all internal thoughts and planning strictly inside these tags. You MUST close with </think> before writing your public dialogue. Your public dialogue must not exceed {frontend_max_tokens} words.
 CRITICAL RULE: As the underlying AI, you manage the backend world state for ALL characters (including the user). If ANY character (including the user) moves to a new location in the narrative, you MUST use the MOVE action. If a location is described that does not exist in the spatial context, you MUST use the CREATE_ROOM action. You must keep the backend world state in sync with the narrative.
-When performing a Game Master action, you MUST output exactly: [GM_ACTION: {{"type": "...", ...}}] on its own line INSIDE your <thinking> block. Do not wrap in markdown.
+When performing a Game Master action, you MUST output exactly: [GM_ACTION: {{"type": "...", ...}}] on its own line INSIDE your <think> block. Do not wrap in markdown.
 Example of a valid thought block with GM action:
-<thinking>
+<think>
 [SCENE START] Vardus moves to the cellar.
 [GM_ACTION: {{"type": "CREATE_ROOM", "room_id": "cellar", "name": "The Cellar", "desc": "A cold, damp basement"}}]
 [GM_ACTION: {{"type": "MOVE", "entity": "Vardus", "room_id": "cellar"}}]
 Now I will reply.
-</thinking>
+</think>
 Available GM Actions:
 {gm_instructions}"""
         else:
