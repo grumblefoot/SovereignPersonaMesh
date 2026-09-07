@@ -652,6 +652,47 @@ async def memory_stats(
         session_id=session_id,
     )
 
+def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str):
+    """Extracts GM actions from the parser and dispatches them asynchronously."""
+    actions = parser.extract_gm_actions()
+    
+    async def safe_execute(coro, action_type):
+        try:
+            await coro
+        except Exception as e:
+            logger.error(f"[GMAction] Task '{action_type}' failed for session {session_id}: {e}")
+
+    for action in actions:
+        action_type = action.get("type")
+        logger.info(f"[GMAction] Dispatching GM Action: {action}")
+        if action_type == "MOVE":
+            asyncio.create_task(
+                safe_execute(
+                    evennia_client.move_character(
+                        character_id=action.get("entity", target_char),
+                        room_id=action.get("room_id", ""),
+                        session_id=session_id,
+                        idempotency_key=str(uuid.uuid4())
+                    ),
+                    "MOVE"
+                )
+            )
+        elif action_type == "CREATE_ROOM":
+            asyncio.create_task(
+                safe_execute(
+                    evennia_client.create_room(
+                        room_id=action.get("room_id", ""),
+                        name=action.get("name", "New Room"),
+                        desc=action.get("desc", ""),
+                        session_id=session_id,
+                        idempotency_key=str(uuid.uuid4())
+                    ),
+                    "CREATE_ROOM"
+                )
+            )
+        else:
+            logger.warning(f"[GMAction] Unrecognized GM action type: {action_type}")
+
     return JSONResponse(content=result)
 
 
