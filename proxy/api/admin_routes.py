@@ -250,19 +250,19 @@ async def factory_reset():
 @router.post("/shutdown")
 async def shutdown_system():
     """Cleanly shut down the SPM proxy and Evennia game services."""
-    import os, signal, asyncio
+    import os, signal, asyncio, subprocess
     logger.warning("[AdminAPI] Received shutdown request. Shutting down services...")
-    
+
     # Run a background task to cleanly exit after responding
     async def _shutdown():
         await asyncio.sleep(1)
         # Stop Postgres Docker container
-        os.system('docker stop spm-postgres')
+        subprocess.run(['docker', 'stop', 'spm-postgres'], check=False)
         # Send SIGTERM to evennia_world.app
-        os.system('pkill -SIGTERM -f "python -m evennia_world.app"')
+        subprocess.run(['pkill', '-TERM', '-f', r'python -m evennia_world.app'], check=False)
         # Send SIGTERM to proxy.main (kills master process)
-        os.system('pkill -SIGTERM -f "python -m proxy.main"')
-        
+        subprocess.run(['pkill', '-TERM', '-f', r'python -m proxy.main'], check=False)
+
     asyncio.create_task(_shutdown())
     
     return JSONResponse(content={
