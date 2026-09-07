@@ -651,6 +651,7 @@ async def memory_stats(
         character_id=character_id,
         session_id=session_id,
     )
+    return JSONResponse(content=result)
 
 def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str):
     """Extracts GM actions from the parser and dispatches them asynchronously."""
@@ -692,8 +693,6 @@ def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_
             )
         else:
             logger.warning(f"[GMAction] Unrecognized GM action type: {action_type}")
-
-    return JSONResponse(content=result)
 
 
 @router.get("/v1/imports/status/{session_id}")

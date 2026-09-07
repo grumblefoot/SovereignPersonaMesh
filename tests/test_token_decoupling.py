@@ -17,7 +17,7 @@ class TestBackendMaxTokensConfig:
             mgr = SettingsManager(config_path=cfg_path)
             settings = mgr.get_settings()
             assert "backend_max_tokens" in settings
-            assert settings["backend_max_tokens"] == 2048
+            assert settings["backend_max_tokens"] == 128000
 
     def test_update_backend_max_tokens(self):
         with tempfile.TemporaryDirectory() as tmpdir:
