@@ -3,9 +3,13 @@ Cognitive Prompt Assembly & 32K Token Budget Partitioning Matrix.
 Formats custom prompts for Character Subagents (CSAs) strictly adhering to token budgets.
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import re
 from config.hardware_tiers import HardwareConfig, HARDWARE_TIERS, HardwareTierEnum
+from proxy.rag.gm_actions import default_gm_registry
+
+OPEN_THINK_TAG = "<thinking>"
+CLOSE_THINK_TAG = "</thinking>"
 
 
 class CognitivePromptBuilder:
@@ -26,7 +30,7 @@ class CognitivePromptBuilder:
         """
         Assembles structured prompt for Character Subagent turn execution.
         Follows conflict resolution hierarchy:
-          1. SPM Mechanics (<ctrl94> monologue system directive)
+          1. SPM Mechanics (`` thinking `` monologue system directive)
           2. Explicit Frontend (system_prompt & frontend_max_tokens)
           3. Implicit Heuristics (style_card directives)
         """
@@ -63,8 +67,17 @@ class CognitivePromptBuilder:
             content = msg.get("content", "")
             formatted_prompt += f"\n{role.capitalize()}: {content}"
 
+        gm_actions = default_gm_registry.get_all_active()
+        gm_instructions = "\n".join([a.prompt_fragment for a in gm_actions])
+
         if self.config.inner_monologue_enabled:
-            formatted_prompt += f"""\n\nSystem Directive: You must begin your response immediately with <ctrl94>. Place all internal thoughts and planning strictly inside these tags. You must close with </ctrl94> before writing your public dialogue. Your public dialogue must not exceed {frontend_max_tokens} words.\n<ctrl94>"""
+            formatted_prompt += f"""
+
+System Directive: You must begin your response immediately with {OPEN_THINK_TAG}. Place all internal thoughts and planning strictly inside these tags. You must close with {CLOSE_THINK_TAG} before writing your public dialogue. Your public dialogue must not exceed {frontend_max_tokens} words.
+When performing a Game Master action, output exactly: [GM_ACTION: {{"type": "...", ...}}] on its own line. Do not wrap in markdown.
+Available GM Actions:
+{gm_instructions}
+"""
         else:
             formatted_prompt += "\n\nCharacter Output:"
 
@@ -100,6 +113,9 @@ class CognitivePromptBuilder:
         if style_card and hasattr(style_card, "style_instruction"):
             style_block = f"\n\n[NARRATIVE STYLE HEURISTICS]\n{style_card.style_instruction}"
 
+        gm_actions = default_gm_registry.get_all_active()
+        gm_instructions = "\n".join([a.prompt_fragment for a in gm_actions])
+
         if self.config.inner_monologue_enabled:
             system_content = f"""{system_prompt}{style_block}
 
@@ -109,7 +125,10 @@ class CognitivePromptBuilder:
 [CURRENT SPATIAL & SENSORY ENVIRONMENT]
 {env_block}
 
-System Directive: You MUST begin your response immediately with <ctrl94>. Place all internal thoughts and planning strictly inside these tags. You MUST close with </ctrl94> before writing your public dialogue. Your public dialogue must not exceed {frontend_max_tokens} words."""
+System Directive: You MUST begin your response immediately with {OPEN_THINK_TAG}. Place all internal thoughts and planning strictly inside these tags. You MUST close with {CLOSE_THINK_TAG} before writing your public dialogue. Your public dialogue must not exceed {frontend_max_tokens} words.
+When performing a Game Master action, output exactly: [GM_ACTION: {{"type": "...", ...}}] on its own line. Do not wrap in markdown.
+Available GM Actions:
+{gm_instructions}"""
         else:
             system_content = f"""{system_prompt}{style_block}
 
@@ -127,8 +146,8 @@ System Directive: Respond strictly in-character. Do not output system meta-instr
             c = msg.get("content", "")
             if r == "assistant" and self.config.inner_monologue_enabled:
                 c = re.sub(r'Internal Monologue/Planning:\s*\n*', '', c, flags=re.IGNORECASE)
-                if "<ctrl94>" not in c:
-                    c = f"<ctrl94> *Processing context...* </ctrl94>\n{c}"
+                if OPEN_THINK_TAG not in c:
+                    c = f"{OPEN_THINK_TAG} *Processing context...* {CLOSE_THINK_TAG}\n{c}"
             if r in ("user", "assistant"):
                 messages.append({"role": r, "content": c})
 

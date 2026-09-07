@@ -8,6 +8,7 @@ import json
 import time
 import asyncio
 import logging
+import uuid
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
@@ -50,6 +51,32 @@ lemonade_client = LemonadeLLMClient()
 evennia_client = EvenniaWorldClient()
 embedder = CPUEmbeddingEngine()
 
+def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str):
+    """Extracts GM actions from the parser and dispatches them asynchronously."""
+    actions = parser.extract_gm_actions()
+    for action in actions:
+        action_type = action.get("type")
+        logger.info(f"[GMAction] Dispatching GM Action: {action}")
+        if action_type == "MOVE":
+            asyncio.create_task(
+                evennia_client.move_character(
+                    character_id=action.get("entity", target_char),
+                    room_id=action.get("room_id", ""),
+                    session_id=session_id,
+                    idempotency_key=str(uuid.uuid4())
+                )
+            )
+        elif action_type == "CREATE_ROOM":
+            asyncio.create_task(
+                evennia_client.create_room(
+                    room_id=action.get("room_id", ""),
+                    name=action.get("name", "New Room"),
+                    desc=action.get("desc", ""),
+                    session_id=session_id,
+                    idempotency_key=str(uuid.uuid4())
+                )
+            )
+
 
 class ChatCompletionMessage(BaseModel):
     role: str
@@ -61,7 +88,7 @@ class ChatCompletionRequest(BaseModel):
     model: str = "google/gemma-4-26B-A4B-it"
     messages: List[ChatCompletionMessage]
     temperature: Optional[float] = 0.7
-    max_tokens: Optional[int] = 4096
+    max_tokens: Optional[int] = 128000
     stream: Optional[bool] = True
     stop: Optional[List[str]] = None
 
@@ -336,10 +363,10 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         frontend_max_tokens=frontend_max_tokens,
     )
 
-    # Ensure </ctrl94> is NOT in LLM stop sequence list
+    # Ensure </thinking> is NOT in LLM stop sequence list
     raw_stop = request.stop or ["\nUser:", "\nHuman:", "\n<system>"]
     if isinstance(raw_stop, list):
-        stop = [s for s in raw_stop if s != "</ctrl94>"]
+        stop = [s for s in raw_stop if s != "</thinking>"]
     else:
         stop = raw_stop
         
@@ -397,6 +424,9 @@ After the horizontal rule, switch to the CHARACTER'S PERSPECTIVE.
         inner_monologue, public_resp = parser.get_final_buffers()
 
         logger.info(f"[BackendReturnSPMLog] Monologue: {inner_monologue} | Public: {public_resp}")
+
+        # Dispatch any GM actions found in the monologue
+        _dispatch_gm_actions(parser, session_id, target_char)
 
         if inner_monologue:
             telemetry.push_thought_event(session_id, {
@@ -476,6 +506,9 @@ After the horizontal rule, switch to the CHARACTER'S PERSPECTIVE.
 
         logger.info(f"[BackendReturnSPMLog] Monologue: {inner_monologue} | Public: {public_resp}")
         logger.info(f"[SPMReturnSillyLog] Sent streaming chunks to SillyTavern. Final public response: {public_resp}")
+
+        # Dispatch any GM actions found in the monologue
+        _dispatch_gm_actions(parser, session_id, target_char)
 
         # Push inner monologue to Thought Monitor SSE stream
         if inner_monologue:
