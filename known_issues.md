@@ -115,3 +115,12 @@
 1. **Initial Extraction (Background Task):** When a new chat or import begins, an asynchronous background task runs the character card and/or chat history through the LLM with an extraction prompt to generate candidate `invariants` and `game_over` rules.
 2. **Admin Dashboard Approval:** To prevent "poisoning the well" with hallucinated invariants, extracted rules are set to `pending` and presented in the SPM Admin UI for the user to approve, edit, or reject before they become active.
 3. **Periodic State of the World Reviews:** To allow characters and the narrative to grow (e.g., character arcs like Bilbo or Sun Wukong), Hermes or a background LLM task periodically reviews the recent chat history (e.g., every 15 turns). It proposes updates to the active invariants to reflect the evolving world state, ensuring the GM remains a dynamic referee.
+
+### Issue: LLM GM_Action Bleedthrough (Parser Vulnerability)
+**Date:** 2026-09-07
+**Status:** Parked (Pending Pivot Parser implementation)
+**Description:**
+The LLM frequently ignores closing tags (`</think>`) and transition markers (`[SCENE START]`, `---`) when finishing its scratchpad. Because our `MonologueStreamParser` rigidly waits for a closing tag to switch states, it remains in the monologue state until EOF. This triggers a fail-safe that dumps the entire buffer, causing raw `[GM_ACTION]` JSON tags to bleed into the frontend chat interface.
+
+**Proposed Solution (Pivot Parser):**
+Hermes audited the flow and proposed replacing the state-machine parser with a **Content-Based Pivot Parser**. The parser will scan for the *last* `[GM_ACTION: ...]` tag and use it as a pivot point. Everything before the last action is stripped (as internal logic), and everything after it is streamed as public narrative. 
