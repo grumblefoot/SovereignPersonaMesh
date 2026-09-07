@@ -6,19 +6,20 @@ Includes fail-safe passthrough (>8192 tokens / malformed tags / unexpected EOS a
 
 import logging
 import re
-from typing import AsyncGenerator, List, Optional, Tuple
+import json
+from typing import AsyncGenerator, List, Optional, Tuple, Dict
 
 logger = logging.getLogger(__name__)
 
 OPEN_TAGS = [
-    "<ctrl94>", "<think>", "<thinking>", "<thought>", "<monologue>",
+    "<think\b>", "<think>", "<thinking>", "<thought>", "<monologue>",
     "<channel:monologue>", "<channel:thought>", "<inner_monologue>", "<private>", "<system>",
     "<reasoning>", "<reason>", "<scratchpad>", "<details>",
-    "<|thought|>", "<|start_thought|>", "<|channel:thought|>", "<|monologue|>", "<|ctrl94|>", "<|reasoning|>",
+    "<|thought|>", "<|start_thought|>", "<|channel:thought|>", "<|monologue|>", "<|think|>", "<|reasoning|>",
     "[Thought]", "[Monologue]", "[Thinking]", "[Inner Monologue]", "[Thought Process]", "[Reasoning]"
 ]
 CLOSE_TAGS = [
-    "</ctrl94>", "</think>", "</thinking>", "</thought>", "</monologue>",
+    "</thinking>", "</think>", "</thinking>", "</thought>", "</monologue>",
     "</channel:monologue>", "</channel:thought>", "</inner_monologue>", "</private>", "</system>",
     "</reasoning>", "</reason>", "</scratchpad>", "</details>",
     "<|end_thought|>", "<|end_of_thought|>", "<|end_monologue|>", "</|thought|>", "</|monologue|>",
@@ -31,7 +32,7 @@ MAX_MONOLOGUE_TOKENS = 8192
 # Robust Regexes to catch malformed tags, missing brackets, markdown backticks, prompt directive echoes, and section headers
 OPEN_TAG_REGEX = re.compile(
     r'(?:'
-    r'`?\s*<ctrl94\b[^>]*>?|'
+    r'`?\s*<thinking\b[^>]*>?|'
     r'<think\b[^>]*>?|'
     r'<thought\b[^>]*>?|'
     r'<monologue\b[^>]*>?|'
@@ -44,12 +45,12 @@ OPEN_TAG_REGEX = re.compile(
     r'<reason\b[^>]*>?|'
     r'<scratchpad\b[^>]*>?|'
     r'<details\b[^>]*>?|'
-    r'<\|thought\|>|<\|start_thought\|>|<\|channel:thought\|>|<\|monologue\|>|<\|ctrl94\|>|<\|reasoning\|>|'
+    r'<\|thought\|>|<\|start_thought\|>|<\|channel:thought\|>|<\|monologue\|>|<\|think\|>|<\|reasoning\|>|'
     r'\[Thought\]|\[Monologue\]|\[Thinking\]|\[Inner Monologue\]|\[Thought Process\]|\[Reasoning\]|'
     r'\*+(?:Thought|Monologue|Thinking|Check|Self-Correction|Drafting|Thought Process|Internal Monologue|Reasoning|Plan|Analysis|Strategy):\*+|'
     r'(?:\*|\b)(?:Thought|Monologue|Thinking|Check|Self-Correction|Drafting|Thought Process|Internal Monologue|Reasoning|Plan|Analysis|Strategy):\s*|'
     r'\b(?:[A-Z][a-z0-9_\'\s]{0,30})?reaction should be\b|'
-    r'"?You MUST begin your response immediately with\s*<ctrl94[^"\n]*"?|'
+    r'"?You MUST begin your response immediately with\s*<thinking[^"\n]*"?|'
     r'\[Dialogue and Narration\]'
     r')',
     re.IGNORECASE
@@ -57,8 +58,8 @@ OPEN_TAG_REGEX = re.compile(
 
 CLOSE_TAG_REGEX = re.compile(
     r'(?:'
-    r'</ctrl94>?|'
-    r'</think>?|'
+    r'</thinking>?|'
+    r'</think\b>?|'
     r'</thinking>?|'
     r'</thought>?|'
     r'</monologue>?|'
@@ -99,6 +100,8 @@ MONOLOGUE_HEADER_REGEX = re.compile(
     re.IGNORECASE
 )
 
+GM_ACTION_REGEX = re.compile(r'\[GM_ACTION:\s*(\{.*?\})\]', re.DOTALL | re.IGNORECASE)
+
 
 class MonologueStreamParser:
     def __init__(self, max_public_tokens: Optional[int] = None, initial_state: int = 1):
@@ -126,6 +129,17 @@ class MonologueStreamParser:
             logger.info(f"[StreamParser] Reached max_public_tokens ({self.public_token_count} >= {self.max_public_tokens}). Truncating.")
             return True
         return False
+
+    def extract_gm_actions(self) -> List[Dict]:
+        """Extracts and parses all JSON [GM_ACTION: {...}] blocks from the inner monologue."""
+        actions = []
+        for match in GM_ACTION_REGEX.finditer(self.inner_monologue_buffer):
+            try:
+                action_data = json.loads(match.group(1))
+                actions.append(action_data)
+            except json.JSONDecodeError as e:
+                logger.error(f"[StreamParser] Failed to parse GM Action JSON: {e} | Payload: {match.group(1)}")
+        return actions
 
     def _clean_monologue(self, text: str) -> str:
         """Removes open/close tags and leading blockquote symbols from monologue string."""
