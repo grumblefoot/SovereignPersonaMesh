@@ -74,6 +74,7 @@ class CognitivePromptBuilder:
             formatted_prompt += f"""
 
 System Directive: You must begin your response immediately with {OPEN_THINK_TAG}. Place all internal thoughts and planning strictly inside these tags. You must close with {CLOSE_THINK_TAG} before writing your public dialogue. Your public dialogue must not exceed {frontend_max_tokens} words.
+CRITICAL RULE: As the underlying AI, you manage the backend world state for ALL characters (including the user). If ANY character (including the user) moves to a new location in the narrative, you MUST use the MOVE action. If a location is described that does not exist in the spatial context, you MUST use the CREATE_ROOM action. You must keep the backend world state in sync with the narrative.
 When performing a Game Master action, output exactly: [GM_ACTION: {{"type": "...", ...}}] on its own line. Do not wrap in markdown.
 Available GM Actions:
 {gm_instructions}
@@ -126,6 +127,7 @@ Available GM Actions:
 {env_block}
 
 System Directive: You MUST begin your response immediately with {OPEN_THINK_TAG}. Place all internal thoughts and planning strictly inside these tags. You MUST close with {CLOSE_THINK_TAG} before writing your public dialogue. Your public dialogue must not exceed {frontend_max_tokens} words.
+CRITICAL RULE: As the underlying AI, you manage the backend world state for ALL characters (including the user). If ANY character (including the user) moves to a new location in the narrative, you MUST use the MOVE action. If a location is described that does not exist in the spatial context, you MUST use the CREATE_ROOM action. You must keep the backend world state in sync with the narrative.
 When performing a Game Master action, output exactly: [GM_ACTION: {{"type": "...", ...}}] on its own line. Do not wrap in markdown.
 Available GM Actions:
 {gm_instructions}"""

@@ -133,7 +133,8 @@ class MonologueStreamParser:
     def extract_gm_actions(self) -> List[Dict]:
         """Extracts and parses all JSON [GM_ACTION: {...}] blocks from the inner monologue."""
         actions = []
-        for match in GM_ACTION_REGEX.finditer(self.inner_monologue_buffer):
+        all_text = "\n\n".join([s for s in self._monologue_sections if s]) + "\n" + self.inner_monologue_buffer
+        for match in GM_ACTION_REGEX.finditer(all_text):
             try:
                 action_data = json.loads(match.group(1))
                 actions.append(action_data)
