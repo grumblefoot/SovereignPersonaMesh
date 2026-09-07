@@ -234,7 +234,7 @@ class MonologueStreamParser:
             p0 = paragraphs[0]
             # Check if first paragraph is meta-analysis / prompt reflection / character state breakdown
             if re.search(
-                r'^\s*(?:a mix of|a blend of|a combination of|an expression of|an array of|reacting to|responding to|given that|in this turn|the user\'s response)\b|'
+                r'^\s*(?:a mix of|a blend of|a combination of|an expression of|an array of|reacting to|responding to|given that|in this turn|the user\'s response|the user is|i need to|the room should|room details)\b|'
                 r'\b(?:perceives (?:her|him|them)self|insulted (?:her|his|their) appearance|echoing common|peasant misconceptions|supreme elegance|meta-commentary|character motivation|vibe profiling|has just insulted|is vain and)\b',
                 p0,
                 re.IGNORECASE
@@ -417,12 +417,22 @@ class MonologueStreamParser:
                                 self.public_response_buffer += clean_pub
                                 yield clean_pub
                         else:
-                            logger.warning("[StreamParser] Unclosed monologue tag at EOF. Defaulting buffer to public.")
-                            self.is_failsafe_triggered = True
-                            clean_pub = self._strip_monologue_bleed(mono_text)
-                            if clean_pub:
-                                self.public_response_buffer += clean_pub
-                                yield clean_pub
+                            # Pivot Parser Approach: scan for the *last* [GM_ACTION] as a pivot point
+                            m_gm_matches = list(GM_ACTION_REGEX.finditer(mono_text))
+                            if m_gm_matches:
+                                last_gm = m_gm_matches[-1]
+                                logger.info("[StreamParser] Unclosed monologue tag at EOF. Using last GM_ACTION as pivot.")
+                                clean_pub = self._strip_monologue_bleed(mono_text[last_gm.end():])
+                                if clean_pub:
+                                    self.public_response_buffer += clean_pub
+                                    yield clean_pub
+                            else:
+                                logger.warning("[StreamParser] Unclosed monologue tag at EOF. Defaulting buffer to public.")
+                                self.is_failsafe_triggered = True
+                                clean_pub = self._strip_monologue_bleed(mono_text)
+                                if clean_pub:
+                                    self.public_response_buffer += clean_pub
+                                    yield clean_pub
                 self.inner_monologue_buffer = ""
                 self.state = 1
                 logger.info(f"[StreamParser] EOS reached in monologue mode. Monologue captured.")

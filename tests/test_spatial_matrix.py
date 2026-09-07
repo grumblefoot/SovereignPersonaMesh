@@ -36,6 +36,7 @@ def test_degraded_whisper_distance():
 
 
 def test_blackout_wall_barrier():
+    SpatialConstraintsMatrix._gating_history.clear()
     gating, feed = SpatialConstraintsMatrix.evaluate_sensory_feed(
         distance_ft=20.0,
         barriers=[BarrierType.SOLID_WALL],
@@ -43,7 +44,8 @@ def test_blackout_wall_barrier():
         raw_text="Hello?",
         actor_id="rowan",
         recipient_id="seamus",
-        is_target=False
+        is_target=False,
+        action_tick=10
     )
     assert gating == GatingLevel.BLACKOUT
     assert feed == ""

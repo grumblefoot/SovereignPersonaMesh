@@ -111,7 +111,7 @@ def test_prompt_builder_injects_gm_actions():
     )
 
     assert "[GM_ACTION: {\"type\": \"MOVE\"" in prompt
-    assert "When performing a Game Master action, output exactly: [GM_ACTION:" in prompt
+    assert "When performing a Game Master action, you MUST output exactly: [GM_ACTION:" in prompt
 
 
 def test_prompt_builder_includes_formatting_rule():
@@ -179,7 +179,7 @@ def test_messages_builder_gm_in_monologue_enabled():
 
     content = messages[0]["content"]
     assert "[GM_ACTION:" in content
-    assert "When performing a Game Master action, output exactly:" in content
+    assert "When performing a Game Master action, you MUST output exactly:" in content
 
 
 # ---------------------------------------------------------------------------
