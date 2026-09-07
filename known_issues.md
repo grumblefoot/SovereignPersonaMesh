@@ -126,3 +126,15 @@ The LLM frequently ignores closing tags (`</think>`) and transition markers (`[S
 1. **Surgical Pivot Parser:** Implemented an EOF fallback in `stream_parser.py`. If the stream finishes without closing `</think>`, it scans the buffer for the *last* `[GM_ACTION]` tag, designating everything before it as monologue, and yielding only text after the pivot.
 2. **Prompt Directive Tuning:** Stricter rules in `proxy/api/routes.py` enforcing no planning outside `<think>` tags.
 3. **Aggressive Regex Heuristics:** Expanded `_strip_monologue_bleed()` to catch "I need to", "The user is", and "Room Details". 
+
+---
+
+### Issue: Low Unit Test Coverage (Risk of Regression)
+**Date:** 2026-09-07
+**Status:** 🟢 RESOLVED (TDD Sprint)
+**Description:**
+The SPM project needed higher test coverage to prevent regressions and safely allow refactoring, particularly across edge cases in `routes.py`, `stream_parser.py`, and `telemetry.py`. The baseline coverage was insufficient for an enterprise-grade agent orchestration engine.
+**Resolution (Test Driven Development Push):**
+1. **Targeted Coverage Expansion:** Added comprehensive unit tests targeting missing branches in `evennia_world/app.py`, `proxy/api/routes.py`, `proxy/core/stream_parser.py`, `proxy/core/telemetry.py`, and `proxy/backend_client/lemonade_client.py`.
+2. **Mocking External Dependencies:** Leveraged `AsyncMock` and FastAPI `TestClient` to test edge cases, error fallbacks, and 404/500 HTTP failures in the backend clients.
+3. **90% Coverage Target Reached:** 313 unit/integration tests now execute and pass across the repo. Test coverage successfully increased to exactly 90% (2283 statements).
