@@ -385,15 +385,15 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     if prompt_builder.config.inner_monologue_enabled:
         directive = f"""{active_lore_str}
 
-SYSTEM DIRECTIVE: You are the GAME MASTER. You MUST write your internal thoughts strictly inside <thinking>...</thinking> tags. Cross-reference the user's input against the ACTIVE LORE.
+SYSTEM DIRECTIVE: You are the GAME MASTER. You MUST write your internal thoughts strictly inside <think>...</think> tags. Cross-reference the user's input against the ACTIVE LORE.
 - If the user violates an Invariant (e.g. hallucinating), note it in your scratchpad.
 - If the user violates a Trigger/Game Over rule, note the [RULE VIOLATION] in your scratchpad and issue a [GM WARNING: ...]
-- If ANY character (including the user) moves to a new location, you MUST output [GM_ACTION: {{"type": "MOVE", "entity": "...", "room_id": "..."}}] inside your <thinking> block.
-- If a described location doesn't exist, output [GM_ACTION: {{"type": "CREATE_ROOM", "room_id": "...", "name": "...", "desc": "..."}}] inside your <thinking> block.
+- If ANY character (including the user) moves to a new location, you MUST output [GM_ACTION: {{"type": "MOVE", "entity": "...", "room_id": "..."}}] inside your <think> block.
+- If a described location doesn't exist, output [GM_ACTION: {{"type": "CREATE_ROOM", "room_id": "...", "name": "...", "desc": "..."}}] inside your <think> block.
 
 CRITICAL FORMATTING RULE:
 After completing your GM scratchpad and GM actions, YOU MUST CLOSE THE TAG AND SEPARATE YOUR DIALOGUE. Output exactly:
-</thinking>
+</think>
 
 ---
 
@@ -404,7 +404,7 @@ After the horizontal rule, switch to the CHARACTER'S PERSPECTIVE.
             csa_messages[-1]["content"] += directive
         else:
             csa_messages.append({"role": "user", "content": directive.strip()})
-        csa_messages.append({"role": "assistant", "content": "<thinking>\n"})
+        csa_messages.append({"role": "assistant", "content": "<think>\n"})
         init_state = 0
     else:
         init_state = 1
