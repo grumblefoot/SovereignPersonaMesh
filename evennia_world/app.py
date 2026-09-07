@@ -21,6 +21,7 @@ from .models import (
 from .spatial_matrix import SpatialConstraintsMatrix
 from .session_lock import SessionLockManager, LockError
 from .hybrid_builder import HybridWorldBuilder
+from core.resource_manager import strings
 
 app = FastAPI(title="Evennia World State Engine Liaison API", version="0.2.0")
 
@@ -196,7 +197,7 @@ async def submit_action(payload: ActionPayload, background_tasks: BackgroundTask
                 if char_id not in seen_ids:
                     seen_ids.add(char_id)
                     gating = GatingLevel.DEGRADED
-                    feed = f"You hear muffled sounds from {room_id}."
+                    feed = strings.get("app.muffled_sounds", room_id=room_id)
                     consequences.append(SensoryConsequence(
                         recipient_id=char_id,
                         sensory_feed=feed,
@@ -245,7 +246,7 @@ async def query_world_state(character_id: str, session_id: str = "default_sessio
             character_id=char_id_lower,
             current_room=default_room,
             gating_level=GatingLevel.BLACKOUT,
-            sensory_feed=f"Character {char_id_lower} is not assigned to a room.",
+            sensory_feed=strings.get("app.no_room", char_id_lower=char_id_lower),
             distances={},
         )
 
@@ -265,7 +266,7 @@ async def query_world_state(character_id: str, session_id: str = "default_sessio
         character_id=char_id_lower,
         current_room=room,
         gating_level=GatingLevel.DIRECT,
-        sensory_feed=f"You are inside {room.room_name}. {room.description}",
+        sensory_feed=strings.get("app.inside_room", room_name=room.room_name, description=room.description),
         distances=distances,
         flavor_text=room.flavor_text,
     )

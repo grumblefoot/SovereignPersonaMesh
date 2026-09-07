@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from evennia_world.session_lock import SessionLockManager, LockError
 from evennia_world.hybrid_builder import (
-    HybridWorldBuilder, DEFAULT_ROOM_TEMPLATES, _KEYWORD_SCORES,
+    HybridWorldBuilder, _KEYWORD_SCORES,
 )
 from evennia_world.models import (
     ActionType, GatingLevel, BarrierType, RoomMetadata,
@@ -216,10 +216,11 @@ class TestHybridWorldBuilder:
         assert "tavern_common" in tpls
 
     def test_default_templates_count(self):
-        assert "dungeon_cellar" in DEFAULT_ROOM_TEMPLATES
-        assert "forest_camp" in DEFAULT_ROOM_TEMPLATES
-        assert "castle_exterior" in DEFAULT_ROOM_TEMPLATES
-        assert "tavern_common" in DEFAULT_ROOM_TEMPLATES
+        b = HybridWorldBuilder()
+        assert "dungeon_cellar" in b.templates
+        assert "forest_camp" in b.templates
+        assert "castle_exterior" in b.templates
+        assert "tavern_common" in b.templates
 
     def test_keyword_scores_exist(self):
         assert "dungeon_cellar" in _KEYWORD_SCORES

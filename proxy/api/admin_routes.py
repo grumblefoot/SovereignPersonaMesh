@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from config.manager import get_settings_manager
 from proxy.core.telemetry import get_telemetry_collector
+from core.resource_manager import strings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/api/v1", tags=["admin"])
@@ -154,7 +155,7 @@ async def delete_session(session_id: str):
     if pool is None:
         return JSONResponse(
             status_code=530,
-            content={"status": "error", "message": "Database connection unavailable"}
+            content={"status": "error", "message": strings.get("api.errors.db_unavailable")}
         )
 
     deleted_count = 0
@@ -207,7 +208,7 @@ async def factory_reset():
     if pool is None:
         return JSONResponse(
             status_code=530,
-            content={"status": "error", "message": "Database connection unavailable"}
+            content={"status": "error", "message": strings.get("api.errors.db_unavailable")}
         )
 
     try:

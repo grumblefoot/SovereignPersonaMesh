@@ -11,202 +11,7 @@ from .models import RoomMetadata
 
 logger = logging.getLogger(__name__)
 
-# ── Default room templates ──────────────────────────────────────────────
-
-DEFAULT_ROOM_TEMPLATES: Dict[str, Dict[str, RoomMetadata]] = {
-    "dungeon_cellar": {
-        "cellar": RoomMetadata(
-            room_id="cellar",
-            room_name="The Dungeon Cellar",
-            description="A damp, stone-walled cellar filled with wooden crates and rusting iron chains.",
-            lighting="dim",
-            exits=["tavern_upstairs"],
-            present_characters=["rowan", "domino", "luna"],
-            nearby_objects=["wooden_crate", "iron_partition"],
-        ),
-        "tavern_upstairs": RoomMetadata(
-            room_id="tavern_upstairs",
-            room_name="The Medieval Tavern Main Hall",
-            description="A warm tavern hall smelling of roasted meats and ale.",
-            lighting="bright",
-            exits=["cellar"],
-            present_characters=["seamus"],
-            nearby_objects=["oak_table", "hearth"],
-        ),
-    },
-    "default_meeting_room": {
-        "meeting_room": RoomMetadata(
-            room_id="meeting_room",
-            room_name="The Meeting Room",
-            description="A plain, quiet chamber with a large stone table in the center.",
-            lighting="normal",
-            exits=[],
-            present_characters=["luna"],
-            nearby_objects=["stone_table"],
-        ),
-    },
-    "forest_camp": {
-        "forest_clearing": RoomMetadata(
-            room_id="forest_clearing",
-            room_name="Forest Clearing",
-            description="An open patch of land surrounded by dense trees, with a small campfire smoldering in the center.",
-            lighting="dim",
-            exits=["forest_path_north", "forest_path_south", "thickets"],
-            present_characters=[],
-            nearby_objects=["campfire", "tent", "woodpile"],
-        ),
-        "forest_path_north": RoomMetadata(
-            room_id="forest_path_north",
-            room_name="Northern Forest Path",
-            description="A narrow dirt trail winding through tall pines. The canopy blocks most sunlight.",
-            lighting="dim",
-            exits=["forest_clearing"],
-            present_characters=[],
-            nearby_objects=["fallen_log", "mossy_rocks"],
-        ),
-        "forest_path_south": RoomMetadata(
-            room_id="forest_path_south",
-            room_name="Southern Forest Path",
-            description="A wider trail leading south toward a distant river. Wildflowers line the edges.",
-            lighting="normal",
-            exits=["forest_clearing"],
-            present_characters=[],
-            nearby_objects=["river_stone", "wildflowers"],
-        ),
-        "thickets": RoomMetadata(
-            room_id="thickets",
-            room_name="Dense Thickets",
-            description="Impassable-looking undergrowth with thorny brambles and tangled roots.",
-            lighting="dim",
-            exits=["forest_clearing"],
-            present_characters=[],
-            nearby_objects=["bramble", "vine_tangle"],
-        ),
-    },
-    "castle_exterior": {
-        "courtyard": RoomMetadata(
-            room_id="courtyard",
-            room_name="Castle Courtyard",
-            description="A wide stone courtyard surrounded by high castle walls. Guards patrol the perimeter.",
-            lighting="bright",
-            exits=["great_hall", "armory", "stables", "gate_house"],
-            present_characters=[],
-            nearby_objects=["stone_bench", "flag_pole", "well"],
-        ),
-        "great_hall": RoomMetadata(
-            room_id="great_hall",
-            room_name="The Great Hall",
-            description="A towering hall with a vaulted ceiling, long banquet tables, and a raised dais.",
-            lighting="bright",
-            exits=["courtyard", "throne_room"],
-            present_characters=[],
-            nearby_objects=["long_table", "tapestry", "guard_railing"],
-        ),
-        "throne_room": RoomMetadata(
-            room_id="throne_room",
-            room_name="The Throne Room",
-            description="An ornate chamber dominated by a massive stone throne. Royal banners hang from the walls.",
-            lighting="bright",
-            exits=["great_hall"],
-            present_characters=[],
-            nearby_objects=["throne", "royal_banners", "marble_floor"],
-        ),
-        "armory": RoomMetadata(
-            room_id="armory",
-            room_name="The Armory",
-            description="A cold, organized hall lined with weapons racks, armor stands, and weapon crates.",
-            lighting="normal",
-            exits=["courtyard"],
-            present_characters=[],
-            nearby_objects=["sword_rack", "shield_wall", "quiver"],
-        ),
-        "stables": RoomMetadata(
-            room_id="stables",
-            room_name="The Stables",
-            description="A long barn-like structure housing horses and riding equipment. Hay and straw cover the floor.",
-            lighting="normal",
-            exits=["courtyard"],
-            present_characters=[],
-            nearby_objects=["saddle_rack", "hay_bale", "water_trough"],
-        ),
-        "gate_house": RoomMetadata(
-            room_id="gate_house",
-            room_name="The Gate House",
-            description="A fortified entry point with a heavy wooden portcullis and arrow slits.",
-            lighting="normal",
-            exits=["courtyard"],
-            present_characters=[],
-            nearby_objects=["portcullis", "gate_key", "sentry_post"],
-        ),
-    },
-    "tavern_common": {
-        "tavern_common_room": RoomMetadata(
-            room_id="tavern_common_room",
-            room_name="The Tavern Common Room",
-            description="A bustling common room with wooden tables, a large hearth, and a well-stocked bar.",
-            lighting="bright",
-            exits=["tavern_kitchen", "tavern_private", "alley"],
-            present_characters=[],
-            nearby_objects=["bar_counter", "hearth", "board_games"],
-        ),
-        "tavern_kitchen": RoomMetadata(
-            room_id="tavern_kitchen",
-            room_name="The Tavern Kitchen",
-            description="A steamy kitchen with copper pots hanging from the ceiling and a massive oven.",
-            lighting="dim",
-            exits=["tavern_common_room"],
-            present_characters=[],
-            nearby_objects=["copper_pots", "wooden_oven", "spice_racks"],
-        ),
-        "tavern_private": RoomMetadata(
-            room_id="tavern_private",
-            room_name="Tavern Private Room",
-            description="A small, curtained-off alcove for private conversations and secret meetings.",
-            lighting="dim",
-            exits=["tavern_common_room"],
-            present_characters=[],
-            nearby_objects=["velvet_curtain", "small_table", "candlestick"],
-        ),
-        "alley": RoomMetadata(
-            room_id="alley",
-            room_name="The Back Alley",
-            description="A narrow, cobblestone alley behind the tavern. Garbage bins line the wall.",
-            lighting="dim",
-            exits=["tavern_common_room"],
-            present_characters=[],
-            nearby_objects=["garbage_bin", "drainpipe", "cat"],
-        ),
-    },
-    "generic_void": {
-        "central_nexus": RoomMetadata(
-            room_id="central_nexus",
-            room_name="Central Nexus",
-            description="An abstract central nexus in unmapped topological space.",
-            lighting="abstract",
-            exits=["node_alpha", "node_beta"],
-            present_characters=[],
-            nearby_objects=[],
-        ),
-        "node_alpha": RoomMetadata(
-            room_id="node_alpha",
-            room_name="Node Alpha",
-            description="An adjacent topological node.",
-            lighting="abstract",
-            exits=["central_nexus"],
-            present_characters=[],
-            nearby_objects=[],
-        ),
-        "node_beta": RoomMetadata(
-            room_id="node_beta",
-            room_name="Node Beta",
-            description="An adjacent topological node.",
-            lighting="abstract",
-            exits=["central_nexus"],
-            present_characters=[],
-            nearby_objects=[],
-        ),
-    },
-}
+from core.resource_manager import strings
 
 # Score-based keyword weighting for template matching
 _KEYWORD_SCORES: Dict[str, Dict[str, float]] = {
@@ -225,7 +30,13 @@ class HybridWorldBuilder:
         if templates is not None:
             self.templates: Dict[str, Dict[str, RoomMetadata]] = copy.deepcopy(templates)
         else:
-            self.templates: Dict[str, Dict[str, RoomMetadata]] = copy.deepcopy(DEFAULT_ROOM_TEMPLATES)
+            raw_templates = strings.get_raw("templates")
+            self.templates = {}
+            if isinstance(raw_templates, dict) or hasattr(raw_templates, "items"):
+                for t_key, t_dict in raw_templates.items():
+                    self.templates[t_key] = {}
+                    for r_key, r_dict in t_dict.items():
+                        self.templates[t_key][r_key] = RoomMetadata(**r_dict)
 
     # ── Template matching ─────────────────────────────────────────────
 

@@ -149,6 +149,13 @@ class ResourceManager:
 
         return value
 
+    def get_raw(self, key: str) -> Optional[Any]:
+        """Resolve a dot-separated key and return the raw, uncoerced value."""
+        value = self._resolve_key(key)
+        if value is None:
+            logger.warning("ResourceManager: missing key — %s", key)
+        return value
+
     def _resolve_key(self, key: str) -> Optional[Any]:
         """Walk a dot-separated path and return the leaf value, or *None*."""
         import collections.abc
@@ -171,4 +178,8 @@ class ResourceManager:
 
 
 # Module-level convenience instance — auto-loads the well-known RAG strings.
-strings: ResourceManager = ResourceManager(["proxy/rag/res/strings.json"])
+strings: ResourceManager = ResourceManager([
+    "proxy/rag/res/strings.json",
+    "evennia_world/res/strings.json",
+    "core/res/shared_strings.json"
+])

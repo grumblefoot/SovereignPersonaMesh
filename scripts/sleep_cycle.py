@@ -14,17 +14,7 @@ from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-SLEEP_CYCLE_PROMPT_TEMPLATE = """<boss>You are the Memory Consolidation Engine for the character {character_id}.
-Review the chronological logs of their sensory inputs and inner monologues from the past 24 hours. Synthesize them into a single-sentence episodic memory node.
-- Maintain a first-person perspective ("I felt...", "I saw...").
-- Keep emotional states, specific locations, and key discoveries intact.
-- Avoid generic summaries.
-
-Daily Logs:
-{daily_logs}
-
-Summary Node:
-<idle>"""
+from core.resource_manager import strings
 
 
 class MemoryConsolidationWorker:
@@ -95,7 +85,7 @@ class MemoryConsolidationWorker:
         # 3. Summarization: dispatch to Gemma 9B via HTTP
         logger.info(f"[Sleep Cycle] Dispatching {len(records)} log entries for {char_id} to Gemma 9B...")
         try:
-            prompt = SLEEP_CYCLE_PROMPT_TEMPLATE.format(
+            prompt = strings.get("scripts.sleep_cycle.prompt_template",
                 character_id=char_id,
                 daily_logs=daily_logs_str,
             )
@@ -105,12 +95,12 @@ class MemoryConsolidationWorker:
                 f"[Sleep Cycle] Gemma 9B request failed for {char_id}: "
                 f"{exc.response.status_code} {exc.response.text}"
             )
-            summary_node = f"I processed sensory inputs from the last 24 hours."
+            summary_node = strings.get("scripts.sleep_cycle.fallback_summary")
         except Exception as exc:
             logger.warning(
                 f"[Sleep Cycle] Gemma 9B call failed for {char_id}, using fallback: {exc}"
             )
-            summary_node = f"I processed sensory inputs from the last 24 hours."
+            summary_node = strings.get("scripts.sleep_cycle.fallback_summary")
 
         # 4. Commit core memory node & Prune volatile entries
         async with conn.transaction():
