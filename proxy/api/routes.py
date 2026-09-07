@@ -359,7 +359,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         sensory_feed=sensory_feed,
         retrieved_memories=retrieved_memories,
         chat_history=[{"role": m.role, "content": m.content} for m in request.messages],
-        spatial_context="Location: The Cellar",
+        spatial_context=f"Location: {location_name}",
         frontend_max_tokens=frontend_max_tokens,
     )
 
@@ -385,24 +385,26 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     if prompt_builder.config.inner_monologue_enabled:
         directive = f"""{active_lore_str}
 
-SYSTEM DIRECTIVE: You are the GAME MASTER. You MUST write your internal thoughts strictly inside <think>...</think> tags. Cross-reference the user's input against the ACTIVE LORE.
+SYSTEM DIRECTIVE: You are the GAME MASTER. You MUST write your internal thoughts strictly inside <thinking>...</thinking> tags. Cross-reference the user's input against the ACTIVE LORE.
 - If the user violates an Invariant (e.g. hallucinating), note it in your scratchpad.
-- If the user violates a Trigger/Game Over rule (e.g. attacking), note the [RULE VIOLATION] in your scratchpad. If a warning is required, you MUST write a warning addressed to the player INSIDE your scratchpad using exactly this format: [GM WARNING: your warning message to the player here]
+- If the user violates a Trigger/Game Over rule, note the [RULE VIOLATION] in your scratchpad and issue a [GM WARNING: ...]
+- If ANY character (including the user) moves to a new location, you MUST output [GM_ACTION: {{"type": "MOVE", "entity": "...", "room_id": "..."}}] inside your <thinking> block.
+- If a described location doesn't exist, output [GM_ACTION: {{"type": "CREATE_ROOM", "room_id": "...", "name": "...", "desc": "..."}}] inside your <thinking> block.
 
 CRITICAL FORMATTING RULE:
-After completing your GM scratchpad, YOU MUST CLOSE THE TAG AND SEPARATE YOUR DIALOGUE. Output exactly:
-</think>
+After completing your GM scratchpad and GM actions, YOU MUST CLOSE THE TAG AND SEPARATE YOUR DIALOGUE. Output exactly:
+</thinking>
 
 ---
 
 After the horizontal rule, switch to the CHARACTER'S PERSPECTIVE.
 - For Lore Violations: Forcefully reject the hallucination in your public dialogue.
-- For Rule Violations: React appropriately to enforce the rule. Do NOT write the GM Warning in your public dialogue; the system will extract it from your scratchpad automatically."""
+- For Rule Violations: React appropriately to enforce the rule. Do NOT write the GM Warning in your public dialogue."""
         if csa_messages and csa_messages[-1]["role"] == "user":
             csa_messages[-1]["content"] += directive
         else:
             csa_messages.append({"role": "user", "content": directive.strip()})
-        csa_messages.append({"role": "assistant", "content": "<think>\n"})
+        csa_messages.append({"role": "assistant", "content": "<thinking>\n"})
         init_state = 0
     else:
         init_state = 1
