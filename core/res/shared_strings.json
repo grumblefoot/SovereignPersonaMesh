@@ -1,0 +1,17 @@
+{
+  "api": {
+    "errors": {
+      "db_not_configured": "Database pool not configured",
+      "db_unavailable": "Database connection unavailable",
+      "missing_char_id": "character_id is required",
+      "missing_archive_args": "archive_id and character_id are required",
+      "no_import_job": "No import job found for session={session_id}"
+    }
+  },
+  "scripts": {
+    "sleep_cycle": {
+      "prompt_template": "<boss>You are the Memory Consolidation Engine for the character {character_id}.\nReview the chronological logs of their sensory inputs and inner monologues from the past 24 hours. Synthesize them into a single-sentence episodic memory node.\n- Maintain a first-person perspective (\"I felt...\", \"I saw...\").\n- Keep emotional states, specific locations, and key discoveries intact.\n- Avoid generic summaries.\n\nDaily Logs:\n{daily_logs}\n\nSummary Node:\n<idle>",
+      "fallback_summary": "I processed sensory inputs from the last 24 hours."
+    }
+  }
+}

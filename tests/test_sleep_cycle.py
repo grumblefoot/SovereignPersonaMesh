@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock, Mock, patch
 import asyncpg
 import pytest
 
-from scripts.sleep_cycle import MemoryConsolidationWorker, SLEEP_CYCLE_PROMPT_TEMPLATE
+from scripts.sleep_cycle import MemoryConsolidationWorker
+from core.resource_manager import strings
 
 
 DB_CONFIG = {
@@ -26,7 +27,7 @@ DB_CONFIG = {
 
 def test_prompt_template_contains_required_sections():
     """Verify the template has all required sections for Gemma 9B."""
-    rendered = SLEEP_CYCLE_PROMPT_TEMPLATE.format(
+    rendered = strings.get("scripts.sleep_cycle.prompt_template",
         character_id="testchar",
         daily_logs="[2026-01-01] Sensory: walked into room",
     )

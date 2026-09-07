@@ -26,6 +26,7 @@ from proxy.rag.tier_manager import MemoryTierManager
 from proxy.backend_client.lemonade_client import LemonadeLLMClient
 from proxy.backend_client.evennia_client import EvenniaWorldClient
 from scripts.onnx_embedder import CPUEmbeddingEngine
+from core.resource_manager import strings
 
 from proxy.core.telemetry import get_telemetry_collector
 
@@ -576,7 +577,7 @@ async def archive_memories(request: dict):
     if _db_pool is None:
         return JSONResponse(
             status_code=503,
-            content={"error": "Database pool not configured"}
+            content={"error": strings.get("api.errors.db_not_configured")}
         )
 
     character_id = request.get("character_id", "")
@@ -587,7 +588,7 @@ async def archive_memories(request: dict):
     if not character_id:
         return JSONResponse(
             status_code=400,
-            content={"error": "character_id is required"}
+            content={"error": strings.get("api.errors.missing_char_id")}
         )
 
     manager = MemoryTierManager(_db_pool)
@@ -610,7 +611,7 @@ async def reconstitute_memory(request: dict):
     if _db_pool is None:
         return JSONResponse(
             status_code=503,
-            content={"error": "Database pool not configured"}
+            content={"error": strings.get("api.errors.db_not_configured")}
         )
 
     archive_id = request.get("archive_id")
@@ -619,7 +620,7 @@ async def reconstitute_memory(request: dict):
     if not archive_id or not character_id:
         return JSONResponse(
             status_code=400,
-            content={"error": "archive_id and character_id are required"}
+            content={"error": strings.get("api.errors.missing_archive_args")}
         )
 
     manager = MemoryTierManager(_db_pool)
@@ -643,13 +644,13 @@ async def memory_stats(
     if _db_pool is None:
         return JSONResponse(
             status_code=503,
-            content={"error": "Database pool not configured"}
+            content={"error": strings.get("api.errors.db_not_configured")}
         )
 
     if not character_id:
         return JSONResponse(
             status_code=400,
-            content={"error": "character_id is required"}
+            content={"error": strings.get("api.errors.missing_char_id")}
         )
 
     manager = MemoryTierManager(_db_pool)
@@ -707,14 +708,14 @@ async def get_import_status(session_id: str):
     if _db_pool is None:
         return JSONResponse(
             status_code=503,
-            content={"error": "Database pool not configured"}
+            content={"error": strings.get("api.errors.db_not_configured")}
         )
     worker = BulkImportWorker(_db_pool)
     status = await worker.check_import_status(session_id)
     if status is None:
         return JSONResponse(
             status_code=404,
-            content={"error": f"No import job found for session={session_id}"}
+            content={"error": strings.get("api.errors.no_import_job", session_id=session_id)}
         )
     return JSONResponse(content=status)
 
@@ -725,7 +726,7 @@ async def list_all_imports():
     if _db_pool is None:
         return JSONResponse(
             status_code=503,
-            content={"error": "Database pool not configured"}
+            content={"error": strings.get("api.errors.db_not_configured")}
         )
     worker = BulkImportWorker(_db_pool)
     imports = await worker.get_all_imports()
