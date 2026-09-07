@@ -41,7 +41,7 @@ class LemonadeLLMClient:
         prompt: Optional[str] = None,
         model: str = "google/gemma-4-26B-A4B-it",
         temperature: float = 0.7,
-        max_tokens: int = 4096,
+        max_tokens: int = 128000,
         stop: Optional[list] = None,
         messages: Optional[List[Dict[str, str]]] = None,
     ) -> AsyncGenerator[str, None]:
@@ -129,20 +129,20 @@ class LemonadeLLMClient:
                                     if reasoning:
                                         if not in_reasoning:
                                             in_reasoning = True
-                                            yield "<ctrl94>"
+                                            yield "<thinking>"
                                         yield reasoning
 
                                     if content:
                                         if in_reasoning:
                                             in_reasoning = False
-                                            yield "</ctrl94>"
+                                            yield "</thinking>"
                                         yield content
                             except json.JSONDecodeError:
                                 continue
 
                     if in_reasoning:
-                        yield "</ctrl94>"
+                        yield "</thinking>"
             except Exception as e:
                 logger.error(f"[LemonadeClient] Stream connection error: {e}")
                 # Mock fallback for testing when backend isn't actively running
-                yield f"<ctrl94>I hear movements nearby. I should proceed with caution.</ctrl94> I am ready."
+                yield f"<thinking>I hear movements nearby. I should proceed with caution.</thinking> I am ready."

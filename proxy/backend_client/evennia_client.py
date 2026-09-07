@@ -70,3 +70,40 @@ class EvenniaWorldClient:
             "sensory_feed": "Standing in room.",
             "distances": {}
         }
+
+    async def move_character(self, character_id: str, room_id: str, session_id: str = "default_session", idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+        """Moves a character to a room."""
+        payload = {
+            "character_id": character_id,
+            "room_id": room_id,
+            "session_id": session_id,
+            "template_key": "dungeon_cellar"
+        }
+        endpoint = f"{self.base_url}/world/move"
+        headers = {"X-Idempotency-Key": idempotency_key} if idempotency_key else {}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                resp = await client.post(endpoint, json=payload, headers=headers)
+                return resp.json() if resp.status_code == 200 else {}
+            except Exception as e:
+                logger.warning(f"[EvenniaClient] Failed to move character: {e}")
+        return {}
+
+    async def create_room(self, room_id: str, name: str, desc: str, session_id: str = "default_session", idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+        """Creates a new dynamic room."""
+        payload = {
+            "room_id": room_id,
+            "room_name": name,
+            "description": desc,
+            "session_id": session_id,
+            "template_key": "dungeon_cellar"
+        }
+        endpoint = f"{self.base_url}/world/rooms"
+        headers = {"X-Idempotency-Key": idempotency_key} if idempotency_key else {}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                resp = await client.post(endpoint, json=payload, headers=headers)
+                return resp.json() if resp.status_code == 200 else {}
+            except Exception as e:
+                logger.warning(f"[EvenniaClient] Failed to create room: {e}")
+        return {}

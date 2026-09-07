@@ -39,8 +39,9 @@ class ObserverInferenceGatingFilter:
         async with self.db_pool.acquire() as conn:
             # Ensure table exists
             await conn.execute("SELECT create_csa_memory_table($1);", character_id.lower())
+            await conn.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS public_response TEXT;")
             await conn.execute(f"""
-                INSERT INTO {table_name} (session_id, sensory_input, inner_monologue, is_core_memory, is_subjective, importance_score)
-                VALUES ($1, $2, NULL, FALSE, TRUE, 1);
-            """, session_id, ambient_text)
+                INSERT INTO {table_name} (session_id, sensory_input, inner_monologue, public_response, is_core_memory, is_subjective, importance_score)
+                VALUES ($1, $2, NULL, $3, FALSE, TRUE, 1);
+            """, session_id, ambient_text, ambient_text)
             logger.info(f"[InferenceBypass] Successfully committed deterministic ambient log to {table_name}.")
