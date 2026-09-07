@@ -145,7 +145,7 @@
       <!-- Center: Live Monologue Stream -->
       <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-          <h3>Live &lt;ctrl94&gt; Thought Stream</h3>
+          <h3>Live &lt;think&gt; Thought Stream</h3>
           <select id="session-filter" onchange="filterThoughtStream()" style="width: auto; padding: 4px 8px; font-size: 0.8rem;">
             <option value="all">All Sessions</option>
           </select>
@@ -186,7 +186,7 @@
       </div>
       <div class="form-group">
         <label>Backend Max Tokens (Hardware Boundary)</label>
-        <input type="number" id="cfg-backend-max-tokens" value="4096">
+        <input type="number" id="cfg-backend-max-tokens" value="128000">
       </div>
       <button class="btn" onclick="saveConfig()">Save Configuration</button>
     </div>
@@ -200,6 +200,13 @@
         Factory Reset will truncate all character memory tables, bulk imports, and cold archives.
       </p>
       <button class="btn btn-danger" onclick="triggerFactoryReset()">Execute Factory Reset</button>
+
+      <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0;">
+      <h2 style="font-size: 1.1rem; margin-bottom: 16px; color: var(--danger);">System Shutdown</h2>
+      <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 20px;">
+        Safely shut down the SPM Proxy and Evennia Game Service.
+      </p>
+      <button class="btn btn-danger" onclick="shutdownService()">Quit SPM Services</button>
     </div>
   </div>
 
@@ -212,6 +219,18 @@
       document.querySelectorAll('.nav button').forEach(el => el.classList.remove('active'));
       document.getElementById(id).classList.add('active');
       if (event && event.target) event.target.classList.add('active');
+    }
+
+    async function shutdownService() {
+      if (!confirm("Are you sure you want to shut down the SPM Proxy and Game Services?")) return;
+      try {
+        const res = await fetch('/admin/api/v1/shutdown', { method: 'POST' });
+        const data = await res.json();
+        alert(data.message || "Services are shutting down.");
+        document.body.innerHTML = "<h2 style='text-align:center;margin-top:20%;color:white;'>SPM Services Shutdown Complete. You may close this window.</h2>";
+      } catch (e) {
+        alert("Shutdown request sent.");
+      }
     }
 
     async function fetchStats() {
