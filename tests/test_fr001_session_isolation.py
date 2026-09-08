@@ -213,9 +213,9 @@ class TestEvenniaSessionIsolation:
 
     def _reset_evennia_state(self):
         """Reset evennia app module state between tests."""
-        evennia_app.current_world = {}
-        evennia_app.session_worlds = {}
-        evennia_app.action_tick_counter = 0
+        evennia_app.app_state.current_world = {}
+        evennia_app.app_state.session_worlds = {}
+        evennia_app.app_state.action_tick_counter = 0
         evennia_app.lock_manager = type(evennia_app.lock_manager)(default_ttl=60.0)
         evennia_app.world_builder = HybridWorldBuilder()
 
@@ -243,9 +243,9 @@ class TestEvenniaSessionIsolation:
             assert data_b["character_id"] == "luna"
 
             # Both sessions should have their own world entries
-            assert "fr001_sess_a" in evennia_app.session_worlds
-            assert "fr001_sess_b" in evennia_app.session_worlds
-            assert evennia_app.session_worlds["fr001_sess_a"] is not evennia_app.session_worlds["fr001_sess_b"]
+            assert "fr001_sess_a" in evennia_app.app_state.session_worlds
+            assert "fr001_sess_b" in evennia_app.app_state.session_worlds
+            assert evennia_app.app_state.session_worlds["fr001_sess_a"] is not evennia_app.app_state.session_worlds["fr001_sess_b"]
 
     def test_world_action_uses_session_id(self):
         """Action endpoint should respect session_id parameter."""
@@ -274,8 +274,8 @@ class TestEvenniaSessionIsolation:
             data2 = r2.json()
             assert data2["success"] is True
 
-            assert "fr001_action_one" in evennia_app.session_worlds
-            assert "fr001_action_two" in evennia_app.session_worlds
+            assert "fr001_action_one" in evennia_app.app_state.session_worlds
+            assert "fr001_action_two" in evennia_app.app_state.session_worlds
 
     def test_characters_endpoints_with_session_id(self):
         """Character endpoints should accept session_id in CharacterMovePayload."""
@@ -306,10 +306,10 @@ class TestEvenniaSessionIsolation:
                 "session_id": "fr001_isolation_y",
             })
 
-            assert "fr001_isolation_x" in evennia_app.session_worlds
-            assert "fr001_isolation_y" in evennia_app.session_worlds
-            x_worlds = evennia_app.session_worlds["fr001_isolation_x"]
-            y_worlds = evennia_app.session_worlds["fr001_isolation_y"]
+            assert "fr001_isolation_x" in evennia_app.app_state.session_worlds
+            assert "fr001_isolation_y" in evennia_app.app_state.session_worlds
+            x_worlds = evennia_app.app_state.session_worlds["fr001_isolation_x"]
+            y_worlds = evennia_app.app_state.session_worlds["fr001_isolation_y"]
             assert x_worlds is not y_worlds
 
     def test_default_session_fallback(self):
@@ -323,7 +323,7 @@ class TestEvenniaSessionIsolation:
             assert r.status_code == 200
             data = r.json()
             assert data["character_id"] == "luna"
-            assert "default_session" in evennia_app.session_worlds
+            assert "default_session" in evennia_app.app_state.session_worlds
 
 
 # ======================================================================

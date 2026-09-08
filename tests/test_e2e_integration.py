@@ -66,10 +66,10 @@ def evennia_client():
 def _reset_e2e_state(evennia_client):
     """Reset evennia global state and clean up DB before each test."""
     import evennia_world.app as evennia_mod
-    evennia_mod.current_world = {}
+    evennia_mod.app_state.current_world = {}
     evennia_mod.world_builder = HybridWorldBuilder()
     evennia_mod.lock_manager = SessionLockManager()
-    evennia_mod.action_tick_counter = 1420
+    evennia_mod.app_state.action_tick_counter = 1420
 
     # Clean up any leftover seraphina data
     conn = None

@@ -6,7 +6,7 @@ import pytest
 from evennia_world.hybrid_builder import HybridWorldBuilder
 from evennia_world.models import RoomMetadata, CharacterWorldState, GatingLevel, BarrierType, ActionType
 from evennia_world.spatial_matrix import SpatialConstraintsMatrix
-from evennia_world.app import _compute_distance_and_barriers, current_world, session_worlds
+from evennia_world.app import _compute_distance_and_barriers, app_state
 from proxy.rag.prompt_builder import CognitivePromptBuilder
 
 
@@ -76,9 +76,9 @@ class TestVoidGraphSpatialGating:
     def test_adjacent_nodes_enforce_solid_wall_blackout(self):
         builder = HybridWorldBuilder()
         world = builder.instantiate_world("generic_void")
-        # Temporarily populate current_world for test
-        current_world.clear()
-        current_world.update(world)
+        # Temporarily populate app_state.current_world for test
+        app_state.current_world.clear()
+        app_state.current_world.update(world)
 
         dist, barriers = _compute_distance_and_barriers("central_nexus", "node_alpha", ActionType.SPEAK)
         assert BarrierType.SOLID_WALL in barriers

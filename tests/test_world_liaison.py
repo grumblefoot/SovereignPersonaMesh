@@ -244,6 +244,7 @@ def reset_world_state(app_module):
     fa_app.state.start_time = 0
     app_module.app_state.current_world = {}
     app_module.app_state.room_to_template = {}
+    app_module.app_state.session_worlds = {}
     app_module.app_state.action_tick_counter = 0
     app_module.lock_manager = type(app_module.lock_manager)(default_ttl=60.0)
     app_module.world_builder = HybridWorldBuilder()
@@ -490,7 +491,7 @@ class TestWorldConfigureEndpoint:
         assert r.json()["success"] is True
         # After switching, rowan won't be in a forest room (forest_camp has no chars),
         # so query returns "unknown" – that's correct. Verify the world changed:
-        r2 = client.get("/api/v1/world/state", params={"character_id": "rowan"})
+        r2 = client.get("/api/v1/world/state", params={"character_id": "rowan", "template_key": "forest_camp", "session_id": "forest_camp"})
         data = r2.json()
         assert data["gating_level"] == "blackout"
         assert "Unknown Location" in data["current_room"]["room_name"]
