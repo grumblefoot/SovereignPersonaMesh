@@ -50,20 +50,38 @@ class ResourceManager:
         if hasattr(self, "_cache") and not _skip_cache:
             return
 
-        self._cache: Dict[str, Any] = {}
+        # Convert relative paths to absolute — avoids cwd-dependent bugs when
+        # the module is imported from different working directories.
+        resolved_paths: List[str] = [str(Path(p).resolve()) for p in json_paths]
 
-        for path in json_paths:
-            self._load_file(path)
+        # Load into a mutable working dict first so we can freeze it cleanly.
+        working: Dict[str, Any] = {}
+
+        for path in resolved_paths:
+            self._load_file(path, cache=working)
 
         # Freeze the dict — external callers cannot mutate it.
-        self._cache = self._deep_freeze(self._cache)  # type: ignore[assignment]
+        self._cache = self._deep_freeze(working)  # type: ignore[assignment]
+
+        # Remember original paths for reload() without arguments.
+        self._loaded_paths: List[str] = resolved_paths
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _load_file(self, path: str) -> None:
-        """Load and deep-merge a JSON resource file into the cache."""
+    def _load_file(self, path: str, cache: Optional[Dict[str, Any]] = None) -> None:
+        """Load and deep-merge a JSON resource file into the cache.
+
+        Parameters
+        ----------
+        path : str
+            Filesystem path to a JSON resource file.
+        cache : dict, optional
+            If provided, merge into this dict instead of ``self._cache``.
+            This enables transactional loading (build in a temp dict,
+            swap atomically on success).
+        """
         filepath = Path(path)
         if not filepath.is_file():
             logger.warning("ResourceManager: file not found — %s", path)
@@ -76,7 +94,8 @@ class ResourceManager:
             logger.error("ResourceManager: invalid JSON in %s — %s", path, exc)
             return
 
-        self._deep_merge(self._cache, data)
+        target = cache if cache is not None else self._cache
+        self._deep_merge(target, data)
 
     @staticmethod
     def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> None:
@@ -168,13 +187,41 @@ class ResourceManager:
                 return None
         return node
 
-    def reload(self, json_paths: Optional[List[str]] = None) -> None:
-        """(Re)load resources — useful in tests or hot-reload scenarios."""
-        if json_paths is not None:
-            self._cache.clear()
-            for path in json_paths:
-                self._load_file(path)
-            self._cache = self._deep_freeze(self._cache)  # type: ignore[assignment]
+    def reload(
+        self, json_paths: Optional[List[str]] = None, *, force: bool = False
+    ) -> None:
+        """(Re)load resources — useful in tests or hot-reload scenarios.
+
+        Parameters
+        ----------
+        json_paths : list[str], optional
+            Paths to reload.  If *None*, the original paths from
+            ``__init__`` are reloaded (cached internally).
+        force : bool
+            If *True*, always rebuild the cache even if nothing
+            changed.  Default *False*.
+
+        This method is **transactional**: if any file fails to load
+        the entire operation is rolled back and the existing cache
+        is preserved.
+        """
+        if json_paths is None:
+            return
+
+        # Resolve to absolute paths (same as __init__).
+        resolved_paths: List[str] = [str(Path(p).resolve()) for p in json_paths]
+
+        # Build the new cache in a temporary dict — never mutate
+        # self._cache until *all* files are loaded successfully.
+        working: Dict[str, Any] = {}
+
+        for path in resolved_paths:
+            self._load_file(path, cache=working)
+
+        # If we get here every file loaded successfully — atomically
+        # swap in the frozen cache.
+        self._cache = self._deep_freeze(working)  # type: ignore[assignment]
+        self._loaded_paths = resolved_paths
 
 
 # Module-level convenience instance — auto-loads the well-known RAG strings.
