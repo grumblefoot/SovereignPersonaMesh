@@ -4,14 +4,22 @@ Evaluates physical proximity and environmental barriers to output sensory feeds 
 """
 
 from typing import Tuple, List, Dict
+from collections import defaultdict
 from .models import GatingLevel, BarrierType, ActionType
 
 
 class SpatialConstraintsMatrix:
     """
     Evaluates sensory feeds based on a strict state machine and authoritative world state.
+
+    Session-scoped gating history: _gating_history maps session_id -> (actor_id, recipient_id)
+    -> (GatingLevel, action_tick).  Each session keeps its own cooldown windows so data
+    never bleeds across sessions.
     """
-    _gating_history: Dict[Tuple[str, str, str], Tuple[GatingLevel, int]] = {}
+    _gating_history: Dict[str, Dict[Tuple[str, str], Tuple[GatingLevel, int]]] = defaultdict(dict)
+
+    # Number of ticks a gating transition is suppressed during its cooldown window.
+    HYSTERESIS_TICKS: int = 2
 
     @classmethod
     def evaluate_sensory_feed(
@@ -26,7 +34,7 @@ class SpatialConstraintsMatrix:
         session_id: str = "default",
         action_tick: int = 0
     ) -> Tuple[GatingLevel, str]:
-        
+
         # 1. Omniscient/World bypass
         if recipient_id.lower() in ["scenario", "system", "world", "narrator", "context"]:
             return GatingLevel.DIRECT, raw_text
@@ -41,16 +49,26 @@ class SpatialConstraintsMatrix:
         else:
             target_gating = GatingLevel.BLACKOUT
 
-        # 3. Hysteresis Cooldown
-        hist_key = (session_id, actor_id, recipient_id)
-        last_gating, last_tick = cls._gating_history.get(hist_key, (GatingLevel.DIRECT, 0))
-        
-        if target_gating == GatingLevel.BLACKOUT and last_gating == GatingLevel.DIRECT:
-            if (action_tick - last_tick) < 2:
-                target_gating = GatingLevel.DEGRADED
-                
-        if target_gating != last_gating:
-            cls._gating_history[hist_key] = (target_gating, action_tick)
+        # 3. Hysteresis Cooldown (bidirectional)
+        hist_key = (actor_id, recipient_id)
+        session_hist = cls._gating_history[session_id]
+        last_gating, last_tick = session_hist.get(hist_key, (GatingLevel.DIRECT, 0))
+
+        # Preserve the raw physical-state gating for history recording
+        # (before any hysteresis suppression).
+        raw_gating = target_gating
+
+        if (target_gating == GatingLevel.BLACKOUT and last_gating == GatingLevel.DIRECT
+                and (action_tick - last_tick) < cls.HYSTERESIS_TICKS):
+            target_gating = GatingLevel.DEGRADED
+
+        if (target_gating == GatingLevel.DIRECT and last_gating == GatingLevel.BLACKOUT
+                and (action_tick - last_tick) < cls.HYSTERESIS_TICKS):
+            target_gating = GatingLevel.DEGRADED
+
+        # Always record the RAW physical-state (before suppression) so cooldown
+        # timers track actual state transitions, not smoothed output levels.
+        session_hist[hist_key] = (raw_gating, action_tick)
 
         # 4. Feed Formatting
         if target_gating == GatingLevel.BLACKOUT:
