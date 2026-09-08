@@ -10,36 +10,7 @@ from scripts.onnx_embedder import CPUEmbeddingEngine
 
 logger = logging.getLogger(__name__)
 
-INITIAL_RULES_PROMPT = """\
-Analyze the following context text (which contains character cards, lore, and user personas). Your goal is to establish the Core Identity of the Non-Player Character (NPC) and the World Scenario by extracting a list of GM rules (invariants/triggers) that should govern the game/master narrative.
-
-CRITICAL INSTRUCTION:
-1. Focus ONLY on the Non-Player Characters (NPCs), the world, the environment, and the overarching scenario.
-2. Do NOT extract rules about the User or Player character's physical description, clothing, or persona.
-3. You MUST extract rules regarding the NPC's core identity. Look closely for:
-   - Character Goals & Motivations (e.g., "Arvenia is driven by a desire to reclaim her family's honor").
-   - Deep Personality Traits & Quirks (e.g., "Arvenia is fiercely independent and refuses charity").
-   - NPC Physical Traits & Appearance (e.g., "Arvenia has silver hair, is slender, and wears a blue dress").
-   - Overarching Scenario Parameters (e.g., "The tavern is located in a dangerous slum where theft is common").
-   Formulate these as 'invariant' rules (always true) or 'trigger' rules (if X happens, NPC does Y).
-
-Output ONLY a valid JSON list of objects. Each object must strictly contain:
-- "rule_text": string describing the rule
-- "rule_type": string (must be either "invariant" or "trigger")
-
-Context:
-{context_text}
-"""
-
-PERIODIC_RULES_PROMPT = """\
-Analyze the following recent chat messages and propose any new GM rules, updates to existing rules, or narrative invariants/triggers that should be tracked.
-Output ONLY a valid JSON list of objects. Each object must strictly contain:
-- "rule_text": string describing the rule
-- "rule_type": string (must be either "invariant" or "trigger")
-
-Recent Messages:
-{recent_messages}
-"""
+from core.resource_manager import strings
 
 
 class LoreExtractionWorker:
@@ -132,10 +103,10 @@ class LoreExtractionWorker:
         self.logger.info(f"Successfully processed extraction for {character_id}")
 
     async def extract_initial_rules(self, session_id: str, character_id: str, context_text: str, model: str = "google/gemma-4-26B-A4B-it"):
-        prompt = INITIAL_RULES_PROMPT.format(context_text=context_text)
+        prompt = strings.get("rag.lore_extractor.initial_rules_prompt", context_text=context_text)
         await self._execute_extraction(prompt, session_id, character_id, model)
 
     async def periodic_review_rules(self, session_id: str, character_id: str, recent_messages: List[Dict], model: str = "google/gemma-4-26B-A4B-it"):
         messages_str = "\n".join([f"{m.get('role', 'user')}: {m.get('content', '')}" for m in recent_messages])
-        prompt = PERIODIC_RULES_PROMPT.format(recent_messages=messages_str)
+        prompt = strings.get("rag.lore_extractor.periodic_rules_prompt", recent_messages=messages_str)
         await self._execute_extraction(prompt, session_id, character_id, model)
