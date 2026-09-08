@@ -19,6 +19,7 @@ CRITICAL INSTRUCTION:
 3. You MUST extract rules regarding the NPC's core identity. Look closely for:
    - Character Goals & Motivations (e.g., "Arvenia is driven by a desire to reclaim her family's honor").
    - Deep Personality Traits & Quirks (e.g., "Arvenia is fiercely independent and refuses charity").
+   - NPC Physical Traits & Appearance (e.g., "Arvenia has silver hair, is slender, and wears a blue dress").
    - Overarching Scenario Parameters (e.g., "The tavern is located in a dangerous slum where theft is common").
    Formulate these as 'invariant' rules (always true) or 'trigger' rules (if X happens, NPC does Y).
 
@@ -77,7 +78,7 @@ class LoreExtractionWorker:
         # Stream=False generates a full response via process_token_stream conceptually,
         # but LemonadeLLMClient only has generate_stream.
         # We can collect tokens from the generator.
-        generator = self.llm_client.generate_stream(prompt=prompt, model=model, temperature=0.2, max_tokens=2048)
+        generator = self.llm_client.generate_stream(prompt=prompt, model=model, temperature=0.2, max_tokens=8192)
         
         raw_response = ""
         try:
