@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 
 from config.hardware_tiers import get_hardware_config, HardwareTierEnum
+from proxy.core.st_parser import parse_sillytavern_context
 from config.manager import get_settings_manager
 from proxy.core.fifo_queue import InferenceFIFOQueue
 from proxy.core.stream_parser import MonologueStreamParser
@@ -23,6 +24,7 @@ from proxy.rag.prompt_builder import CognitivePromptBuilder
 from proxy.rag.retriever import EpisodicRAGRetriever
 from proxy.rag.import_worker import BulkImportWorker, get_import_worker, _compute_dynamic_batch_size, BULK_IMPORT_THRESHOLD
 from proxy.rag.tier_manager import MemoryTierManager
+from proxy.rag.lore_extractor import LoreExtractionWorker
 from proxy.backend_client.lemonade_client import LemonadeLLMClient
 from proxy.backend_client.evennia_client import EvenniaWorldClient
 from scripts.onnx_embedder import CPUEmbeddingEngine
@@ -248,7 +250,31 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     user_text = last_msg.content
 
     # --- FR-002: Bulk Import Detection ---
-    await _check_bulk_import(request, session_id, _db_pool)
+    is_bulk = await _check_bulk_import(request, session_id, _db_pool)
+
+    # --- DESIGN-002: Lore Extraction (Auto-Populating GM Rules) ---
+    if _db_pool and not is_bulk:
+        settings = get_settings_manager().get_settings()
+        cadence = int(settings.get("periodic_review_cadence", 15))
+        use_alt = settings.get("use_alternate_extraction_model", False)
+        alt_model = settings.get("alternate_extraction_model_name", "")
+        ext_model = alt_model if (use_alt and alt_model) else request.model
+        
+        # Filter out SillyTavern prefill stubs to get true message count
+        actual_messages = [m for m in request.messages if m.content and m.content.strip() not in ("<think>", "</think>")]
+        msg_count = len(actual_messages)
+        extractor = LoreExtractionWorker(_db_pool)
+        
+        # Synchronous extraction on first message (typically system + char greeting + user msg = ~3 msgs)
+        if msg_count <= 3:
+            full_context = parse_sillytavern_context(actual_messages)
+            await extractor.extract_initial_rules(session_id, target_char, full_context, model=ext_model)
+        # Periodic async review
+        elif msg_count > 3 and (msg_count % cadence == 0):
+            recent_msgs = [m.model_dump() for m in actual_messages[-cadence:]]
+            task = asyncio.create_task(extractor.periodic_review_rules(session_id, target_char, recent_msgs, model=ext_model))
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
 
     # --- Step 1: spatial routing via Evennia ---
     world_res = await evennia_client.submit_action(
