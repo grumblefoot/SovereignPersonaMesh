@@ -348,5 +348,34 @@ async def test_untagged_opening_meta_commentary_strip():
     assert "peasant misconceptions" not in streamed_public
     assert "supreme elegance" not in streamed_public
 
+@pytest.mark.asyncio
+async def test_eof_failsafe_with_explicit_separator():
+    """Test that when </think> is missing, EOF failsafe pivots on explicit '--' separator."""
+    async def mock_chunks():
+        yield "<think>internal thoughts\n[INTERNAL MONOLOGUE - ARVENIA]\n--\npublic dialogue"
+    
+    parser = MonologueStreamParser()
+    async for chunk in parser.process_token_stream(mock_chunks()):
+        pass
+    
+    inner_mono, public_resp = parser.get_final_buffers()
+    assert "internal thoughts" in inner_mono
+    assert "INTERNAL MONOLOGUE" not in public_resp
+    assert "public dialogue" in public_resp
+
+@pytest.mark.asyncio
+async def test_strip_scene_description_header():
+    """Test that explicit [SCENE DESCRIPTION] headers are stripped from public response."""
+    async def mock_chunks():
+        yield "<think>thoughts</think>\n[SCENE DESCRIPTION]\nThe room is dark."
+    
+    parser = MonologueStreamParser()
+    async for chunk in parser.process_token_stream(mock_chunks()):
+        pass
+    
+    inner_mono, public_resp = parser.get_final_buffers()
+    assert "[SCENE DESCRIPTION]" not in public_resp
+    assert "The room is dark." in public_resp
+
 
 

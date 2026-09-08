@@ -38,7 +38,12 @@ class CognitivePromptBuilder:
         # Format Long-Term RAG Memories
         memory_str = ""
         if retrieved_memories:
-            mem_lines = [f"- {m['sensory_input']}" for m in retrieved_memories]
+            mem_lines = []
+            for m in retrieved_memories:
+                line = f"- Sensory: {m['sensory_input']}"
+                if m.get('inner_monologue'):
+                    line += f"\n  Past Thoughts: {m['inner_monologue']}"
+                mem_lines.append(line)
             memory_str = "\n".join(mem_lines)
         else:
             memory_str = strings.get("rag.no_memories_fallback")
@@ -95,7 +100,12 @@ class CognitivePromptBuilder:
         """
         memory_str = ""
         if retrieved_memories:
-            mem_lines = [f"- {m['sensory_input']}" for m in retrieved_memories]
+            mem_lines = []
+            for m in retrieved_memories:
+                line = f"- Sensory: {m['sensory_input']}"
+                if m.get('inner_monologue'):
+                    line += f"\n  Past Thoughts: {m['inner_monologue']}"
+                mem_lines.append(line)
             memory_str = "\n".join(mem_lines)
         else:
             memory_str = strings.get("rag.no_memories_fallback")
