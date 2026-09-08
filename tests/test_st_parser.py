@@ -25,6 +25,39 @@ def real_payload():
     fixture_path = os.path.join(os.path.dirname(__file__), "fixtures", "SillyIntoSPMLog.md")
     return load_sillytavern_log_fixture(fixture_path)
 
+MOCK_PAYLOAD = [
+    {"role": "system", "content": "Write Arvenia's next reply in a fictional chat between Arvenia and Vardus."},
+    {"role": "system", "content": "[Vardus is a tall and fit human male in his late 20's. He has a muscular swimmers build...]"},
+    {"role": "system", "content": '[character("Arvenia")\nFrom("Her Last Piece")\nPersonality("Possessive" + "Lonely")]'},
+    {"role": "system", "content": "[Goal: Player's Eternal, Obsessive Love and Companionship, and the consumption of the Players Soul]\n[Method: Psychological manipulation]"},
+    {"role": "system", "content": "[Example Chat]"},
+    {"role": "system", "content": "1. Initial Encounter:\nArvenia steps closer..."},
+    {"role": "system", "content": "[Example Chat]"},
+    {"role": "system", "content": "2. Seduction:\nArvenia glides beside Vardus..."},
+    {"role": "system", "content": "[Start a new Chat]"},
+    {"role": "assistant", "content": "Vardus wakes up in a cold, damp dungeon cell..."},
+    {"role": "user", "content": '*Vardus looks up at the strange but beautiful woman* "Who are you?"'}
+]
+
+def test_parse_sillytavern_context_mock():
+    parsed = parse_sillytavern_context(MOCK_PAYLOAD)
+    
+    # Assert noise is dropped
+    assert "Write Arvenia's next reply" not in parsed
+    assert "[Example Chat]" not in parsed
+    assert "1. Initial Encounter" not in parsed
+    assert "2. Seduction" not in parsed
+    assert "[Start a new Chat]" not in parsed
+    
+    # Assert essential context remains
+    assert "Vardus is a tall and fit" in parsed
+    assert '[character("Arvenia")' in parsed
+    assert "Goal: Player's Eternal" in parsed
+    assert "Vardus wakes up in a cold" in parsed
+    
+    # Assert user messages are dropped
+    assert '*Vardus looks up' not in parsed
+
 def test_parse_sillytavern_context(real_payload):
     parsed = parse_sillytavern_context(real_payload)
     

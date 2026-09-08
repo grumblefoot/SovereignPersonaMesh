@@ -9,7 +9,11 @@
     "no_memories_fallback": "No specific relevant past memories recalled.",
     "environmental_atmosphere": "\nEnvironmental Atmosphere: {flavor_text}",
     "style_heuristics": "\n\n[NARRATIVE STYLE HEURISTICS]\n{style_instruction}",
-    "dummy_think_block": "{open_tag} *Processing context...* {close_tag}\n{content}"
+    "dummy_think_block": "{open_tag} *Processing context...* {close_tag}\n{content}",
+    "lore_extractor": {
+      "initial_rules_prompt": "Analyze the following context text (which contains character cards, lore, and user personas). Your goal is to establish the Core Identity of the Non-Player Character (NPC) and the World Scenario by extracting a list of GM rules (invariants/triggers) that should govern the game/master narrative.\n\nCRITICAL INSTRUCTION:\n1. Focus ONLY on the Non-Player Characters (NPCs), the world, the environment, and the overarching scenario.\n2. Do NOT extract rules about the User or Player character's physical description, clothing, or persona.\n3. You MUST extract rules regarding the NPC's core identity. Look closely for:\n   - Character Goals & Motivations (e.g., \"Arvenia is driven by a desire to reclaim her family's honor\").\n   - Deep Personality Traits & Quirks (e.g., \"Arvenia is fiercely independent and refuses charity\").\n   - NPC Physical Traits & Appearance (e.g., \"Arvenia has silver hair, is slender, and wears a blue dress\").\n   - Overarching Scenario Parameters (e.g., \"The tavern is located in a dangerous slum where theft is common\").\n   Formulate these as 'invariant' rules (always true) or 'trigger' rules (if X happens, NPC does Y).\n\nOutput ONLY a valid JSON list of objects. Each object must strictly contain:\n- \"rule_text\": string describing the rule\n- \"rule_type\": string (must be either \"invariant\" or \"trigger\")\n\nContext:\n{context_text}\n",
+      "periodic_rules_prompt": "Analyze the following recent chat messages and propose any new GM rules, updates to existing rules, or narrative invariants/triggers that should be tracked.\nOutput ONLY a valid JSON list of objects. Each object must strictly contain:\n- \"rule_text\": string describing the rule\n- \"rule_type\": string (must be either \"invariant\" or \"trigger\")\n\nRecent Messages:\n{recent_messages}\n"
+    }
   },
   "sql": {
     "register_import": "INSERT INTO spm_chat_imports (session_id, character_id, status, total_messages, processed_messages) VALUES ($1, $2, 'pending', $3, 0) RETURNING import_id;",
