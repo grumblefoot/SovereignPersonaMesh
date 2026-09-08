@@ -18,14 +18,49 @@ _CONFIG_PATH = os.path.join(
     "config.json"
 )
 
-DEFAULT_CONFIG: Dict[str, Any] = {
-    "BACKEND_LLM_URL": os.getenv("BACKEND_LLM_URL", "http://localhost:8000/v1"),
-    "BACKEND_API_KEY": os.getenv("BACKEND_API_KEY", os.getenv("SPM_SECRET_KEY", "")),
-    "SPM_PROXY_PORT": int(os.getenv("SPM_PROXY_PORT", "5050")),
-    "SPM_HARDWARE_TIER": os.getenv("SPM_HARDWARE_TIER", "SOVEREIGN"),
-    "EVENNIA_LIAISON_URL": os.getenv("EVENNIA_LIAISON_URL", "http://localhost:4005"),
-    "backend_max_tokens": int(os.getenv("BACKEND_MAX_TOKENS", "128000")),
+# Static defaults (no env var evaluation here — env reads happen lazily).
+_DEFAULT_VALUES: Dict[str, Any] = {
+    "BACKEND_LLM_URL": "http://localhost:8000/v1",
+    "BACKEND_API_KEY": "",
+    "SPM_PROXY_PORT": 5050,
+    "SPM_HARDWARE_TIER": "SOVEREIGN",
+    "EVENNIA_LIAISON_URL": "http://localhost:4005",
+    "backend_max_tokens": 128000,
 }
+
+# Integer-typed keys that should always produce int values.
+_INT_KEYS = frozenset({"SPM_PROXY_PORT", "backend_max_tokens"})
+
+# Mapping from config key → env var name (some differ, e.g. backend_max_tokens → BACKEND_MAX_TOKENS).
+_ENV_VAR_MAP: Dict[str, str] = {
+    "BACKEND_LLM_URL": "BACKEND_LLM_URL",
+    "BACKEND_API_KEY": "BACKEND_API_KEY",
+    "SPM_PROXY_PORT": "SPM_PROXY_PORT",
+    "SPM_HARDWARE_TIER": "SPM_HARDWARE_TIER",
+    "EVENNIA_LIAISON_URL": "EVENNIA_LIAISON_URL",
+    "backend_max_tokens": "BACKEND_MAX_TOKENS",
+}
+
+
+def get_default_settings() -> Dict[str, Any]:
+    """Return a fresh settings dict with current env-var overrides.
+
+    This is a lazy getter: it reads os.getenv() at call time so that
+    environment changes are always reflected.  It does NOT read config.json.
+    """
+    settings: Dict[str, Any] = {}
+    for key, fallback in _DEFAULT_VALUES.items():
+        env_key = _ENV_VAR_MAP[key]
+        raw = os.getenv(env_key, fallback if fallback != "" else None)
+        if key in _INT_KEYS:
+            settings[key] = int(raw) if raw is not None else fallback
+        else:
+            settings[key] = raw if raw is not None else fallback
+    return settings
+
+
+# Deprecated alias for backwards compatibility — prefer get_default_settings().
+DEFAULT_CONFIG: Dict[str, Any] = get_default_settings()
 
 
 class SettingsManager:
@@ -39,29 +74,39 @@ class SettingsManager:
         """Create default config.json if missing."""
         if not os.path.exists(self.config_path):
             os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
-            self.write_settings(DEFAULT_CONFIG)
+            self.write_settings(get_default_settings())
 
     def get_settings(self) -> Dict[str, Any]:
-        """Read and return current settings from config.json with env fallbacks."""
+        """Read and return current settings from config.json with env fallbacks.
+
+        Merge strategy (most-resilient-first):
+        1. Try to load config.json → merge with defaults (file overrides defaults).
+        2. If loading fails (missing file, corrupt JSON, I/O error) → use get_default_settings()
+           which reads env vars at call time and applies typed defaults.
+
+        This avoids the old behaviour where a corrupt config silently fell through
+        to a second os.getenv() call that could diverge from the file's own defaults.
+        """
         if os.path.exists(self.config_path):
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    # Merge with defaults
-                    merged = {**DEFAULT_CONFIG, **data}
-                    return merged
-            except Exception as e:
-                logger.error(f"[SettingsManager] Failed to read {self.config_path}: {e}")
+                # Merge: defaults first, then file values override.
+                merged = {**get_default_settings(), **data}
+                # Re-cast known integer keys in case the file stored them as strings.
+                for k in _INT_KEYS:
+                    if k in merged:
+                        merged[k] = int(merged[k])
+                return merged
+            except (json.JSONDecodeError, ValueError, TypeError, OSError) as e:
+                logger.warning(
+                    "[SettingsManager] Failed to parse %s, falling back to env defaults: %s",
+                    self.config_path,
+                    e,
+                )
 
-        # Fallback to env vars or defaults
-        return {
-            "BACKEND_LLM_URL": os.getenv("BACKEND_LLM_URL", DEFAULT_CONFIG["BACKEND_LLM_URL"]),
-            "BACKEND_API_KEY": os.getenv("BACKEND_API_KEY", DEFAULT_CONFIG["BACKEND_API_KEY"]),
-            "SPM_PROXY_PORT": int(os.getenv("SPM_PROXY_PORT", DEFAULT_CONFIG["SPM_PROXY_PORT"])),
-            "SPM_HARDWARE_TIER": os.getenv("SPM_HARDWARE_TIER", DEFAULT_CONFIG["SPM_HARDWARE_TIER"]),
-            "EVENNIA_LIAISON_URL": os.getenv("EVENNIA_LIAISON_URL", DEFAULT_CONFIG["EVENNIA_LIAISON_URL"]),
-            "backend_max_tokens": int(os.getenv("BACKEND_MAX_TOKENS", DEFAULT_CONFIG["backend_max_tokens"])),
-        }
+        # Fallback: fresh env-var read + typed defaults.
+        return get_default_settings()
 
     def write_settings(self, new_settings: Dict[str, Any]) -> Dict[str, Any]:
         """Write new settings to config.json and return updated dict."""
@@ -70,7 +115,7 @@ class SettingsManager:
         os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
         with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(current, f, indent=2)
-        logger.info(f"[SettingsManager] Updated settings in {self.config_path}")
+        logger.info("[SettingsManager] Updated settings in %s", self.config_path)
         return current
 
     update = write_settings
@@ -85,3 +130,13 @@ def get_settings_manager() -> SettingsManager:
     if _manager_instance is None:
         _manager_instance = SettingsManager()
     return _manager_instance
+
+
+def reset_settings_manager() -> None:
+    """Clear the module-level singleton for test safety.
+
+    Call this between tests that mutate the singleton to avoid cross-test
+    state leakage.
+    """
+    global _manager_instance
+    _manager_instance = None

@@ -65,7 +65,7 @@ async def root():
         "status": "online",
         "service": "Sovereign Persona Mesh Proxy",
         "port": 5050,
-        "hardware_tier": hw_config.tier.value,
+        "hardware_tier": tier_name,
         "max_context_tokens": hw_config.max_context_tokens,
         "gtt_vram_budget_gb": hw_config.gtt_vram_budget_gb
     }
