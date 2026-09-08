@@ -85,6 +85,9 @@ class HybridWorldBuilder:
             result = {rid: RoomMetadata(**r.model_dump()) for rid, r in self.templates[template_key].items()}
             logger.info(f"[HybridWorldBuilder] Instantiated {len(result)} rooms for template={template_key}")
             return result
+        if template_key == "dynamic":
+            logger.info(f"[HybridWorldBuilder] Instantiated empty world for template={template_key}")
+            return {}
         logger.warning(f"[HybridWorldBuilder] Unknown template={template_key}, falling back to default_meeting_room")
         return self.templates["default_meeting_room"]
 

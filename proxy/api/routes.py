@@ -299,6 +299,8 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # --- Step 2: Observer Inference Gating & Bypass Protocol ---
     system_prompt = next((m.content for m in request.messages if m.role == "system"), "You are Luna.")
     location_name = _extract_location_from_messages(request.messages, system_prompt)
+    if not consequences:
+        location_name = "[Unmapped - Awaiting GM_ACTION: CREATE_ROOM]"
 
     telemetry = get_telemetry_collector()
     telemetry.record_request(session_id=session_id, location_name=location_name, gating_level=gating_level, latency=(time.time() - t0) * 1000)
