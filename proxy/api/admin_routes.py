@@ -234,10 +234,10 @@ async def factory_reset():
             await conn.execute("TRUNCATE TABLE spm_cold_archives RESTART IDENTITY CASCADE;")
             await conn.execute("TRUNCATE TABLE world_state_sessions RESTART IDENTITY CASCADE;")
 
-            # Truncate all csa_memory tables
+            # Truncate all csa_memory and csa_lore_rules tables
             tables = await conn.fetch(
                 """SELECT table_name FROM information_schema.tables
-                   WHERE table_name LIKE 'csa_memory_%';"""
+                   WHERE table_name LIKE 'csa_memory_%' OR table_name LIKE 'csa_lore_rules_%';"""
             )
             for t in tables:
                 table_name = t["table_name"]
@@ -288,3 +288,90 @@ async def shutdown_system():
         "status": "success",
         "message": "Shutting down SPM and Game services gracefully."
     })
+
+@router.get("/lore/pending")
+async def get_pending_lore():
+    """Fetch all pending GM rules from all character tables."""
+    pool = AdminState.get_db_pool()
+    if pool is None:
+        return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
+    
+    pending_rules = []
+    try:
+        async with pool.acquire() as conn:
+            tables = await conn.fetch(
+                "SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'csa_lore_rules_%';"
+            )
+            for t in tables:
+                table_name = t["table_name"]
+                char_id = table_name.replace("csa_lore_rules_", "")
+                
+                # We need to gracefully handle tables without 'status' column yet
+                try:
+                    rows = await conn.fetch(f"SELECT id, rule_text, rule_type, status, created_at FROM {table_name} WHERE status = 'pending';")
+                    for r in rows:
+                        pending_rules.append({
+                            "char_id": char_id,
+                            "id": str(r["id"]),
+                            "rule_text": r["rule_text"],
+                            "rule_type": r["rule_type"],
+                            "status": r["status"],
+                            "created_at": r["created_at"].isoformat() if r["created_at"] else None
+                        })
+                except Exception:
+                    pass
+        return JSONResponse(content={"pending_rules": pending_rules})
+    except Exception as e:
+        logger.error(f"[AdminAPI] Error fetching pending lore: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/lore/{char_id}/{rule_id}/approve")
+async def approve_lore(char_id: str, rule_id: str):
+    """Approve a pending lore rule, setting its status to 'active'."""
+    pool = AdminState.get_db_pool()
+    if pool is None:
+        return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
+    
+    table_name = f"csa_lore_rules_{char_id.lower()}"
+    try:
+        async with pool.acquire() as conn:
+            res = await conn.execute(f"UPDATE {table_name} SET status = 'active' WHERE id = $1::uuid;", rule_id)
+            if res == "UPDATE 0":
+                return JSONResponse(status_code=404, content={"error": "Rule not found"})
+        return JSONResponse(content={"status": "success"})
+    except Exception as e:
+        logger.error(f"[AdminAPI] Error approving lore: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/lore/{char_id}/{rule_id}/reject")
+async def reject_lore(char_id: str, rule_id: str):
+    """Reject a pending lore rule by deleting it."""
+    pool = AdminState.get_db_pool()
+    if pool is None:
+        return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
+    
+    table_name = f"csa_lore_rules_{char_id.lower()}"
+    try:
+        async with pool.acquire() as conn:
+            res = await conn.execute(f"DELETE FROM {table_name} WHERE id = $1::uuid;", rule_id)
+            if res == "DELETE 0":
+                return JSONResponse(status_code=404, content={"error": "Rule not found"})
+        return JSONResponse(content={"status": "success"})
+    except Exception as e:
+        logger.error(f"[AdminAPI] Error rejecting lore: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/lore/test_connection")
+async def test_lore_connection(body: dict):
+    """Test connection to the alternate model."""
+    from proxy.backend_client.lemonade_client import LemonadeLLMClient
+    model_name = body.get("model_name", "")
+    
+    client = LemonadeLLMClient()
+    resolved = await client._resolve_model(model_name)
+    await client.close()
+    
+    if resolved:
+        return JSONResponse(content={"status": "success", "resolved_model": resolved})
+    else:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Model not found or unreachable"})
