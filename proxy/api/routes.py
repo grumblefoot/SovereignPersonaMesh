@@ -33,6 +33,7 @@ from proxy.core.telemetry import get_telemetry_collector
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+_background_tasks = set()
 
 # Module-level db_pool reference — set by tests via set_db_pool()
 _db_pool = None
@@ -52,31 +53,6 @@ lemonade_client = LemonadeLLMClient()
 evennia_client = EvenniaWorldClient()
 embedder = CPUEmbeddingEngine()
 
-def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str):
-    """Extracts GM actions from the parser and dispatches them asynchronously."""
-    actions = parser.extract_gm_actions()
-    for action in actions:
-        action_type = action.get("type")
-        logger.info(f"[GMAction] Dispatching GM Action: {action}")
-        if action_type == "MOVE":
-            asyncio.create_task(
-                evennia_client.move_character(
-                    character_id=action.get("entity", target_char),
-                    room_id=action.get("room_id", ""),
-                    session_id=session_id,
-                    idempotency_key=str(uuid.uuid4())
-                )
-            )
-        elif action_type == "CREATE_ROOM":
-            asyncio.create_task(
-                evennia_client.create_room(
-                    room_id=action.get("room_id", ""),
-                    name=action.get("name", "New Room"),
-                    desc=action.get("desc", ""),
-                    session_id=session_id,
-                    idempotency_key=str(uuid.uuid4())
-                )
-            )
 
 
 class ChatCompletionMessage(BaseModel):
@@ -215,7 +191,7 @@ async def _check_bulk_import(
         )
         # Spawn background task for actual processing (skip_registration since
         # we already registered above)
-        asyncio.create_task(
+        task = asyncio.create_task(
             worker.process_bulk_import_background(
                 session_id=session_id,
                 character_id=target_char,
@@ -223,6 +199,8 @@ async def _check_bulk_import(
                 skip_registration=True,
             )
         )
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
         return True
 
     return False
@@ -674,7 +652,7 @@ def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_
         action_type = action.get("type")
         logger.info(f"[GMAction] Dispatching GM Action: {action}")
         if action_type == "MOVE":
-            asyncio.create_task(
+            task = asyncio.create_task(
                 safe_execute(
                     evennia_client.move_character(
                         character_id=action.get("entity", target_char),
@@ -685,8 +663,10 @@ def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_
                     "MOVE"
                 )
             )
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
         elif action_type == "CREATE_ROOM":
-            asyncio.create_task(
+            task = asyncio.create_task(
                 safe_execute(
                     evennia_client.create_room(
                         room_id=action.get("room_id", ""),
@@ -698,6 +678,8 @@ def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_
                     "CREATE_ROOM"
                 )
             )
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
         else:
             logger.warning(f"[GMAction] Unrecognized GM action type: {action_type}")
 

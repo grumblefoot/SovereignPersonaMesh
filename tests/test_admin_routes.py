@@ -140,7 +140,7 @@ def test_delete_session_no_db():
     set_admin_db_pool(None)
     with patch('proxy.api.admin_routes.get_admin_db_pool', return_value=None):
         response = client.delete("/admin/api/v1/sessions/s1")
-        assert response.status_code == 530
+        assert response.status_code == 503
 
 def test_delete_session_error():
     mock_pool = MagicMock()
@@ -195,7 +195,7 @@ def test_factory_reset_no_db():
     with patch('proxy.api.admin_routes.ensure_db_pool', new_callable=AsyncMock) as mock_ensure:
         mock_ensure.return_value = None
         response = client.delete("/admin/api/v1/factory_reset")
-        assert response.status_code == 530
+        assert response.status_code == 503
 
 def test_factory_reset_error():
     mock_pool = MagicMock()

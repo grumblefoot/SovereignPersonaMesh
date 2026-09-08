@@ -21,60 +21,76 @@ from core.resource_manager import strings
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/api/v1", tags=["admin"])
 
-# Global db_pool reference passed from routes.py / main.py
-_admin_db_pool = None
 
+class AdminState:
+    """Encapsulates admin module state (db pool, lazy-init logic)."""
 
-def set_admin_db_pool(pool):
-    global _admin_db_pool
-    _admin_db_pool = pool
+    _db_pool: Any = None
 
-
-def get_admin_db_pool():
-    global _admin_db_pool
-    if _admin_db_pool is not None:
-        return _admin_db_pool
-    from proxy.api.routes import _db_pool
-    if _db_pool is not None:
-        _admin_db_pool = _db_pool
-        return _admin_db_pool
-    return None
-
-
-async def ensure_db_pool():
-    global _admin_db_pool
-    if _admin_db_pool is not None:
-        return _admin_db_pool
-    import os, asyncio, asyncpg
-    from proxy.api.routes import set_db_pool
-    host = os.getenv("POSTGRES_HOST", "localhost")
-    port = os.getenv("POSTGRES_PORT", "5432")
-    db = os.getenv("POSTGRES_DB", "litellm_postgres")
-    user = os.getenv("POSTGRES_USER", "spm_user")
-    pwd = os.getenv("POSTGRES_PASSWORD", "spm_secure_password")
-    dsn = f"postgresql://{user}:{pwd}@{host}:{port}/{db}"
-    try:
-        pool = await asyncio.wait_for(asyncpg.create_pool(dsn=dsn, min_size=1, max_size=5), timeout=2.0)
-        set_admin_db_pool(pool)
-        set_db_pool(pool)
-        logger.info("[AdminAPI] Lazy database connection pool successfully established.")
-        return pool
-    except Exception as e:
-        logger.warning(f"[AdminAPI] Failed lazy DB connection attempt: {e}")
+    @classmethod
+    def get_db_pool(cls) -> Any:
+        if cls._db_pool is not None:
+            return cls._db_pool
+        from proxy.api.routes import _db_pool
+        if _db_pool is not None:
+            cls._db_pool = _db_pool
+            return cls._db_pool
         return None
+
+    @classmethod
+    def set_db_pool(cls, pool: Any) -> None:
+        cls._db_pool = pool
+
+    @classmethod
+    async def ensure_db_pool(cls) -> Any:
+        if cls._db_pool is not None:
+            return cls._db_pool
+        import os, asyncio, asyncpg
+        from proxy.api.routes import set_db_pool
+        host = os.getenv("POSTGRES_HOST", "localhost")
+        port = os.getenv("POSTGRES_PORT", "5432")
+        db = os.getenv("POSTGRES_DB", "litellm_postgres")
+        user = os.getenv("POSTGRES_USER", "spm_user")
+        pwd = os.getenv("POSTGRES_PASSWORD", "spm_secure_password")
+        dsn = f"postgresql://{user}:{pwd}@{host}:{port}/{db}"
+        try:
+            pool = await asyncio.wait_for(asyncpg.create_pool(dsn=dsn, min_size=1, max_size=5), timeout=2.0)
+            cls.set_db_pool(pool)
+            set_db_pool(pool)
+            logger.info("[AdminAPI] Lazy database connection pool successfully established.")
+            return pool
+        except Exception as e:
+            logger.warning(f"[AdminAPI] Failed lazy DB connection attempt: {e}")
+            return None
+
+
+def set_admin_db_pool(pool) -> None:
+    """Backward-compatible setter — delegates to AdminState."""
+    AdminState.set_db_pool(pool)
+
+
+def get_admin_db_pool() -> Any:
+    """Backward-compatible getter — delegates to AdminState."""
+    return AdminState.get_db_pool()
+
+
+async def ensure_db_pool() -> Any:
+    """Backward-compatible lazy-init — delegates to AdminState."""
+    return await AdminState.ensure_db_pool()
 
 
 @router.get("/stats")
 async def get_admin_stats():
     """Return live system telemetry, active sessions, and database size."""
     telemetry = get_telemetry_collector()
-    stats = telemetry.get_metrics(_admin_db_pool)
+    stats = telemetry.get_metrics(AdminState.get_db_pool())
 
     # If DB pool is available, fetch actual DB table stats
     db_size_mb = 0.0
-    if _admin_db_pool is not None:
+    pool = AdminState.get_db_pool()
+    if pool is not None:
         try:
-            async with _admin_db_pool.acquire() as conn:
+            async with pool.acquire() as conn:
                 size_bytes = await conn.fetchval(
                     "SELECT pg_database_size(current_database());"
                 )
@@ -154,7 +170,7 @@ async def delete_session(session_id: str):
     pool = get_admin_db_pool()
     if pool is None:
         return JSONResponse(
-            status_code=530,
+            status_code=503,
             content={"status": "error", "message": strings.get("api.errors.db_unavailable")}
         )
 
@@ -207,7 +223,7 @@ async def factory_reset():
         pool = await ensure_db_pool()
     if pool is None:
         return JSONResponse(
-            status_code=530,
+            status_code=503,
             content={"status": "error", "message": strings.get("api.errors.db_unavailable")}
         )
 
