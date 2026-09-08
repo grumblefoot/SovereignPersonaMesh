@@ -19,7 +19,7 @@ async def test_extract_initial_rules():
                 # Mock async generator
                 async def mock_gen():
                     yield "```json\\n"
-                    yield "[{\\"rule_text\\": \\"Character is scared of fire.\\", \\"rule_type\\": \\"invariant\\"}]\\n"
+                    yield '[{"rule_text": "Character is scared of fire.", "rule_type": "invariant"}]\\n'
                     yield "```"
                 llm_mock.return_value = mock_gen()
                 

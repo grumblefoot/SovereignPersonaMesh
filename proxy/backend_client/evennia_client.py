@@ -61,7 +61,7 @@ class EvenniaWorldClient:
             "character_id": character_id,
             "room_id": room_id,
             "session_id": session_id,
-            "template_key": "dungeon_cellar"
+            "template_key": "dynamic"
         }
         endpoint = f"{self.base_url}/world/move"
         headers = {"X-Idempotency-Key": idempotency_key} if idempotency_key else {}
@@ -77,7 +77,7 @@ class EvenniaWorldClient:
             "room_name": name,
             "description": desc,
             "session_id": session_id,
-            "template_key": "dungeon_cellar"
+            "template_key": "dynamic"
         }
         endpoint = f"{self.base_url}/world/rooms"
         headers = {"X-Idempotency-Key": idempotency_key} if idempotency_key else {}

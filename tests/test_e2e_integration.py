@@ -300,10 +300,50 @@ class TestSillyTavernChatCompletion:
 
             resp = proxy_client.post("/v1/chat/completions", json=payload)
             assert resp.status_code == 200
+
+    def test_unmapped_location_prompts_gm_action(self, proxy_client):
+        payload = {
+            "model": "google/gemma-4-26B-A4B-it",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Character: Seraphina\nYou are Seraphina.",
+                },
+                {"role": "user", "content": "Hello."},
+            ],
+            "stream": False,
+        }
+
+        with patch(
+            "proxy.api.routes.evennia_client.submit_action",
+            new_callable=AsyncMock,
+        ) as mock_action, patch(
+            "proxy.api.routes.lemonade_client.generate_stream"
+        ) as mock_llm:
+            
+            # Return empty consequences (simulating an empty dynamic world on Turn 1)
+            mock_action.return_value = {
+                "success": True,
+                "action_tick": 2003,
+                "consequences": [],
+            }
+
+            async def mock_stream(*args, **kwargs):
+                # Verify that the location_name unmapped hint was passed into the spatial context
+                messages = kwargs.get("messages", [])
+                csa_prompt = next((m for m in messages if m["role"] == "system"), None)
+                assert csa_prompt is not None
+                assert "Location: [Unmapped - Awaiting GM_ACTION: CREATE_ROOM]" in csa_prompt["content"]
+                yield "Hello there."
+
+            mock_llm.side_effect = mock_stream
+
+            resp = proxy_client.post("/v1/chat/completions", json=payload)
+            assert resp.status_code == 200
             data = resp.json()
             assert (
                 data["choices"][0]["message"]["content"]
-                == "Hello there, traveler."
+                == "Hello there."
             )
             assert mock_action.call_args.kwargs["target_id"] == "seraphina"
 
@@ -764,4 +804,72 @@ class TestBlackoutBypass:
             assert result is False
         finally:
             await pool.close()
+            await conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 8: Factory Reset Integration
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestFactoryResetIntegration:
+    @pytest.mark.asyncio
+    async def test_factory_reset_wipes_all_state(self, proxy_client, evennia_client):
+        """
+        Verify that /admin/api/v1/factory_reset completely truncates csa_memory_* tables,
+        tracking tables, clears telemetry, and resets the Evennia world state.
+        """
+        from proxy.core.telemetry import get_telemetry_collector
+        import evennia_world.app as evennia_mod
+        
+        conn = await asyncpg.connect(**DB_CONFIG)
+        try:
+            # 1. Setup mock data to ensure we have something to wipe
+            await conn.execute("SELECT create_csa_memory_table('seraphina');")
+            await conn.execute(
+                "INSERT INTO csa_memory_seraphina "
+                "(session_id, sensory_input, inner_monologue, public_response) "
+                "VALUES ('fr_test_sess', 'To be wiped', 'Thinking about wipe', 'Will be wiped');"
+            )
+            # Tracking tables
+            await conn.execute("TRUNCATE TABLE spm_chat_imports, spm_cold_archives, world_state_sessions RESTART IDENTITY CASCADE;")
+            await conn.execute("INSERT INTO spm_chat_imports (session_id, character_id, total_messages) VALUES ('fr_test_sess', 'seraphina', 10);")
+            await conn.execute("INSERT INTO spm_cold_archives (session_id, character_id, archive_path, record_count) VALUES ('fr_test_sess', 'seraphina', 'mock/path', 10);")
+            await conn.execute("INSERT INTO world_state_sessions (session_id, template_key, room_id, room_data) VALUES ('fr_test_sess', 'dungeon_cellar', 'cellar', '{}'::jsonb);")
+            
+            # Setup Telemetry
+            telemetry = get_telemetry_collector()
+            telemetry.record_request(session_id="fr_test_sess", gating_level="direct", latency=15.0)
+            
+            # Put something in Evennia app state
+            evennia_mod.app_state.session_worlds["fr_test_sess"] = "some_world_id"
+            
+            # 2. Call factory_reset via proxy admin routes
+            resp = proxy_client.delete("/admin/api/v1/factory_reset")
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "success"
+
+            evennia_resp = evennia_client.delete("/api/v1/world/admin/reset")
+            assert evennia_resp.status_code == 200
+            
+            # 3. Verify PostgreSQL Wipes
+            count_memory = await conn.fetchval("SELECT count(*) FROM csa_memory_seraphina;")
+            assert count_memory == 0, "csa_memory_seraphina was not truncated"
+            
+            count_imports = await conn.fetchval("SELECT count(*) FROM spm_chat_imports;")
+            assert count_imports == 0, "spm_chat_imports was not truncated"
+            
+            count_archives = await conn.fetchval("SELECT count(*) FROM spm_cold_archives;")
+            assert count_archives == 0, "spm_cold_archives was not truncated"
+            
+            count_ws = await conn.fetchval("SELECT count(*) FROM world_state_sessions;")
+            assert count_ws == 0, "world_state_sessions was not truncated"
+            
+            # 4. Verify Telemetry Wipe
+            stats = telemetry.get_stats()
+            assert stats["total_requests"] == 0, "Telemetry was not reset"
+            
+            # 5. Verify Evennia Wipe
+            assert len(evennia_mod.app_state.session_worlds) == 0, "Evennia session_worlds cache was not cleared"
+
+        finally:
             await conn.close()

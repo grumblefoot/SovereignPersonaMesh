@@ -35,7 +35,7 @@ class ActionPayload(BaseModel):
     target_id: Optional[str] = None
     raw_text: str
     session_id: str = "default_session"
-    template_key: str = "dungeon_cellar"
+    template_key: str = "dynamic"
 
 
 class SensoryConsequence(BaseModel):

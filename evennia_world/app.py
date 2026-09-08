@@ -49,7 +49,7 @@ DB_CONFIG = {
 }
 
 
-def _ensure_world(template_key: str = "dungeon_cellar", session_id: str = "default_session") -> Dict[str, RoomMetadata]:
+def _ensure_world(template_key: str = "dynamic", session_id: str = "default_session") -> Dict[str, RoomMetadata]:
     """Ensure session-scoped world state matches the requested template. Returns the world dict for the session."""
     if session_id not in app_state.session_worlds:
         app_state.session_worlds[session_id] = {}
@@ -62,7 +62,7 @@ def _ensure_world(template_key: str = "dungeon_cellar", session_id: str = "defau
     return app_state.session_worlds[session_id][template_key]
 
 
-def _get_session_world(session_id: str, template_key: str = "dungeon_cellar") -> Optional[Dict[str, RoomMetadata]]:
+def _get_session_world(session_id: str, template_key: str = "dynamic") -> Optional[Dict[str, RoomMetadata]]:
     """Get the world dict for a session. Returns None if the session doesn't exist (caller should call _ensure_world)."""
     if session_id not in app_state.session_worlds:
         return None
@@ -131,7 +131,7 @@ async def submit_action(payload: ActionPayload, background_tasks: BackgroundTask
     app_state.action_tick_counter += 1
 
     # Ensure session-scoped world is loaded
-    template_key = getattr(payload, "template_key", "dungeon_cellar")
+    template_key = getattr(payload, "template_key", "dynamic")
     _ensure_world(template_key, payload.session_id)
     world = _get_session_world(payload.session_id, template_key)
     if not world:
@@ -216,7 +216,7 @@ async def submit_action(payload: ActionPayload, background_tasks: BackgroundTask
 # ── World state query ───────────────────────────────────────────────────
 
 @app.get("/api/v1/world/state", response_model=CharacterWorldState)
-async def query_world_state(character_id: str, session_id: str = "default_session", template_key: str = "dungeon_cellar"):
+async def query_world_state(character_id: str, session_id: str = "default_session", template_key: str = "dynamic"):
     """
     Queries local room metadata for any character (lighting, exits, nearby entities, distances).
     Session-scoped state per FR-001.
@@ -299,7 +299,7 @@ class CreateRoomPayload(BaseModel):
     room_id: str
     room_name: str
     description: str
-    template_key: str = "dungeon_cellar"
+    template_key: str = "dynamic"
     session_id: str = "default_session"
 
 @app.post("/api/v1/world/rooms")
@@ -337,7 +337,7 @@ class CharacterMovePayload(BaseModel):
     """Move a character to a room within the active template."""
     character_id: str
     room_id: str
-    template_key: str = "dungeon_cellar"
+    template_key: str = "dynamic"
 
 
 class CharacterResponse(BaseModel):
@@ -387,7 +387,7 @@ async def add_character_to_world(payload: CharacterMovePayload, background_tasks
 
 
 @app.delete("/api/v1/world/characters/{character_id}", response_model=CharacterResponse)
-async def remove_character_from_world(character_id: str, background_tasks: BackgroundTasks, template_key: str = "dungeon_cellar", session_id: str = "default_session"):
+async def remove_character_from_world(character_id: str, background_tasks: BackgroundTasks, template_key: str = "dynamic", session_id: str = "default_session"):
     """Remove a character from all rooms in a template."""
     modified_rooms = set()
     for room_id in world_builder.templates.get(template_key, {}):
@@ -422,9 +422,9 @@ async def remove_character_from_world(character_id: str, background_tasks: Backg
 
 
 @app.get("/api/v1/world/characters")
-async def list_characters(template_key: str = "dungeon_cellar"):
+async def list_characters(template_key: str = "dynamic"):
     """List all characters in a template with their current rooms."""
-    if template_key not in world_builder.templates:
+    if template_key not in world_builder.templates and template_key != "dynamic":
         raise HTTPException(status_code=404, detail=f"Template '{template_key}' not found")
 
     result: List[Dict[str, Any]] = []
@@ -565,7 +565,7 @@ async def get_lock_info(session_id: str):
 
 # ── Internal helpers ────────────────────────────────────────────────────
 
-def _find_actor_room(character_id: str, session_id: str = "default_session", template_key: str = "dungeon_cellar") -> Optional[str]:
+def _find_actor_room(character_id: str, session_id: str = "default_session", template_key: str = "dynamic") -> Optional[str]:
     """Find the room_id where character_id is present in the active world for a session."""
     world = _get_session_world(session_id, template_key)
     if not world:
@@ -616,7 +616,7 @@ def _compute_distance_and_barriers(
     return (45.0, [_str_to_barrier("closed_door"), _str_to_barrier("solid_wall")])
 
 
-def _compute_all_distances(character_id: str, session_id: str = "default_session", template_key: str = "dungeon_cellar") -> Dict[str, float]:
+def _compute_all_distances(character_id: str, session_id: str = "default_session", template_key: str = "dynamic") -> Dict[str, float]:
     """Compute distances from character_id to every other character in the world for a session."""
     distances: Dict[str, float] = {}
     world = _get_session_world(session_id)
@@ -667,7 +667,7 @@ async def startup_event():
     except Exception as e:
         logging.error(f"Failed to create asyncpg pool: {e}")
         
-    _ensure_world("dungeon_cellar")
+    _ensure_world("dynamic")
 
 @app.on_event("shutdown")
 async def shutdown_event():
