@@ -5,5 +5,8 @@
   "SPM_HARDWARE_TIER": "SOVEREIGN",
   "EVENNIA_LIAISON_URL": "http://localhost:4005",
   "backend_max_tokens": 128000,
-  "setting_1": "new"
+  "setting_1": "new",
+  "periodic_review_cadence": 1,
+  "use_alternate_extraction_model": false,
+  "alternate_extraction_model_name": "google/gemma-4-26B-A4B-it"
 }

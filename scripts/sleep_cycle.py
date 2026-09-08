@@ -23,13 +23,13 @@ class MemoryConsolidationWorker:
         self.consolidation_model_url = consolidation_model_url
 
     async def _call_consolidation_model(self, prompt: str) -> str:
-        """Call Gemma 9B via OpenAI-compatible chat completions endpoint."""
+        """Call Consolidation Model via OpenAI-compatible chat completions endpoint."""
         base = self.consolidation_model_url.rstrip("/")
         if not base.endswith("/v1"):
             base = f"{base}/v1"
         url = f"{base}/chat/completions"
         payload = {
-            "model": "google/gemma-4-9B-it",
+            "model": os.getenv("CONSOLIDATION_MODEL_NAME", "google/gemma-4-E4B-it"),
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 256,
             "temperature": 0.3,

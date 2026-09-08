@@ -161,3 +161,32 @@ The SPM codebase currently relies on a massive amount of hardcoded strings scatt
 1. **Centralized Assets:** Move all user-facing text, LLM prompts, fallback messages, and API error strings into a centralized `res/strings/` JSON/YAML resource directory.
 2. **String Manager:** Implement a `ResourceManager` to load these at runtime and expose them via dot-notation (e.g., `strings.prompts.sleep_cycle_template`, `strings.errors.unauthorized`).
 3. **Rollout:** Since the repository has hit 90% test coverage, it is now mathematically safe to execute this large-scale refactor with a safety net protecting the business logic.
+
+---
+
+### [BUG-008] GM Lore Extraction Over-Targets User Persona
+- **Status:** 🟡 UNRESOLVED (Workaround in place)
+- **Description:** SillyTavern bundles the User Persona into the `system` role alongside the Character Card and Scenario. Consequently, `LoreExtractionWorker` processes the User Persona as part of the GM context and occasionally extracts rules regarding the User.
+- **Current Workaround:** Updated `INITIAL_RULES_PROMPT` to explicitly instruct the LLM to ignore the User/Player persona.
+- **Proposed Fix:** Implement a Regex parser in `routes.py` to physically filter out the `[User's Persona]` block from `request.messages` before passing it to the extraction LLM.
+
+---
+
+### [BUG-009] [ACTIVE LORE] Bleedthrough From Previous Sessions
+- **Status:** 🟢 RESOLVED (`proxy/api/admin_routes.py`)
+- **Description:** Starting a "fresh chat" in SillyTavern does not clear the SPM database. The `csa_lore_rules` table retains previously 'active' rules, causing old "hardcoded" lore to bleed into new chats.
+- **Resolution:** Updated the `/factory_reset` endpoint to dynamically discover and `TRUNCATE` all `csa_lore_rules_%` tables alongside `csa_memory_%` tables. Users can now click Factory Reset in the Admin UI to safely wipe all character lore and start completely fresh.
+
+---
+
+### [BUG-010] No Rule Extraction on Fresh Chat (Turn 1)
+- **Status:** 🟢 RESOLVED (`proxy/rag/lore_extractor.py`)
+- **Description:** The LoreExtractionWorker fails to generate new overarching scenario rules on Turn 1 of a fresh chat, despite having the full character card and scenario in the system prompt.
+- **Resolution:** Completely overhauled the `INITIAL_RULES_PROMPT`. Added explicit targeting for "Core Identity" elements (Character Goals, Motivations, Deep Personality Traits, and Scenario Parameters) and provided strict examples so the LLM knows exactly what to look for when initializing a new character, even if no conversational context has occurred yet.
+
+---
+
+### [BUG-011] Spatial Gating Map Defaults to 4-Room `dungeon_cellar`
+- **Status:** 🟡 UNRESOLVED (Investigating)
+- **Description:** The spatial gating matrix initializes 4 locations and places the user in 'The Cellar' by default, ignoring the actual context of the first interaction.
+- **Proposed Fix:** Modify `_ensure_world` in `evennia_world/app.py` to dynamically resolve the initial template based on the first interaction's context, rather than hardcoding `template_key="dungeon_cellar"`.
