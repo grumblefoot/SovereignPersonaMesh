@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 class EvenniaWorldClient:
     def __init__(self, base_url: str = "http://localhost:4005/api/v1"):
         self.base_url = base_url.rstrip("/")
+        self.client = httpx.AsyncClient(timeout=10.0)
+
+    async def close(self):
+        await self.client.aclose()
 
     async def submit_action(
         self,
@@ -31,45 +35,18 @@ class EvenniaWorldClient:
             "session_id": session_id
         }
         endpoint = f"{self.base_url}/world/action"
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            try:
-                resp = await client.post(endpoint, json=payload)
-                if resp.status_code == 200:
-                    return resp.json()
-            except Exception as e:
-                logger.warning(f"[EvenniaClient] Failed to connect to Evennia at {endpoint}: {e}. Returning mock direct feed.")
         
-        # Fallback mock response if Evennia service is starting up
-        return {
-            "success": True,
-            "action_tick": 1421,
-            "consequences": [
-                {
-                    "recipient_id": character_id,
-                    "sensory_feed": raw_text,
-                    "gating_level": "direct",
-                    "distance_ft": 0.0,
-                    "barriers": []
-                }
-            ]
-        }
+        resp = await self.client.post(endpoint, json=payload)
+        resp.raise_for_status()
+        return resp.json()
 
     async def get_character_state(self, character_id: str, session_id: str = "default_session") -> Dict[str, Any]:
         """Queries current spatial state for a character (GET /api/v1/world/state)."""
         endpoint = f"{self.base_url}/world/state?character_id={character_id}&session_id={session_id}"
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            try:
-                resp = await client.get(endpoint)
-                if resp.status_code == 200:
-                    return resp.json()
-            except Exception as e:
-                logger.warning(f"[EvenniaClient] State query failed: {e}")
-        return {
-            "character_id": character_id,
-            "gating_level": "direct",
-            "sensory_feed": "Standing in room.",
-            "distances": {}
-        }
+        
+        resp = await self.client.get(endpoint)
+        resp.raise_for_status()
+        return resp.json()
 
     async def move_character(self, character_id: str, room_id: str, session_id: str = "default_session", idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         """Moves a character to a room."""
@@ -81,13 +58,10 @@ class EvenniaWorldClient:
         }
         endpoint = f"{self.base_url}/world/move"
         headers = {"X-Idempotency-Key": idempotency_key} if idempotency_key else {}
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            try:
-                resp = await client.post(endpoint, json=payload, headers=headers)
-                return resp.json() if resp.status_code == 200 else {}
-            except Exception as e:
-                logger.warning(f"[EvenniaClient] Failed to move character: {e}")
-        return {}
+        
+        resp = await self.client.post(endpoint, json=payload, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
 
     async def create_room(self, room_id: str, name: str, desc: str, session_id: str = "default_session", idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         """Creates a new dynamic room."""
@@ -100,10 +74,7 @@ class EvenniaWorldClient:
         }
         endpoint = f"{self.base_url}/world/rooms"
         headers = {"X-Idempotency-Key": idempotency_key} if idempotency_key else {}
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            try:
-                resp = await client.post(endpoint, json=payload, headers=headers)
-                return resp.json() if resp.status_code == 200 else {}
-            except Exception as e:
-                logger.warning(f"[EvenniaClient] Failed to create room: {e}")
-        return {}
+        
+        resp = await self.client.post(endpoint, json=payload, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
