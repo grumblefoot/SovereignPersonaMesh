@@ -16,7 +16,7 @@ from config.hardware_tiers import get_hardware_config
 from proxy.core.logger import setup_spm_logging
 from proxy.core.telemetry import TelemetryCollector
 from proxy.api.routes import router as api_router
-from proxy.api.admin_routes import router as admin_router
+from proxy.api.admin_routes import router as admin_router, AdminState
 from config.hardware_tiers import get_hardware_config
 
 load_dotenv()
@@ -80,9 +80,9 @@ async def health_check():
 async def startup_event():
     import asyncpg
     from proxy.api.routes import set_db_pool, _db_pool, _db_pool_explicitly_set
-    from proxy.api.admin_routes import set_admin_db_pool, _admin_db_pool
+    from proxy.api.admin_routes import set_admin_db_pool
 
-    if _db_pool_explicitly_set or (_db_pool is not None and _admin_db_pool is not None):
+    if _db_pool_explicitly_set or (_db_pool is not None and AdminState.get_db_pool() is not None):
         return
 
     host = os.getenv("POSTGRES_HOST", "localhost")
@@ -96,7 +96,7 @@ async def startup_event():
         app.state.db_pool = pool
         if _db_pool is None:
             set_db_pool(pool)
-        if _admin_db_pool is None:
+        if AdminState.get_db_pool() is None:
             set_admin_db_pool(pool)
         
         # Hydrate telemetry buffers from the DB
@@ -121,7 +121,7 @@ async def shutdown_event():
         app.state.db_pool = None
     proxy.api.routes._db_pool = None
     proxy.api.routes._db_pool_explicitly_set = False
-    proxy.api.admin_routes._admin_db_pool = None
+    proxy.api.admin_routes.AdminState.set_db_pool(None)
     logger.info("[SPMProxyMain] Database pool closed.")
 
 

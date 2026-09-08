@@ -94,6 +94,8 @@ class TestFR004Observability:
     @pytest.mark.asyncio
     async def test_session_deletion_and_factory_reset_mock(self):
         """DELETE /admin/api/v1/sessions/{id} and DELETE /admin/api/v1/factory_reset."""
+        from proxy.api.admin_routes import AdminState
+
         mock_conn = AsyncMock()
         mock_conn.fetch.return_value = [{"table_name": "csa_memory_seraphina"}]
         mock_conn.execute.return_value = "DELETE 5"
@@ -105,7 +107,8 @@ class TestFR004Observability:
         mock_pool = MagicMock()
         mock_pool.acquire.return_value = mock_cm
 
-        with patch("proxy.api.admin_routes._admin_db_pool", mock_pool):
+        AdminState.set_db_pool(mock_pool)
+        try:
             with TestClient(proxy_app) as client:
                 # Test session deletion
                 resp_del = client.delete("/admin/api/v1/sessions/test_sess_99")
@@ -116,6 +119,8 @@ class TestFR004Observability:
                 resp_reset = client.delete("/admin/api/v1/factory_reset")
                 assert resp_reset.status_code == 200
                 assert resp_reset.json()["status"] == "success"
+        finally:
+            AdminState.set_db_pool(None)
 
     @pytest.mark.asyncio
     async def test_telemetry_hydration_from_db(self):
