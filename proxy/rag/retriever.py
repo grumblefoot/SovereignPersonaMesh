@@ -108,7 +108,7 @@ class EpisodicRAGRetriever:
             await conn.execute("SELECT create_csa_lore_rules_table($1);", character_id.lower())
             
             # Fetch Invariants
-            invariants_query = f"SELECT id, rule_text, rule_type FROM {table_name} WHERE rule_type = 'invariant';"
+            invariants_query = f"SELECT id, rule_text, rule_type FROM {table_name} WHERE rule_type = 'invariant' AND status = 'active';"
             invariant_records = await conn.fetch(invariants_query)
             
             # Fetch Conditional Triggers / Game Over
@@ -118,6 +118,7 @@ class EpisodicRAGRetriever:
                 FROM {table_name}
                 WHERE rule_type IN ('conditional_trigger', 'game_over')
                   AND rule_embedding IS NOT NULL
+                  AND status = 'active'
                   AND (rule_embedding <=> $1::vector) < $2
                 ORDER BY cosine_distance ASC;
             """
