@@ -242,9 +242,9 @@ def reset_world_state(app_module):
     """Reset world state before every test."""
     from evennia_world.app import app as fa_app
     fa_app.state.start_time = 0
-    app_module.current_world = {}
-    app_module.room_to_template = {}
-    app_module.action_tick_counter = 0
+    app_module.app_state.current_world = {}
+    app_module.app_state.room_to_template = {}
+    app_module.app_state.action_tick_counter = 0
     app_module.lock_manager = type(app_module.lock_manager)(default_ttl=60.0)
     app_module.world_builder = HybridWorldBuilder()
     app_module._ensure_world("dungeon_cellar")
