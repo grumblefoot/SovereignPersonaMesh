@@ -188,12 +188,51 @@
         <label>Backend Max Tokens (Hardware Boundary)</label>
         <input type="number" id="cfg-backend-max-tokens" value="128000">
       </div>
+      <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0;">
+      <h3 style="font-size: 1rem; margin-bottom: 12px;">Auto-Populating GM Rules</h3>
+      <div class="form-group">
+        <label>Periodic Review Cadence (Messages)</label>
+        <input type="number" id="cfg-cadence" value="15">
+      </div>
+      <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+        <input type="checkbox" id="cfg-use-alt" style="width: auto;">
+        <label style="margin: 0;">Use Alternate Extraction Model</label>
+      </div>
+      <div class="form-group">
+        <label>Alternate Extraction Model Name</label>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <input type="text" id="cfg-alternate-model" value="google/gemma-4-26B-A4B-it">
+          <button class="btn" style="white-space: nowrap;" onclick="testAlternateModel()">Test Connection</button>
+          <span id="test-connection-status" style="font-weight: bold;"></span>
+        </div>
+      </div>
       <button class="btn" onclick="saveConfig()">Save Configuration</button>
     </div>
   </div>
 
   <!-- TAB 3: DATA MANAGEMENT -->
   <div id="data" class="tab-content">
+    
+    <div class="card" style="margin-bottom: 24px;">
+      <h2 style="font-size: 1.1rem; margin-bottom: 16px;">Pending GM Rules</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Character</th>
+            <th>Type</th>
+            <th>Rule Text</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="pending-rules-tbody">
+          <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Loading pending rules...</td></tr>
+        </tbody>
+      </table>
+      <div style="margin-top: 12px; text-align: right;">
+        <button class="btn" onclick="fetchPendingRules()">Refresh Rules</button>
+      </div>
+    </div>
+
     <div class="card" style="max-width: 600px;">
       <h2 style="font-size: 1.1rem; margin-bottom: 16px; color: var(--danger);">Danger Zone</h2>
       <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 20px;">
@@ -219,6 +258,8 @@
       document.querySelectorAll('.nav button').forEach(el => el.classList.remove('active'));
       document.getElementById(id).classList.add('active');
       if (event && event.target) event.target.classList.add('active');
+      
+      if (id === 'data') fetchPendingRules();
     }
 
     async function shutdownService() {
@@ -425,6 +466,9 @@
         document.getElementById('cfg-llm-url').value = data.BACKEND_LLM_URL || '';
         document.getElementById('cfg-api-key').value = data.BACKEND_API_KEY || '';
         document.getElementById('cfg-port').value = data.SPM_PROXY_PORT || 5050;
+        document.getElementById('cfg-cadence').value = data.periodic_review_cadence || 15;
+        document.getElementById('cfg-use-alt').checked = data.use_alternate_extraction_model === 'true' || data.use_alternate_extraction_model === true;
+        document.getElementById('cfg-alternate-model').value = data.alternate_extraction_model_name || 'google/gemma-4-26B-A4B-it';
       } catch (e) {}
     }
 
@@ -433,6 +477,9 @@
         BACKEND_LLM_URL: document.getElementById('cfg-llm-url').value,
         BACKEND_API_KEY: document.getElementById('cfg-api-key').value,
         SPM_PROXY_PORT: parseInt(document.getElementById('cfg-port').value),
+        periodic_review_cadence: parseInt(document.getElementById('cfg-cadence').value),
+        use_alternate_extraction_model: document.getElementById('cfg-use-alt').checked,
+        alternate_extraction_model_name: document.getElementById('cfg-alternate-model').value
       };
       const res = await fetch('/admin/api/v1/config', {
         method: 'POST',
@@ -440,6 +487,74 @@
         body: JSON.stringify(payload),
       });
       if (res.ok) alert('Settings saved successfully!');
+    }
+
+    async function testAlternateModel() {
+      const modelName = document.getElementById('cfg-alternate-model').value;
+      const statusSpan = document.getElementById('test-connection-status');
+      statusSpan.textContent = "Testing...";
+      statusSpan.style.color = "var(--text)";
+      try {
+        const res = await fetch('/admin/api/v1/lore/test_connection', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ model_name: modelName })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+          statusSpan.textContent = "✓ Connected (" + data.resolved_model + ")";
+          statusSpan.style.color = "var(--success)";
+        } else {
+          statusSpan.textContent = "✗ Failed: " + (data.message || data.error);
+          statusSpan.style.color = "var(--error)";
+        }
+      } catch (e) {
+        statusSpan.textContent = "✗ Error testing connection.";
+        statusSpan.style.color = "var(--error)";
+      }
+    }
+
+    async function fetchPendingRules() {
+      try {
+        const res = await fetch('/admin/api/v1/lore/pending');
+        if (!res.ok) return;
+        const data = await res.json();
+        const tbody = document.getElementById('pending-rules-tbody');
+        if (!data.pending_rules || data.pending_rules.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No pending rules.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = '';
+        for (const r of data.pending_rules) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${r.char_id}</td>
+            <td><span class="badge ${r.rule_type === 'game_over' ? 'badge-blackout' : 'badge-muffled'}">${r.rule_type}</span></td>
+            <td>${r.rule_text}</td>
+            <td>
+              <button class="btn" style="padding: 4px 8px; font-size: 0.8rem;" onclick="approveRule('${r.char_id}', '${r.id}')">Approve</button>
+              <button class="btn btn-danger" style="padding: 4px 8px; font-size: 0.8rem; margin-left: 4px;" onclick="rejectRule('${r.char_id}', '${r.id}')">Reject</button>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        }
+      } catch (e) {
+        console.error('Error fetching pending rules:', e);
+      }
+    }
+
+    async function approveRule(charId, ruleId) {
+      try {
+        await fetch(`/admin/api/v1/lore/${charId}/${ruleId}/approve`, { method: 'POST' });
+        fetchPendingRules();
+      } catch (e) { alert('Error approving rule'); }
+    }
+
+    async function rejectRule(charId, ruleId) {
+      try {
+        await fetch(`/admin/api/v1/lore/${charId}/${ruleId}/reject`, { method: 'POST' });
+        fetchPendingRules();
+      } catch (e) { alert('Error rejecting rule'); }
     }
 
     function clearThoughtStreamUI() {

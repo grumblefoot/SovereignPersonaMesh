@@ -107,9 +107,11 @@ BEGIN
             rule_text TEXT NOT NULL,
             rule_type VARCHAR(50) NOT NULL, -- invariant, conditional_trigger, game_over
             rule_embedding VECTOR(3584),
+            status VARCHAR(20) DEFAULT ''active'',
             created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
-    ', table_name);
+        ALTER TABLE %I ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT ''active'';
+    ', table_name, table_name);
 END;
 $$ LANGUAGE plpgsql;
 
