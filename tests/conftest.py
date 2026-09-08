@@ -22,3 +22,16 @@ async def db_pool():
     )
     yield pool
     await pool.close()
+
+import pytest
+from proxy.api.routes import evennia_client
+from proxy.api.routes import lemonade_client
+
+@pytest.fixture(autouse=True)
+def reset_clients():
+    """Clear cached clients between tests to avoid 'Event loop is closed' errors."""
+    evennia_client._client = None
+    lemonade_client._client = None
+    yield
+    evennia_client._client = None
+    lemonade_client._client = None

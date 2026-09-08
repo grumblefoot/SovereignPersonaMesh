@@ -33,7 +33,7 @@ async def test_persist_room(sample_room):
     mock_conn = AsyncMock()
     mock_pool.acquire.return_value = AsyncContextManagerMock(mock_conn)
     
-    with patch("evennia_world.app._db_pool", mock_pool):
+    with patch("evennia_world.app.app_state._db_pool", mock_pool):
         await _persist_room("test_session", "dungeon_cellar", "test_persist_room", sample_room)
         
         # Verify execute was called
@@ -57,7 +57,7 @@ async def test_log_objective_action():
     mock_conn = AsyncMock()
     mock_pool.acquire.return_value = AsyncContextManagerMock(mock_conn)
     
-    with patch("evennia_world.app._db_pool", mock_pool):
+    with patch("evennia_world.app.app_state._db_pool", mock_pool):
         await _log_objective_action(
             "test_session",
             1421,

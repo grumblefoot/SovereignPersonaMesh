@@ -230,7 +230,7 @@ async def query_world_state(character_id: str, session_id: str = "default_sessio
         world = _get_session_world(session_id, template_key)
 
     # Find the character's current room in the session-scoped world
-    char_room = _find_actor_room(char_id_lower, session_id)
+    char_room = _find_actor_room(char_id_lower, session_id, template_key)
     if char_room is None:
         # Character not in any tracked room — return a default state
         default_room = RoomMetadata(
@@ -260,7 +260,7 @@ async def query_world_state(character_id: str, session_id: str = "default_sessio
             description="No room assigned.", lighting="normal",
             exits=[], present_characters=[], nearby_objects=[],
         )
-    distances = _compute_all_distances(char_id_lower, session_id)
+    distances = _compute_all_distances(char_id_lower, session_id, template_key)
 
     return CharacterWorldState(
         character_id=char_id_lower,
@@ -565,9 +565,9 @@ async def get_lock_info(session_id: str):
 
 # ── Internal helpers ────────────────────────────────────────────────────
 
-def _find_actor_room(character_id: str, session_id: str = "default_session") -> Optional[str]:
+def _find_actor_room(character_id: str, session_id: str = "default_session", template_key: str = "dungeon_cellar") -> Optional[str]:
     """Find the room_id where character_id is present in the active world for a session."""
-    world = _get_session_world(session_id)
+    world = _get_session_world(session_id, template_key)
     if not world:
         world = app_state.current_world
     for room_id, room in world.items():
@@ -616,7 +616,7 @@ def _compute_distance_and_barriers(
     return (45.0, [_str_to_barrier("closed_door"), _str_to_barrier("solid_wall")])
 
 
-def _compute_all_distances(character_id: str, session_id: str = "default_session") -> Dict[str, float]:
+def _compute_all_distances(character_id: str, session_id: str = "default_session", template_key: str = "dungeon_cellar") -> Dict[str, float]:
     """Compute distances from character_id to every other character in the world for a session."""
     distances: Dict[str, float] = {}
     world = _get_session_world(session_id)

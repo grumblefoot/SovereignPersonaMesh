@@ -13,7 +13,14 @@ logger = logging.getLogger(__name__)
 class EvenniaWorldClient:
     def __init__(self, base_url: str = "http://localhost:4005/api/v1"):
         self.base_url = base_url.rstrip("/")
-        self.client = httpx.AsyncClient(timeout=10.0)
+        self._client = None
+
+
+    @property
+    def client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=10.0)
+        return self._client
 
     async def close(self):
         await self.client.aclose()

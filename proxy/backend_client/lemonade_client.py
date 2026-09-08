@@ -14,7 +14,14 @@ logger = logging.getLogger(__name__)
 class LemonadeLLMClient:
     def __init__(self, base_url: str = "http://localhost:13305/v1"):
         self.base_url = base_url.rstrip("/")
-        self.client = httpx.AsyncClient(timeout=120.0)
+        self._client = None
+
+
+    @property
+    def client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=120.0)
+        return self._client
 
     async def close(self):
         await self.client.aclose()

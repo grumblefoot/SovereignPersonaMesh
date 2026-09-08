@@ -46,7 +46,7 @@ def _detect_hardware_tier() -> HardwareTierEnum:
     total_mem_gb = total_mem_kb / (1024 * 1024)
 
     # Strix Halo 128GB GTT -> SOVEREIGN
-    if total_mem_gb >= 64:
+    if total_mem_gb >= 128:
         return HardwareTierEnum.SOVEREIGN
     # >= 16GB -> EXPERIMENTAL minimum
     elif total_mem_gb >= 16:
