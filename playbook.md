@@ -3,7 +3,7 @@
 > **Author**: Antigravity (Senior Code Architect & Auditor)  
 > **Executor**: Hermes Agent (Autonomous Software Engineering Agent)  
 > **Target Environment**: AMD Ryzen AI Max 395 (Strix Halo APU), Fedora 44 Desktop, Rootless Podman  
-> **Primary Models**: `google/gemma-4-26B-A4B-it` (Inference on Port 13305) & `google/gemma-4-9B-it` (WSD & Consolidation)  
+> **Primary Models**: `google/gemma-4-26B-A4B-it` (Inference on Port 13305) & `google/gemma-4-E4B-it` (WSD & Consolidation)  
 
 ---
 
@@ -117,7 +117,7 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
   - [x] Verify CPU-offloaded embedding generation via `scripts/onnx_embedder.py`.
 
 - [x] **Phase 6: Nightly Sleep Cycle Consolidation (3:00 AM)** *(Completed by Hermes & Antigravity)*
-  - [x] Connect `scripts/sleep_cycle.py` to `google/gemma-4-9B-it` backend.
+  - [x] Connect `scripts/sleep_cycle.py` to `google/gemma-4-E4B-it` backend.
   - [x] Validate first-person single-sentence core memory synthesis.
   - [x] Verify volatile log pruning while enforcing `is_core_memory = TRUE` retention rules.
   - [x] Execute `scripts/setup_systemd_timer.sh` and verify user timer status (`systemctl --user status spm-sleep-cycle.timer`).

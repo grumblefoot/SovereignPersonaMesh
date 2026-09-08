@@ -35,3 +35,16 @@ This document facilitates handover between **Antigravity (Elephant)** and **Herm
 ## 🧪 Verification & Status
 - **Unit Test Suite**: `pytest tests/ -v` -> **217 / 217 PASSED (100% success rate)**.
 - **Live Proxy Status**: Running cleanly on `http://0.0.0.0:5050`.
+
+---
+
+## 🚧 Active Task: DESIGN-002 Auto-Populating GM Rules
+**Elephant (Antigravity) Status:**
+- Created `implementation_plan.md` and `task.md`.
+- Completed Backend Extraction Engine (`lore_extractor.py`).
+- Completed Retrieval & API Layer updates (`retriever.py`, `routes.py`, `admin_routes.py`).
+- Added Database schema migration logic to `init_db.sql`.
+
+**Goldfish (Hermes) Task Queue:**
+- [PENDING] Update `proxy/ui/index.html` to add the "Pending Rules" approval panel.
+- [PENDING] Add Configuration fields to `index.html` for `periodic_review_cadence`, `use_alternate_extraction_model`, and test connection button.
