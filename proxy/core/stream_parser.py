@@ -217,11 +217,14 @@ class MonologueStreamParser:
         if not text:
             return ""
         # If text contains an explicit 'Plan:' or section divider, extract narrative content after it
-        m_plan = re.search(r'\b(?:Plan|Strategy|Analysis|Draft|Notes|Planning|Internal Monologue):\s*', text, re.IGNORECASE)
+        m_plan = re.search(r'\[?(?:Plan|Strategy|Analysis|Draft|Notes|Planning|Internal Monologue)[^\]]*\]?:?\s*', text, re.IGNORECASE)
         if m_plan:
             after_plan = text[m_plan.end():].strip()
             if after_plan:
                 text = after_plan
+
+        # Strip explicit scene description headers but keep the content
+        text = re.sub(r'\[SCENE DESCRIPTION\]\s*', '', text, flags=re.IGNORECASE)
 
         cleaned = OPEN_TAG_REGEX.sub("", text)
         cleaned = CLOSE_TAG_REGEX.sub("", cleaned)
@@ -417,22 +420,31 @@ class MonologueStreamParser:
                                 self.public_response_buffer += clean_pub
                                 yield clean_pub
                         else:
-                            # Pivot Parser Approach: scan for the *last* [GM_ACTION] as a pivot point
-                            m_gm_matches = list(GM_ACTION_REGEX.finditer(mono_text))
-                            if m_gm_matches:
-                                last_gm = m_gm_matches[-1]
-                                logger.info("[StreamParser] Unclosed monologue tag at EOF. Using last GM_ACTION as pivot.")
-                                clean_pub = self._strip_monologue_bleed(mono_text[last_gm.end():])
+                            # Pivot Parser Approach: scan for the explicit separator
+                            m_sep = re.search(r'\n-+\n', mono_text)
+                            if m_sep:
+                                logger.info("[StreamParser] Unclosed monologue tag at EOF. Using separator '--' as pivot.")
+                                clean_pub = self._strip_monologue_bleed(mono_text[m_sep.end():])
                                 if clean_pub:
                                     self.public_response_buffer += clean_pub
                                     yield clean_pub
                             else:
-                                logger.warning("[StreamParser] Unclosed monologue tag at EOF. Defaulting buffer to public.")
-                                self.is_failsafe_triggered = True
-                                clean_pub = self._strip_monologue_bleed(mono_text)
-                                if clean_pub:
-                                    self.public_response_buffer += clean_pub
-                                    yield clean_pub
+                                # Fallback: scan for the *last* [GM_ACTION] as a pivot point
+                                m_gm_matches = list(GM_ACTION_REGEX.finditer(mono_text))
+                                if m_gm_matches:
+                                    last_gm = m_gm_matches[-1]
+                                    logger.info("[StreamParser] Unclosed monologue tag at EOF. Using last GM_ACTION as pivot.")
+                                    clean_pub = self._strip_monologue_bleed(mono_text[last_gm.end():])
+                                    if clean_pub:
+                                        self.public_response_buffer += clean_pub
+                                        yield clean_pub
+                                else:
+                                    logger.warning("[StreamParser] Unclosed monologue tag at EOF. Defaulting buffer to public.")
+                                    self.is_failsafe_triggered = True
+                                    clean_pub = self._strip_monologue_bleed(mono_text)
+                                    if clean_pub:
+                                        self.public_response_buffer += clean_pub
+                                        yield clean_pub
                 self.inner_monologue_buffer = ""
                 self.state = 1
                 logger.info(f"[StreamParser] EOS reached in monologue mode. Monologue captured.")

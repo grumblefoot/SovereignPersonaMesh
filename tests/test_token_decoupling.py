@@ -87,3 +87,31 @@ class TestStreamParserTokenDecoupling:
 
         assert parser.is_public_truncated is True
         assert len(results) <= 3
+
+class TestRAGMemoryFormatting:
+    def test_prompt_builder_injects_inner_monologue(self):
+        builder = CognitivePromptBuilder()
+        
+        memories = [
+            {
+                "sensory_input": "Vardus enters the room.",
+                "inner_monologue": "I must deceive him into wearing the necklace."
+            },
+            {
+                "sensory_input": "Vardus smiles.",
+                # No inner monologue for this one
+            }
+        ]
+        
+        prompt = builder.build_csa_prompt(
+            system_prompt="You are Arvenia.",
+            sensory_feed="Current feed",
+            retrieved_memories=memories,
+            chat_history=[],
+            spatial_context="Location: Cellar",
+            frontend_max_tokens=150,
+        )
+        
+        assert "Sensory: Vardus enters the room." in prompt
+        assert "Past Thoughts: I must deceive him into wearing the necklace." in prompt
+        assert "Sensory: Vardus smiles." in prompt
