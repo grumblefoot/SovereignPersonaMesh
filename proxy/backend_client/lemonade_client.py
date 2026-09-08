@@ -6,7 +6,7 @@ Supports streaming Server-Sent Events (SSE) and continuous batching / prompt cac
 import json
 import logging
 import httpx
-from typing import AsyncGenerator, Dict, Any, Optional
+from typing import AsyncGenerator, Dict, Any, Optional, List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -14,11 +14,15 @@ logger = logging.getLogger(__name__)
 class LemonadeLLMClient:
     def __init__(self, base_url: str = "http://localhost:13305/v1"):
         self.base_url = base_url.rstrip("/")
+        self.client = httpx.AsyncClient(timeout=120.0)
 
-    async def _resolve_model(self, requested_model: str, client: httpx.AsyncClient) -> str:
+    async def close(self):
+        await self.client.aclose()
+
+    async def _resolve_model(self, requested_model: str) -> str:
         """Dynamically resolve requested model string to an available Lemonade model ID."""
         try:
-            resp = await client.get(f"{self.base_url}/models")
+            resp = await self.client.get(f"{self.base_url}/models")
             if resp.status_code == 200:
                 data = resp.json().get("data", [])
                 available = [m.get("id") for m in data if m.get("id")]
@@ -36,6 +40,15 @@ class LemonadeLLMClient:
             logger.warning(f"[LemonadeClient] Model resolution failed: {e}")
         return requested_model
 
+    def _extract_reasoning_and_content(self, choices: List[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
+        """Helper to unify reasoning extraction from both chat and completions legacy endpoints."""
+        if not choices:
+            return None, None
+        delta = choices[0].get("delta", {})
+        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        content = delta.get("content") or choices[0].get("text")
+        return reasoning, content
+
     async def generate_stream(
         self,
         prompt: Optional[str] = None,
@@ -51,98 +64,101 @@ class LemonadeLLMClient:
         if stop is None:
             stop = ["\nUser:", "\nHuman:"]
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            target_model = await self._resolve_model(model, client)
+        target_model = await self._resolve_model(model)
+        req_messages = messages or [{"role": "user", "content": prompt or ""}]
 
-            req_messages = messages or [{"role": "user", "content": prompt or ""}]
+        payload = {
+            "model": target_model,
+            "messages": req_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stop": stop,
+            "stream": True
+        }
 
-            payload = {
-                "model": target_model,
-                "messages": req_messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "stop": stop,
-                "stream": True
-            }
+        endpoint = f"{self.base_url}/chat/completions"
+        logger.info(f"[LemonadeClient] Dispatching completion request (model={target_model}) to {endpoint}...")
 
-            endpoint = f"{self.base_url}/chat/completions"
-            logger.info(f"[LemonadeClient] Dispatching completion request (model={target_model}) to {endpoint}...")
-
-            try:
-                async with client.stream("POST", endpoint, json=payload) as response:
-                    if response.status_code == 404:
-                        # Fallback to legacy /completions prompt endpoint
-                        fallback_endpoint = f"{self.base_url}/completions"
-                        fallback_payload = {
-                            "model": model,
-                            "prompt": prompt,
-                            "temperature": temperature,
-                            "max_tokens": max_tokens,
-                            "stop": stop,
-                            "stream": True
-                        }
-                        logger.info(f"[LemonadeClient] 404 on chat/completions, retrying {fallback_endpoint}...")
-                        async with client.stream("POST", fallback_endpoint, json=fallback_payload) as fb_resp:
-                            if fb_resp.status_code != 200:
-                                logger.error(f"[LemonadeClient] LLM Backend error {fb_resp.status_code}")
-                                yield f"Error from LLM Backend: {fb_resp.status_code}"
-                                return
-                            async for line in fb_resp.aiter_lines():
-                                if line.startswith("data: "):
-                                    data_str = line[6:].strip()
-                                    if data_str == "[DONE]":
-                                        break
-                                    try:
-                                        data = json.loads(data_str)
-                                        choices = data.get("choices", [])
-                                        if choices:
-                                            text_chunk = (
-                                                choices[0].get("delta", {}).get("content") or
-                                                choices[0].get("delta", {}).get("reasoning_content") or
-                                                choices[0].get("text", "")
-                                            )
-                                            if text_chunk:
-                                                yield text_chunk
-                                    except json.JSONDecodeError:
-                                        continue
-                        return
-
-                    if response.status_code != 200:
-                        logger.error(f"[LemonadeClient] LLM Backend error {response.status_code}")
-                        yield f"Error from LLM Backend: {response.status_code}"
-                        return
-
-                    in_reasoning = False
-                    async for line in response.aiter_lines():
-                        if line.startswith("data: "):
-                            data_str = line[6:].strip()
-                            if data_str == "[DONE]":
-                                break
-                            try:
-                                data = json.loads(data_str)
-                                choices = data.get("choices", [])
-                                if choices:
-                                    delta = choices[0].get("delta", {})
-                                    reasoning = delta.get("reasoning_content") or delta.get("reasoning")
-                                    content = delta.get("content") or choices[0].get("text")
-
+        try:
+            async with self.client.stream("POST", endpoint, json=payload) as response:
+                if response.status_code == 404:
+                    # Fallback to legacy /completions prompt endpoint
+                    fallback_endpoint = f"{self.base_url}/completions"
+                    fallback_payload = {
+                        "model": model,
+                        "prompt": prompt,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "stop": stop,
+                        "stream": True
+                    }
+                    logger.info(f"[LemonadeClient] 404 on chat/completions, retrying {fallback_endpoint}...")
+                    async with self.client.stream("POST", fallback_endpoint, json=fallback_payload) as fb_resp:
+                        if fb_resp.status_code != 200:
+                            logger.error(f"[LemonadeClient] LLM Backend error {fb_resp.status_code}")
+                            yield f"Error from LLM Backend: {fb_resp.status_code}"
+                            return
+                        
+                        in_reasoning = False
+                        async for line in fb_resp.aiter_lines():
+                            if line.startswith("data: "):
+                                data_str = line[6:].strip()
+                                if data_str == "[DONE]":
+                                    break
+                                try:
+                                    data = json.loads(data_str)
+                                    choices = data.get("choices", [])
+                                    reasoning, content = self._extract_reasoning_and_content(choices)
                                     if reasoning:
                                         if not in_reasoning:
                                             in_reasoning = True
                                             yield "<thinking>"
                                         yield reasoning
-
                                     if content:
                                         if in_reasoning:
                                             in_reasoning = False
                                             yield "</thinking>"
                                         yield content
-                            except json.JSONDecodeError:
-                                continue
+                                except json.JSONDecodeError:
+                                    continue
+                        if in_reasoning:
+                            yield "</thinking>"
+                    return
 
-                    if in_reasoning:
-                        yield "</thinking>"
-            except Exception as e:
-                logger.error(f"[LemonadeClient] Stream connection error: {e}")
-                # Mock fallback for testing when backend isn't actively running
-                yield f"<thinking>I hear movements nearby. I should proceed with caution.</thinking> I am ready."
+                if response.status_code != 200:
+                    logger.error(f"[LemonadeClient] LLM Backend error {response.status_code}")
+                    yield f"Error from LLM Backend: {response.status_code}"
+                    return
+
+                in_reasoning = False
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data_str = line[6:].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(data_str)
+                            choices = data.get("choices", [])
+                            reasoning, content = self._extract_reasoning_and_content(choices)
+
+                            if reasoning:
+                                if not in_reasoning:
+                                    in_reasoning = True
+                                    yield "<thinking>"
+                                yield reasoning
+
+                            if content:
+                                if in_reasoning:
+                                    in_reasoning = False
+                                    yield "</thinking>"
+                                yield content
+                        except json.JSONDecodeError:
+                            continue
+
+                if in_reasoning:
+                    yield "</thinking>"
+        except Exception as e:
+            logger.error(f"[LemonadeClient] Stream connection error: {e}")
+            # Mock fallback for testing when backend isn't actively running
+            yield f"<thinking>I hear movements nearby. I should proceed with caution.</thinking> I am ready."
+
