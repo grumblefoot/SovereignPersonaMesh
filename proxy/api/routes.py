@@ -18,7 +18,7 @@ from config.hardware_tiers import get_hardware_config, HardwareTierEnum
 from proxy.core.st_parser import parse_sillytavern_context
 from config.manager import get_settings_manager
 from proxy.core.fifo_queue import InferenceFIFOQueue
-from proxy.core.stream_parser import MonologueStreamParser
+from proxy.core.stream_parser import MonologueStreamParser, CLOSE_TAGS
 from proxy.core.sensory_filter import ObserverInferenceGatingFilter
 from proxy.rag.prompt_builder import CognitivePromptBuilder
 from proxy.rag.retriever import EpisodicRAGRetriever
@@ -252,30 +252,6 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # --- FR-002: Bulk Import Detection ---
     is_bulk = await _check_bulk_import(request, session_id, _db_pool)
 
-    # --- DESIGN-002: Lore Extraction (Auto-Populating GM Rules) ---
-    if _db_pool and not is_bulk:
-        settings = get_settings_manager().get_settings()
-        cadence = int(settings.get("periodic_review_cadence", 15))
-        use_alt = settings.get("use_alternate_extraction_model", False)
-        alt_model = settings.get("alternate_extraction_model_name", "")
-        ext_model = alt_model if (use_alt and alt_model) else request.model
-        
-        # Filter out SillyTavern prefill stubs to get true message count
-        actual_messages = [m for m in request.messages if m.content and m.content.strip() not in ("<think>", "</think>")]
-        msg_count = len(actual_messages)
-        extractor = LoreExtractionWorker(_db_pool)
-        
-        # Synchronous extraction on first message (typically system + char greeting + user msg = ~3 msgs)
-        if msg_count <= 3:
-            full_context = parse_sillytavern_context(actual_messages)
-            await extractor.extract_initial_rules(session_id, target_char, full_context, model=ext_model)
-        # Periodic async review
-        elif msg_count > 3 and (msg_count % cadence == 0):
-            recent_msgs = [m.model_dump() for m in actual_messages[-cadence:]]
-            task = asyncio.create_task(extractor.periodic_review_rules(session_id, target_char, recent_msgs, model=ext_model))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
-
     # --- Step 1: spatial routing via Evennia ---
     world_res = await evennia_client.submit_action(
         character_id="user",
@@ -370,10 +346,10 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         frontend_max_tokens=frontend_max_tokens,
     )
 
-    # Ensure </thinking> is NOT in LLM stop sequence list
+    # Ensure closing tags are NOT in LLM stop sequence list
     raw_stop = request.stop or ["\nUser:", "\nHuman:", "\n<system>"]
     if isinstance(raw_stop, list):
-        stop = [s for s in raw_stop if s != "</thinking>"]
+        stop = [s for s in raw_stop if s not in CLOSE_TAGS]
     else:
         stop = raw_stop
         
@@ -438,8 +414,13 @@ The text after </think> must ONLY be narrative and dialogue.
 
         logger.info(f"[BackendReturnSPMLog] Monologue: {inner_monologue} | Public: {public_resp}")
 
-        # Dispatch any GM actions found in the monologue
-        _dispatch_gm_actions(parser, session_id, target_char)
+        # Dispatch any GM actions found in the monologue sequentially in background
+        task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
+        # Dispatch Lore Extraction in background
+        _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp)
 
         if inner_monologue:
             telemetry.push_thought_event(session_id, {
@@ -520,8 +501,13 @@ The text after </think> must ONLY be narrative and dialogue.
         logger.info(f"[BackendReturnSPMLog] Monologue: {inner_monologue} | Public: {public_resp}")
         logger.info(f"[SPMReturnSillyLog] Sent streaming chunks to SillyTavern. Final public response: {public_resp}")
 
-        # Dispatch any GM actions found in the monologue
-        _dispatch_gm_actions(parser, session_id, target_char)
+        # Dispatch any GM actions found in the monologue sequentially in background
+        task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
+        # Dispatch Lore Extraction in background
+        _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp)
 
         # Push inner monologue to Thought Monitor SSE stream
         if inner_monologue:
@@ -666,50 +652,72 @@ async def memory_stats(
     )
     return JSONResponse(content=result)
 
-def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str):
-    """Extracts GM actions from the parser and dispatches them asynchronously."""
-    actions = parser.extract_gm_actions()
+def _log_task_done(task):
+    try:
+        task.result()
+    except Exception as e:
+        logger.error(f"[LoreExtraction] Background task failed: {e}")
+
+def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_monologue: str, public_resp: str):
+    if not _db_pool:
+        return
+    settings = get_settings_manager().get_settings()
+    cadence = int(settings.get("periodic_review_cadence", 3))
+    use_alt = settings.get("use_alternate_extraction_model", False)
+    alt_model = settings.get("alternate_extraction_model_name", "")
+    ext_model = alt_model if (use_alt and alt_model) else request.model
     
-    async def safe_execute(coro, action_type):
-        try:
-            await coro
-        except Exception as e:
-            logger.error(f"[GMAction] Task '{action_type}' failed for session {session_id}: {e}")
+    extractor = LoreExtractionWorker(_db_pool)
+    actual_messages = [m for m in request.messages if m.content and m.content.strip() not in ("<think>", "</think>")]
+    user_messages = [m for m in actual_messages if getattr(m, 'role', '') == 'user']
+    user_msg_count = len(user_messages)
+    
+    assistant_turn = {"role": "assistant", "content": f"<think>\n{inner_monologue}\n</think>\n{public_resp}"}
+    full_turn_history = [m.model_dump() for m in actual_messages] + [assistant_turn]
+    
+    if user_msg_count <= 1:
+        task = asyncio.create_task(
+            extractor.extract_initial_rules(session_id, target_char, "\n".join(f"{m['role']}: {m.get('content', '')}" for m in full_turn_history), model=ext_model)
+        )
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+        task.add_done_callback(_log_task_done)
+    elif user_msg_count > 1 and (user_msg_count - 1) % cadence == 0:
+        recent = full_turn_history[-(cadence * 2):]
+        task = asyncio.create_task(
+            extractor.periodic_review_rules(session_id, target_char, recent, model=ext_model)
+        )
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+        task.add_done_callback(_log_task_done)
+
+async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str):
+    """Extracts GM actions from the parser and dispatches them sequentially in the background."""
+    actions = parser.extract_gm_actions()
 
     for action in actions:
         action_type = action.get("type")
         logger.info(f"[GMAction] Dispatching GM Action: {action}")
-        if action_type == "MOVE":
-            task = asyncio.create_task(
-                safe_execute(
-                    evennia_client.move_character(
-                        character_id=action.get("entity", target_char),
-                        room_id=action.get("room_id", ""),
-                        session_id=session_id,
-                        idempotency_key=str(uuid.uuid4())
-                    ),
-                    "MOVE"
+        try:
+            if action_type == "MOVE":
+                await evennia_client.move_character(
+                    character_id=action.get("entity", target_char),
+                    room_id=action.get("room_id", ""),
+                    session_id=session_id,
+                    idempotency_key=str(uuid.uuid4())
                 )
-            )
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
-        elif action_type == "CREATE_ROOM":
-            task = asyncio.create_task(
-                safe_execute(
-                    evennia_client.create_room(
-                        room_id=action.get("room_id", ""),
-                        name=action.get("name", "New Room"),
-                        desc=action.get("desc", ""),
-                        session_id=session_id,
-                        idempotency_key=str(uuid.uuid4())
-                    ),
-                    "CREATE_ROOM"
+            elif action_type == "CREATE_ROOM":
+                await evennia_client.create_room(
+                    room_id=action.get("room_id", ""),
+                    name=action.get("name", "New Room"),
+                    desc=action.get("desc", ""),
+                    session_id=session_id,
+                    idempotency_key=str(uuid.uuid4())
                 )
-            )
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
-        else:
-            logger.warning(f"[GMAction] Unrecognized GM action type: {action_type}")
+            else:
+                logger.warning(f"[GMAction] Unrecognized GM action type: {action_type}")
+        except Exception as e:
+            logger.error(f"[GMAction] Task '{action_type}' failed for session {session_id}: {e}")
 
 
 @router.get("/v1/imports/status/{session_id}")

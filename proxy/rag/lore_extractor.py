@@ -60,6 +60,10 @@ class LoreExtractionWorker:
             self.logger.error(f"Error during LLM generation: {e}")
             return
 
+        # Strip <thinking>...</thinking> block from response (LLM often wraps analysis in these)
+        import re
+        raw_response = re.sub(r'<thinking>.*?</thinking>', '', raw_response, flags=re.DOTALL)
+        
         rules = self._clean_llm_json_response(raw_response)
         
         if not rules:
@@ -90,13 +94,16 @@ class LoreExtractionWorker:
                 async with self.db_pool.acquire() as conn:
                     await conn.execute("SELECT create_csa_lore_rules_table($1);", character_id.lower())
                     
-                    await conn.execute(
-                        f"""
-                        INSERT INTO {table_name} (rule_text, rule_type, rule_embedding, status)
-                        VALUES ($1, $2, $3::vector, 'pending');
-                        """,
-                        rule_text, rule_type, emb_str
-                    )
+                    # Check if rule exists
+                    existing = await conn.fetchval(f"SELECT id FROM {table_name} WHERE rule_text = $1 LIMIT 1", rule_text)
+                    if not existing:
+                        await conn.execute(
+                            f"""
+                            INSERT INTO {table_name} (rule_text, rule_type, rule_embedding, status)
+                            VALUES ($1, $2, $3::vector, 'pending');
+                            """,
+                            rule_text, rule_type, emb_str
+                        )
             except Exception as e:
                 self.logger.error(f"Error persisting rule '{rule_text}': {e}")
                 

@@ -10,7 +10,7 @@ import asyncio
 import json
 import asyncpg
 import numpy as np
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 from starlette.testclient import TestClient as StarletteClient
 
@@ -335,42 +335,38 @@ class TestProxySessionExtraction:
 
     def test_header_precedence(self):
         """X-Session-ID header takes highest precedence."""
-        with patch("proxy.api.routes.lemonade_client.generate_stream") as mock_stream:
-            async def dummy_gen(*args, **kwargs):
-                yield "Test response"
-            mock_stream.side_effect = dummy_gen
-            with TestClient(proxy_app) as client:
-                resp = client.post("/v1/chat/completions", json={
-                    "model": "google/gemma-4-26B-A4B-it",
-                    "messages": [{"role": "user", "content": "test"}],
-                }, headers={"X-Session-ID": "header-session-99"})
-                assert resp.status_code == 200
+        from starlette.requests import Request
+        scope = {
+            "type": "http",
+            "headers": [(b"x-session-id", b"header-session-99")],
+        }
+        mock_req = Request(scope)
+        body = {"messages": [{"role": "user", "content": "test"}]}
+        result = _extract_session_id(mock_req, body)
+        assert result == "header-session-99"
 
     def test_body_fallback(self):
         """When no header, body session_id should be used."""
-        with patch("proxy.api.routes.lemonade_client.generate_stream") as mock_stream:
-            async def dummy_gen(*args, **kwargs):
-                yield "Test response"
-            mock_stream.side_effect = dummy_gen
-            with TestClient(proxy_app) as client:
-                resp = client.post("/v1/chat/completions", json={
-                    "model": "google/gemma-4-26B-A4B-it",
-                    "messages": [{"role": "user", "content": "test"}],
-                })
-                assert resp.status_code == 200
+        from starlette.requests import Request
+        scope = {"type": "http", "headers": []}
+        mock_req = Request(scope)
+        body = {
+            "session_id": "body-session-42",
+            "messages": [{"role": "user", "content": "test"}],
+        }
+        result = _extract_session_id(mock_req, body)
+        assert result == "body-session-42"
 
     def test_default_session_fallback(self):
-        """When no header and no body session_id, default_session should be used."""
-        with patch("proxy.api.routes.lemonade_client.generate_stream") as mock_stream:
-            async def dummy_gen(*args, **kwargs):
-                yield "Test response"
-            mock_stream.side_effect = dummy_gen
-            with TestClient(proxy_app) as client:
-                resp = client.post("/v1/chat/completions", json={
-                    "model": "google/gemma-4-26B-A4B-it",
-                    "messages": [{"role": "user", "content": "test"}],
-                }, headers={"X-Session-ID": ""})
-                assert resp.status_code == 200
+        """When no header and no body session_id, default session should be used."""
+        from starlette.requests import Request
+        scope = {"type": "http", "headers": []}
+        mock_req = Request(scope)
+        body = {"messages": [{"role": "user", "content": "test"}]}
+        result = _extract_session_id(mock_req, body)
+        # Default format: st_<user>_<target_char>
+        assert result.startswith("st_")
+        assert "default" in result
 
     def test_extract_session_id_function(self):
         """Direct unit test of _extract_session_id() precedence chain."""
