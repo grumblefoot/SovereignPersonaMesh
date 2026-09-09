@@ -25,11 +25,8 @@ async def test_gm_actions_dispatch_flow():
         mock_move.side_effect = mock_async_move
         mock_create.side_effect = mock_async_create
         
-        # Dispatch actions
-        _dispatch_gm_actions(parser, session_id="test_session", target_char="Player1")
-        
-        # Yield to event loop to allow asyncio.create_task to run
-        await asyncio.sleep(0.01)
+        # Dispatch actions (this is an async function — await it directly)
+        await _dispatch_gm_actions(parser, session_id="test_session", target_char="Player1")
         
         # Assert evennia_client methods were called with expected arguments
         mock_move.assert_called_once()

@@ -5,6 +5,13 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from proxy.core.st_parser import parse_sillytavern_context
 from proxy.rag.lore_extractor import LoreExtractionWorker
 import json
+import socket
+
+
+def _should_run_live_llm_tests():
+    """Only run live LLM tests when explicitly enabled (CI doesn't have a model)."""
+    return os.environ.get("RUN_LIVE_LLM_TESTS") == "1"
+
 
 def load_sillytavern_log_fixture(filepath: str) -> list:
     """Loads the SillyIntoSPMLog.md fixture into a list of messages."""
@@ -78,6 +85,7 @@ def test_parse_sillytavern_context(real_payload):
     assert '*Vardus looks up at the strange but beautiful woman' not in parsed
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(not _should_run_live_llm_tests(), reason="Set RUN_LIVE_LLM_TESTS=1 to enable")
 async def test_live_extraction_goal_and_physical(real_payload):
     """
     Live LLM test: Calls the actual LLM (via LemonadeClient) using the fully
@@ -87,6 +95,7 @@ async def test_live_extraction_goal_and_physical(real_payload):
     """
     db_pool_mock = MagicMock()
     conn_mock = AsyncMock()
+    conn_mock.fetchval = AsyncMock(return_value=None)
     db_pool_mock.acquire.return_value.__aenter__.return_value = conn_mock
     
     extractor = LoreExtractionWorker(db_pool_mock)

@@ -422,13 +422,20 @@ async def remove_character_from_world(character_id: str, background_tasks: Backg
 
 
 @app.get("/api/v1/world/characters")
-async def list_characters(template_key: str = "dynamic"):
+async def list_characters(template_key: str = "dynamic", session_id: Optional[str] = None):
     """List all characters in a template with their current rooms."""
     if template_key not in world_builder.templates and template_key != "dynamic":
         raise HTTPException(status_code=404, detail=f"Template '{template_key}' not found")
 
+    world = None
+    if session_id:
+        world = _get_session_world(session_id, template_key)
+        
+    if world is None:
+        world = world_builder.templates.get(template_key, {})
+
     result: List[Dict[str, Any]] = []
-    for room_id, room in world_builder.templates[template_key].items():
+    for room_id, room in world.items():
         for char_id in room.present_characters:
             result.append({
                 "character_id": char_id,

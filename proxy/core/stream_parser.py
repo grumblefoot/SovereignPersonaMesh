@@ -216,6 +216,22 @@ class MonologueStreamParser:
         """Sanitizes public response buffer of leftover tags, trailing blockquote thoughts, or monologue bleed."""
         if not text:
             return ""
+
+        # 1. NEW LOGIC: aggressively strip unclosed meta-headers that might have leaked into public text
+        # Find all uppercase headers in brackets, e.g. [CHARACTER BEHAVIOR: ARVENIA], [ANTI-PUPPETING CHECK]
+        # Ignore blocks that contain '{' or '"' which are usually JSON payloads like GM_ACTION
+        m_blocks = list(re.finditer(r'^\[[A-Z0-9\s\-_:]+\]', text, flags=re.MULTILINE))
+        if m_blocks:
+            last_block = m_blocks[-1]
+            # Assume everything up to and including the last block + its paragraph is bleed
+            after_last = text[last_block.end():]
+            # Find the end of the block's associated paragraph
+            m_newline = re.search(r'\n\s*\n', after_last)
+            if m_newline:
+                text = after_last[m_newline.end():].strip()
+            else:
+                text = after_last.strip()
+
         # If text contains an explicit 'Plan:' or section divider, extract narrative content after it
         m_plan = re.search(r'\[?(?:Plan|Strategy|Analysis|Draft|Notes|Planning|Internal Monologue)[^\]]*\]?:?\s*', text, re.IGNORECASE)
         if m_plan:

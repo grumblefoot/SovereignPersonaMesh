@@ -424,7 +424,7 @@ class TestLockEndpoint:
 
 class TestCharacterEndpoints:
     def test_list_characters(self, client):
-        r = client.get("/api/v1/world/characters")
+        r = client.get("/api/v1/world/characters?template_key=dungeon_cellar")
         assert r.status_code == 200
         data = r.json()
         assert isinstance(data, list)
