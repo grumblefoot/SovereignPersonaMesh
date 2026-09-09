@@ -34,7 +34,7 @@
     "count_hot_memories": "SELECT COUNT(*) FROM csa_memory_{char_id} {hot_where};",
     "count_warm_memories": "SELECT COUNT(*) FROM csa_memory_{char_id} {warm_where};",
     "count_cold_archives": "SELECT COALESCE(SUM(record_count), 0) FROM spm_cold_archives {cold_where};",
-    "insert_memory_record": "INSERT INTO csa_memory_{char_id} (id, session_id, timestamp, sensory_input, inner_monologue, episodic_embedding, importance_score, is_core_memory, is_subjective, access_count, last_accessed_at) VALUES (COALESCE($1, gen_random_uuid()), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);",
+    "insert_memory_record": "INSERT INTO csa_memory_{char_id} (session_id, timestamp, sensory_input, inner_monologue, episodic_embedding, importance_score, is_core_memory, is_subjective, access_count, last_accessed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);",
     "insert_cold_archive": "INSERT INTO spm_cold_archives (session_id, character_id, archive_path, record_count) VALUES ($1, $2, $3, $4) RETURNING archive_id, created_at;",
     "delete_session_imports": "DELETE FROM spm_chat_imports WHERE session_id = $1;",
     "delete_session_archives": "DELETE FROM spm_cold_archives WHERE session_id = $1;",
@@ -54,6 +54,13 @@
     "find_lore_table": "SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'csa_lore_rules_%';",
     "fetch_lore_rule": "SELECT id, rule_text, rule_type, status, created_at FROM csa_lore_rules_{char_id} WHERE status = 'pending';",
     "query_room_state": "SELECT room_id, room_data FROM world_state_sessions WHERE session_id = $1 AND template_key = $2",
-    "check_table_exists": "SELECT table_name FROM information_schema.tables WHERE table_name LIKE $1;"
+    "check_table_exists": "SELECT table_name FROM information_schema.tables WHERE table_name LIKE $1;",
+    "retrieve_lore_invariants": "SELECT id, rule_text, rule_type FROM {table_name} WHERE rule_type = 'invariant' AND status = 'active';",
+    "get_room_state": "SELECT room_id, room_data FROM world_state_sessions WHERE session_id = $1 AND template_key = $2",
+    "create_cold_archives_table": "CREATE TABLE IF NOT EXISTS spm_cold_archives (archive_id UUID PRIMARY KEY DEFAULT gen_random_uuid(), session_id VARCHAR(255) NOT NULL, character_id VARCHAR(255) NOT NULL, archive_path TEXT NOT NULL, record_count INTEGER DEFAULT 0, created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW());",
+    "index_cold_archives_session": "CREATE INDEX IF NOT EXISTS idx_cold_archives_session ON spm_cold_archives (session_id);",
+    "count_cold_archives_records": "SELECT COUNT(*) FROM csa_memory_{char_id} WHERE timestamp < $1;",
+    "count_all_cold_archives": "SELECT COALESCE(SUM(record_count), 0) FROM spm_cold_archives WHERE timestamp < $1;",
+    "delete_cold_archive": "DELETE FROM spm_cold_archives WHERE archive_id = $1::uuid;"
   }
 }
