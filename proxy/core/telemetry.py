@@ -179,10 +179,11 @@ class TelemetryCollector:
         
         try:
             import logging
+            from core.resource_manager import strings
             logger = logging.getLogger(__name__)
             async with pool.acquire() as conn:
                 tables = await conn.fetch(
-                    "SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'csa_memory_%';"
+                    strings.get("sql.list_memory_tables")
                 )
                 if not tables:
                     return

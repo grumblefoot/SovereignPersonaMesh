@@ -23,7 +23,7 @@
     "check_import_status": "SELECT import_id, session_id, character_id, status, total_messages, processed_messages, error_log, created_at, updated_at FROM spm_chat_imports WHERE session_id = $1;",
     "get_all_imports": "SELECT import_id, session_id, character_id, status, total_messages, processed_messages, error_log, created_at, updated_at FROM spm_chat_imports ORDER BY created_at DESC;",
     "create_csa_lore_rules_table": "SELECT create_csa_lore_rules_table($1);",
-    "check_lore_rule_exists": "SELECT id FROM csa_lore_rules_{char_id} WHERE rule_text = $1 LIMIT 1",
+    "check_lore_rule_exists": "SELECT id FROM {table_name} WHERE rule_text = $1 LIMIT 1",
     "insert_lore_rule": "INSERT INTO csa_lore_rules_{char_id} (rule_text, rule_type, rule_embedding, status) VALUES ($1, $2, $3::vector, 'pending');",
     "retrieve_invariant_lore": "SELECT id, rule_text, rule_type FROM csa_lore_rules_{char_id} WHERE rule_type = 'invariant' AND status = 'active';",
     "retrieve_trigger_lore": "SELECT id, rule_text, rule_type, (rule_embedding <=> $1::vector) AS cosine_distance FROM csa_lore_rules_{char_id} WHERE rule_type IN ('conditional_trigger', 'game_over') AND rule_embedding IS NOT NULL AND status = 'active' AND (rule_embedding <=> $1::vector) < $2 ORDER BY cosine_distance ASC;",

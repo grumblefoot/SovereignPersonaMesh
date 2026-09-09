@@ -1,5 +1,4 @@
-"""
-Observer Inference Gating & Bypass Protocol.
+"""Observer Inference Gating & Bypass Protocol.
 Bypasses active LLM generation for characters in Blackout or Null gating states,
 committing deterministic ambient logs directly to PostgreSQL with zero GPU inference cost.
 """
@@ -7,6 +6,7 @@ committing deterministic ambient logs directly to PostgreSQL with zero GPU infer
 import logging
 import asyncpg
 from typing import Dict, Any, Optional
+from core.resource_manager import strings
 
 logger = logging.getLogger(__name__)
 
