@@ -1,12 +1,12 @@
-"""
-Episodic Memory RAG Retriever & Game AI-Inspired Decay Scoring Engine.
-Combines pgvector cosine distance search (<=> operator < 0.35) with exponential time decay and importance scoring.
+"""Episodic Memory RAG Retriever & Game AI-Inspired Decay Scoring Engine.
+Combines pgvector cosine distance search (&lt;=&gt; operator &lt; 0.35) with exponential time decay and importance scoring.
 """
 
 import math
 import logging
 import asyncpg
 from typing import List, Dict, Any, Optional
+from core.resource_manager import strings
 
 logger = logging.getLogger(__name__)
 
