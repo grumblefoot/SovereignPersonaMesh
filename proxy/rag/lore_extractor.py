@@ -92,10 +92,10 @@ class LoreExtractionWorker:
                 table_name = f"csa_lore_rules_{character_id.lower()}"
                 
                 async with self.db_pool.acquire() as conn:
-                    await conn.execute("SELECT create_csa_lore_rules_table($1);", character_id.lower())
+                    await conn.execute(strings.get("sql.create_csa_lore_rules_table"), character_id.lower())
                     
                     # Check if rule exists
-                    existing = await conn.fetchval(f"SELECT id FROM {table_name} WHERE rule_text = $1 LIMIT 1", rule_text)
+                    existing = await conn.fetchval(strings.get("sql.check_lore_rule_exists").format(table_name=table_name), rule_text)
                     if not existing:
                         await conn.execute(
                             f"""

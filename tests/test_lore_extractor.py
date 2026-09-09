@@ -129,11 +129,11 @@ async def test_periodic_review_rules():
                 await extractor.periodic_review_rules("session123", "Tester", recent_messages)
                 
                 mock_strings.get.assert_called()
-                call_kwargs = mock_strings.get.call_args
-                assert "recent_messages" in call_kwargs.kwargs
-                assert "Hello" in call_kwargs.kwargs["recent_messages"]
-                assert "Hi there" in call_kwargs.kwargs["recent_messages"]
-                assert "What is this place?" in call_kwargs.kwargs["recent_messages"]
+                first_call = mock_strings.get.call_args_list[0]
+                assert "recent_messages" in first_call[1]
+                assert "Hello" in first_call[1]["recent_messages"]
+                assert "Hi there" in first_call[1]["recent_messages"]
+                assert "What is this place?" in first_call[1]["recent_messages"]
 
 
 @pytest.mark.asyncio
@@ -162,8 +162,8 @@ async def test_periodic_review_rules_empty_messages():
                 await extractor.periodic_review_rules("session123", "Tester", [])
                 
                 mock_strings.get.assert_called()
-                call_kwargs = mock_strings.get.call_args
-                assert call_kwargs.kwargs["recent_messages"] == ""
+                first_call = mock_strings.get.call_args_list[0]
+                assert first_call[1]["recent_messages"] == ""
 
 
 class TestCleanLLMJSONResponse:
