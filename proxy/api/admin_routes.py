@@ -91,9 +91,7 @@ async def get_admin_stats():
     if pool is not None:
         try:
             async with pool.acquire() as conn:
-                size_bytes = await conn.fetchval(
-                    "SELECT pg_database_size(current_database());"
-                )
+                size_bytes = await conn.fetchval(strings.get("sql.fetch_db_size"))
                 if size_bytes:
                     db_size_mb = round(size_bytes / (1024 * 1024), 2)
         except Exception as e:
@@ -178,16 +176,15 @@ async def delete_session(session_id: str):
     try:
         async with pool.acquire() as conn:
             # Delete from spm_chat_imports
-            await conn.execute("DELETE FROM spm_chat_imports WHERE session_id = $1;", session_id)
+            await conn.execute(strings.get("sql.delete_session_imports"), session_id)
             # Delete from spm_cold_archives
-            await conn.execute("DELETE FROM spm_cold_archives WHERE session_id = $1;", session_id)
+            await conn.execute(strings.get("sql.delete_session_archives"), session_id)
             # Delete from world_state_sessions
-            await conn.execute("DELETE FROM world_state_sessions WHERE session_id = $1;", session_id)
+            await conn.execute(strings.get("sql.delete_session_world_state"), session_id)
 
             # Query all csa_memory tables
             tables = await conn.fetch(
-                """SELECT table_name FROM information_schema.tables
-                   WHERE table_name LIKE 'csa_memory_%';"""
+                strings.get("sql.list_memory_tables")
             )
             for t in tables:
                 table_name = t["table_name"]
@@ -230,14 +227,13 @@ async def factory_reset():
     try:
         async with pool.acquire() as conn:
             # Truncate tracking tables
-            await conn.execute("TRUNCATE TABLE spm_chat_imports RESTART IDENTITY CASCADE;")
-            await conn.execute("TRUNCATE TABLE spm_cold_archives RESTART IDENTITY CASCADE;")
-            await conn.execute("TRUNCATE TABLE world_state_sessions RESTART IDENTITY CASCADE;")
+            await conn.execute(strings.get("sql.truncate_imports"))
+            await conn.execute(strings.get("sql.truncate_archives"))
+            await conn.execute(strings.get("sql.truncate_world_state"))
 
             # Truncate all csa_memory and csa_lore_rules tables
             tables = await conn.fetch(
-                """SELECT table_name FROM information_schema.tables
-                   WHERE table_name LIKE 'csa_memory_%' OR table_name LIKE 'csa_lore_rules_%';"""
+                strings.get("sql.list_tables_info")
             )
             for t in tables:
                 table_name = t["table_name"]
@@ -300,7 +296,7 @@ async def get_pending_lore():
     try:
         async with pool.acquire() as conn:
             tables = await conn.fetch(
-                "SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'csa_lore_rules_%';"
+                strings.get("sql.list_lore_tables")
             )
             for t in tables:
                 table_name = t["table_name"]

@@ -11,18 +11,34 @@
                 "room_name": "The Dungeon Cellar",
                 "description": "A damp, stone-walled cellar filled with wooden crates and rusting iron chains.",
                 "lighting": "dim",
-                "exits": ["tavern_upstairs"],
-                "present_characters": ["rowan", "domino", "luna"],
-                "nearby_objects": ["wooden_crate", "iron_partition"]
+                "exits": [
+                    "tavern_upstairs"
+                ],
+                "present_characters": [
+                    "rowan",
+                    "domino",
+                    "luna"
+                ],
+                "nearby_objects": [
+                    "wooden_crate",
+                    "iron_partition"
+                ]
             },
             "tavern_upstairs": {
                 "room_id": "tavern_upstairs",
                 "room_name": "The Medieval Tavern Main Hall",
                 "description": "A warm tavern hall smelling of roasted meats and ale.",
                 "lighting": "bright",
-                "exits": ["cellar"],
-                "present_characters": ["seamus"],
-                "nearby_objects": ["oak_table", "hearth"]
+                "exits": [
+                    "cellar"
+                ],
+                "present_characters": [
+                    "seamus"
+                ],
+                "nearby_objects": [
+                    "oak_table",
+                    "hearth"
+                ]
             }
         },
         "default_meeting_room": {
@@ -32,8 +48,12 @@
                 "description": "A plain, quiet chamber with a large stone table in the center.",
                 "lighting": "normal",
                 "exits": [],
-                "present_characters": ["luna"],
-                "nearby_objects": ["stone_table"]
+                "present_characters": [
+                    "luna"
+                ],
+                "nearby_objects": [
+                    "stone_table"
+                ]
             }
         },
         "forest_camp": {
@@ -42,36 +62,59 @@
                 "room_name": "Forest Clearing",
                 "description": "An open patch of land surrounded by dense trees, with a small campfire smoldering in the center.",
                 "lighting": "dim",
-                "exits": ["forest_path_north", "forest_path_south", "thickets"],
+                "exits": [
+                    "forest_path_north",
+                    "forest_path_south",
+                    "thickets"
+                ],
                 "present_characters": [],
-                "nearby_objects": ["campfire", "tent", "woodpile"]
+                "nearby_objects": [
+                    "campfire",
+                    "tent",
+                    "woodpile"
+                ]
             },
             "forest_path_north": {
                 "room_id": "forest_path_north",
                 "room_name": "Northern Forest Path",
                 "description": "A narrow dirt trail winding through tall pines. The canopy blocks most sunlight.",
                 "lighting": "dim",
-                "exits": ["forest_clearing"],
+                "exits": [
+                    "forest_clearing"
+                ],
                 "present_characters": [],
-                "nearby_objects": ["fallen_log", "mossy_rocks"]
+                "nearby_objects": [
+                    "fallen_log",
+                    "mossy_rocks"
+                ]
             },
             "forest_path_south": {
                 "room_id": "forest_path_south",
                 "room_name": "Southern Forest Path",
                 "description": "A wider trail leading south toward a distant river. Wildflowers line the edges.",
                 "lighting": "normal",
-                "exits": ["forest_clearing"],
+                "exits": [
+                    "forest_clearing"
+                ],
                 "present_characters": [],
-                "nearby_objects": ["river_stone", "wildflowers"]
+                "nearby_objects": [
+                    "river_stone",
+                    "wildflowers"
+                ]
             },
             "thickets": {
                 "room_id": "thickets",
                 "room_name": "Dense Thickets",
                 "description": "Impassable-looking undergrowth with thorny brambles and tangled roots.",
                 "lighting": "dim",
-                "exits": ["forest_clearing"],
+                "exits": [
+                    "forest_clearing"
+                ],
                 "present_characters": [],
-                "nearby_objects": ["bramble", "vine_tangle"]
+                "nearby_objects": [
+                    "bramble",
+                    "vine_tangle"
+                ]
             }
         },
         "castle_exterior": {
@@ -80,54 +123,94 @@
                 "room_name": "Castle Courtyard",
                 "description": "A wide stone courtyard surrounded by high castle walls. Guards patrol the perimeter.",
                 "lighting": "bright",
-                "exits": ["great_hall", "armory", "stables", "gate_house"],
+                "exits": [
+                    "great_hall",
+                    "armory",
+                    "stables",
+                    "gate_house"
+                ],
                 "present_characters": [],
-                "nearby_objects": ["stone_bench", "flag_pole", "well"]
+                "nearby_objects": [
+                    "stone_bench",
+                    "flag_pole",
+                    "well"
+                ]
             },
             "great_hall": {
                 "room_id": "great_hall",
                 "room_name": "The Great Hall",
                 "description": "A towering hall with a vaulted ceiling, long banquet tables, and a raised dais.",
                 "lighting": "bright",
-                "exits": ["courtyard", "throne_room"],
+                "exits": [
+                    "courtyard",
+                    "throne_room"
+                ],
                 "present_characters": [],
-                "nearby_objects": ["long_table", "tapestry", "guard_railing"]
+                "nearby_objects": [
+                    "long_table",
+                    "tapestry",
+                    "guard_railing"
+                ]
             },
             "throne_room": {
                 "room_id": "throne_room",
                 "room_name": "The Throne Room",
                 "description": "An ornate chamber dominated by a massive stone throne. Royal banners hang from the walls.",
                 "lighting": "bright",
-                "exits": ["great_hall"],
+                "exits": [
+                    "great_hall"
+                ],
                 "present_characters": [],
-                "nearby_objects": ["throne", "royal_banners", "marble_floor"]
+                "nearby_objects": [
+                    "throne",
+                    "royal_banners",
+                    "marble_floor"
+                ]
             },
             "armory": {
                 "room_id": "armory",
                 "room_name": "The Armory",
                 "description": "A cold, organized hall lined with weapons racks, armor stands, and weapon crates.",
                 "lighting": "normal",
-                "exits": ["courtyard"],
+                "exits": [
+                    "courtyard"
+                ],
                 "present_characters": [],
-                "nearby_objects": ["sword_rack", "shield_wall", "quiver"]
+                "nearby_objects": [
+                    "sword_rack",
+                    "shield_wall",
+                    "quiver"
+                ]
             },
             "stables": {
                 "room_id": "stables",
                 "room_name": "The Stables",
                 "description": "A long barn-like structure housing horses and riding equipment. Hay and straw cover the floor.",
                 "lighting": "normal",
-                "exits": ["courtyard"],
+                "exits": [
+                    "courtyard"
+                ],
                 "present_characters": [],
-                "nearby_objects": ["saddle_rack", "hay_bale", "water_trough"]
+                "nearby_objects": [
+                    "saddle_rack",
+                    "hay_bale",
+                    "water_trough"
+                ]
             },
             "gate_house": {
                 "room_id": "gate_house",
                 "room_name": "The Gate House",
                 "description": "A fortified entry point with a heavy wooden portcullis and arrow slits.",
                 "lighting": "normal",
-                "exits": ["courtyard"],
+                "exits": [
+                    "courtyard"
+                ],
                 "present_characters": [],
-                "nearby_objects": ["portcullis", "gate_key", "sentry_post"]
+                "nearby_objects": [
+                    "portcullis",
+                    "gate_key",
+                    "sentry_post"
+                ]
             }
         },
         "tavern_common": {
@@ -136,36 +219,62 @@
                 "room_name": "The Tavern Common Room",
                 "description": "A bustling common room with wooden tables, a large hearth, and a well-stocked bar.",
                 "lighting": "bright",
-                "exits": ["tavern_kitchen", "tavern_private", "alley"],
+                "exits": [
+                    "tavern_kitchen",
+                    "tavern_private",
+                    "alley"
+                ],
                 "present_characters": [],
-                "nearby_objects": ["bar_counter", "hearth", "board_games"]
+                "nearby_objects": [
+                    "bar_counter",
+                    "hearth",
+                    "board_games"
+                ]
             },
             "tavern_kitchen": {
                 "room_id": "tavern_kitchen",
                 "room_name": "The Tavern Kitchen",
                 "description": "A steamy kitchen with copper pots hanging from the ceiling and a massive oven.",
                 "lighting": "dim",
-                "exits": ["tavern_common_room"],
+                "exits": [
+                    "tavern_common_room"
+                ],
                 "present_characters": [],
-                "nearby_objects": ["copper_pots", "wooden_oven", "spice_racks"]
+                "nearby_objects": [
+                    "copper_pots",
+                    "wooden_oven",
+                    "spice_racks"
+                ]
             },
             "tavern_private": {
                 "room_id": "tavern_private",
                 "room_name": "Tavern Private Room",
                 "description": "A small, curtained-off alcove for private conversations and secret meetings.",
                 "lighting": "dim",
-                "exits": ["tavern_common_room"],
+                "exits": [
+                    "tavern_common_room"
+                ],
                 "present_characters": [],
-                "nearby_objects": ["velvet_curtain", "small_table", "candlestick"]
+                "nearby_objects": [
+                    "velvet_curtain",
+                    "small_table",
+                    "candlestick"
+                ]
             },
             "alley": {
                 "room_id": "alley",
                 "room_name": "The Back Alley",
                 "description": "A narrow, cobblestone alley behind the tavern. Garbage bins line the wall.",
                 "lighting": "dim",
-                "exits": ["tavern_common_room"],
+                "exits": [
+                    "tavern_common_room"
+                ],
                 "present_characters": [],
-                "nearby_objects": ["garbage_bin", "drainpipe", "cat"]
+                "nearby_objects": [
+                    "garbage_bin",
+                    "drainpipe",
+                    "cat"
+                ]
             }
         },
         "generic_void": {
@@ -174,7 +283,10 @@
                 "room_name": "Central Nexus",
                 "description": "An abstract central nexus in unmapped topological space.",
                 "lighting": "abstract",
-                "exits": ["node_alpha", "node_beta"],
+                "exits": [
+                    "node_alpha",
+                    "node_beta"
+                ],
                 "present_characters": [],
                 "nearby_objects": []
             },
@@ -183,7 +295,9 @@
                 "room_name": "Node Alpha",
                 "description": "An adjacent topological node.",
                 "lighting": "abstract",
-                "exits": ["central_nexus"],
+                "exits": [
+                    "central_nexus"
+                ],
                 "present_characters": [],
                 "nearby_objects": []
             },
@@ -192,10 +306,17 @@
                 "room_name": "Node Beta",
                 "description": "An adjacent topological node.",
                 "lighting": "abstract",
-                "exits": ["central_nexus"],
+                "exits": [
+                    "central_nexus"
+                ],
                 "present_characters": [],
                 "nearby_objects": []
             }
         }
+    },
+    "sql": {
+        "persist_room": "INSERT INTO world_state_sessions (session_id, template_key, room_id, room_data, action_tick) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (session_id, template_key, room_id) DO UPDATE SET room_data = EXCLUDED.room_data, action_tick = EXCLUDED.action_tick, updated_at = CURRENT_TIMESTAMP",
+        "log_objective_action": "INSERT INTO objective_world_log (session_id, action_tick, actor_id, location_id, action_type, raw_event) VALUES ($1, $2, $3, $4, $5, $6)",
+        "query_room_state": "SELECT room_id, room_data FROM world_state_sessions WHERE session_id = $1 AND template_key = $2"
     }
 }
