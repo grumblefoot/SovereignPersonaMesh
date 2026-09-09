@@ -77,16 +77,7 @@ async def _persist_room(session_id: str, template_key: str, room_id: str, room: 
         return
     try:
         async with app_state._db_pool.acquire() as conn:
-            query = """
-                INSERT INTO world_state_sessions (session_id, template_key, room_id, room_data, action_tick)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (session_id, template_key, room_id)
-                DO UPDATE SET 
-                    room_data = EXCLUDED.room_data, 
-                    action_tick = EXCLUDED.action_tick, 
-                    updated_at = CURRENT_TIMESTAMP
-            """
-            await conn.execute(query, session_id, template_key, room_id, room.model_dump_json(), app_state.action_tick_counter)
+            await conn.execute(strings.get("sql.persist_room"), session_id, template_key, room_id, room.model_dump_json(), app_state.action_tick_counter)
     except Exception as e:
         logging.error(f"Failed to persist room {room_id}: {e}")
 
@@ -96,11 +87,7 @@ async def _log_objective_action(session_id: str, action_tick: int, actor_id: str
         return
     try:
         async with app_state._db_pool.acquire() as conn:
-            query = """
-                INSERT INTO objective_world_log (session_id, action_tick, actor_id, location_id, action_type, raw_event)
-                VALUES ($1, $2, $3, $4, $5, $6)
-            """
-            await conn.execute(query, session_id, action_tick, actor_id, location_id, action_type, raw_event)
+            await conn.execute(strings.get("sql.log_objective_action"), session_id, action_tick, actor_id, location_id, action_type, raw_event)
     except Exception as e:
         logging.error(f"Failed to log objective action: {e}")
 
