@@ -13,7 +13,7 @@ import gzip
 import json
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import asyncpg
@@ -70,7 +70,7 @@ async def _insert_memories(
     async with pool.acquire() as conn:
         await conn.execute(f"SELECT create_csa_memory_table($1);", char_id.lower())
         for rec in records:
-            ts = rec.get("timestamp", datetime.utcnow() - timedelta(days=60))
+            ts = rec.get("timestamp", datetime.now(timezone.utc) - timedelta(days=60))
             emb = rec.get("episodic_embedding")
             emb_str = f"[{','.join(map(str, emb))}]" if emb else None
             await conn.execute(
@@ -132,7 +132,7 @@ class TestCoreMemoryImmunity:
             session_id = f"fr003_ci_sess_{time.time_ns()}"
             await _cleanup(char_id, session_id)
 
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             # 6 volatile records (old)
             volatile = [
                 {
@@ -194,7 +194,7 @@ class TestCoreMemoryImmunity:
                 {
                     "sensory_input": "core only",
                     "is_core_memory": True,
-                    "timestamp": datetime.utcnow() - timedelta(days=60),
+                    "timestamp": datetime.now(timezone.utc) - timedelta(days=60),
                     "episodic_embedding": _embedding(),
                 }
             ]
@@ -220,7 +220,7 @@ class TestCoreMemoryImmunity:
                 {
                     "sensory_input": f"recent msg {i}",
                     "is_core_memory": False,
-                    "timestamp": datetime.utcnow() - timedelta(days=1),
+                    "timestamp": datetime.now(timezone.utc) - timedelta(days=1),
                     "episodic_embedding": _embedding(),
                 }
                 for i in range(10)
@@ -263,7 +263,7 @@ class TestGzipCompressionAndSchema:
                 {
                     "sensory_input": f"gzip test msg {i}",
                     "is_core_memory": False,
-                    "timestamp": datetime.utcnow() - timedelta(days=45),
+                    "timestamp": datetime.now(timezone.utc) - timedelta(days=45),
                     "episodic_embedding": _embedding(),
                 }
                 for i in range(8)
@@ -301,7 +301,7 @@ class TestGzipCompressionAndSchema:
                 {
                     "sensory_input": f"schema test {i}",
                     "is_core_memory": False,
-                    "timestamp": datetime.utcnow() - timedelta(days=45),
+                    "timestamp": datetime.now(timezone.utc) - timedelta(days=45),
                     "episodic_embedding": _embedding(),
                 }
                 for i in range(5)
@@ -347,7 +347,7 @@ class TestGzipCompressionAndSchema:
                 {
                     "sensory_input": f"max rec msg {i}",
                     "is_core_memory": False,
-                    "timestamp": datetime.utcnow() - timedelta(days=60),
+                    "timestamp": datetime.now(timezone.utc) - timedelta(days=60),
                     "episodic_embedding": _embedding(),
                 }
                 for i in range(20)
@@ -391,7 +391,7 @@ class TestReconstitutionPipeline:
                 {
                     "sensory_input": f"recon msg {i}",
                     "is_core_memory": False,
-                    "timestamp": datetime.utcnow() - timedelta(days=45),
+                    "timestamp": datetime.now(timezone.utc) - timedelta(days=45),
                     "episodic_embedding": _embedding(),
                     "importance_score": i % 10 + 1,
                 }
@@ -472,7 +472,7 @@ class TestReconstitutionPipeline:
                 {
                     "sensory_input": f"vol {i}",
                     "is_core_memory": False,
-                    "timestamp": datetime.utcnow() - timedelta(days=45),
+                    "timestamp": datetime.now(timezone.utc) - timedelta(days=45),
                     "episodic_embedding": _embedding(),
                 }
                 for i in range(10)
@@ -481,7 +481,7 @@ class TestReconstitutionPipeline:
                 {
                     "sensory_input": f"core {i}",
                     "is_core_memory": True,
-                    "timestamp": datetime.utcnow() - timedelta(days=45),
+                    "timestamp": datetime.now(timezone.utc) - timedelta(days=45),
                     "episodic_embedding": _embedding(),
                 }
                 for i in range(5)
@@ -536,7 +536,7 @@ class TestStatsEndpoint:
                 {
                     "sensory_input": f"hot {i}",
                     "is_core_memory": False,
-                    "timestamp": datetime.utcnow() - timedelta(days=5),
+                    "timestamp": datetime.now(timezone.utc) - timedelta(days=5),
                     "episodic_embedding": _embedding(),
                 }
                 for i in range(7)
@@ -546,7 +546,7 @@ class TestStatsEndpoint:
                 {
                     "sensory_input": f"warm {i}",
                     "is_core_memory": True,
-                    "timestamp": datetime.utcnow() - timedelta(days=5),
+                    "timestamp": datetime.now(timezone.utc) - timedelta(days=5),
                     "episodic_embedding": _embedding(),
                 }
                 for i in range(4)
@@ -589,7 +589,7 @@ class TestStatsEndpoint:
                 {
                     "sensory_input": f"hot {i}",
                     "is_core_memory": False,
-                    "timestamp": datetime.utcnow() - timedelta(days=5),
+                    "timestamp": datetime.now(timezone.utc) - timedelta(days=5),
                     "episodic_embedding": _embedding(),
                 }
                 for i in range(3)
@@ -620,7 +620,7 @@ class TestStatsEndpoint:
                 {
                     "sensory_input": f"s1 vol {i}",
                     "is_core_memory": False,
-                    "timestamp": datetime.utcnow() - timedelta(days=5),
+                    "timestamp": datetime.now(timezone.utc) - timedelta(days=5),
                     "episodic_embedding": _embedding(),
                 }
                 for i in range(2)
@@ -630,7 +630,7 @@ class TestStatsEndpoint:
                 {
                     "sensory_input": f"s2 vol {i}",
                     "is_core_memory": False,
-                    "timestamp": datetime.utcnow() - timedelta(days=5),
+                    "timestamp": datetime.now(timezone.utc) - timedelta(days=5),
                     "episodic_embedding": _embedding(),
                 }
                 for i in range(3)

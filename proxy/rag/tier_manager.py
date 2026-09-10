@@ -17,7 +17,7 @@ import logging
 import os
 import shutil
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import asyncpg
@@ -33,7 +33,7 @@ def _parse_dt(val: Any) -> datetime:
             return datetime.fromisoformat(val)
         except ValueError:
             pass
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 
 def _parse_uuid(val: Any) -> Optional[uuid.UUID]:
@@ -81,7 +81,7 @@ class MemoryTierManager:
         char_id = character_id.lower()
         table_name = f"csa_memory_{char_id}"
 
-        cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
 
         async with self.db_pool.acquire() as conn:
             await conn.execute("SELECT create_csa_memory_table($1);", char_id)
@@ -124,7 +124,7 @@ class MemoryTierManager:
                 os.path.join(COLD_ARCHIVE_DIR, char_id),
                 exist_ok=True,
             )
-            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
             archive_path = os.path.join(
                 COLD_ARCHIVE_DIR,
                 char_id,
