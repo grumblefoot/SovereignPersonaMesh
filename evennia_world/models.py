@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 class ActionType(str, Enum):
     SPEAK = "speak"
     WHISPER = "whisper"
+    SHOUT = "shout"
     MOVE = "move"
     MANIPULATE = "manipulate"
 
@@ -36,6 +37,20 @@ class ActionPayload(BaseModel):
     raw_text: str
     session_id: str = "default_session"
     template_key: str = "dynamic"
+    # Decision 10: when present, the action resolves its tick idempotently per
+    # turn_id (a repeated turn_id never advances the session clock).
+    turn_id: Optional[str] = None
+
+
+class TickRequest(BaseModel):
+    session_id: str = "default_session"
+    turn_id: str
+
+
+class TickResponse(BaseModel):
+    tick: int
+    turn_id: str
+    advanced: bool
 
 
 class SensoryConsequence(BaseModel):

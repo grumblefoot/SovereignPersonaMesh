@@ -1,5 +1,14 @@
 """
 Unit tests for Spatial & Acoustic Constraints Matrix.
+
+Sprint 1 Track A semantics (SRD 3.3.2, SPRINT_PLAN.md §6 decision 9):
+- ≤5 ft DIRECT, >5–15 ft DEGRADED, >15 ft BLACKOUT.
+- CLOSED_DOOR / METAL_PARTITION / SOLID_WALL blackout regardless of distance;
+  OPEN_DOOR does not gate; DRYWALL caps at DEGRADED.
+- Hysteresis was REMOVED (decision 9): gating is a pure function of the
+  current geometry, so these tests no longer clear any shared history.
+- SHOUT (decision 11) lands one gating level better than speak at the same
+  geometry, but never through a barrier blackout.
 """
 
 import pytest
@@ -7,12 +16,16 @@ from evennia_world.spatial_matrix import SpatialConstraintsMatrix
 from evennia_world.models import GatingLevel, BarrierType, ActionType
 
 
-@pytest.fixture(autouse=True)
-def clear_history():
-    """Clear the class-level gating history before each test."""
-    SpatialConstraintsMatrix._gating_history.clear()
-    yield
-    SpatialConstraintsMatrix._gating_history.clear()
+def speak(distance_ft=3.0, barriers=None, **kw):
+    return SpatialConstraintsMatrix.evaluate_sensory_feed(
+        distance_ft=distance_ft,
+        barriers=barriers or [],
+        action_type=ActionType.SPEAK,
+        raw_text="hello",
+        actor_id="rowan",
+        recipient_id="domino",
+        **kw,
+    )
 
 
 # ── Basic gating behaviour ──────────────────────────────────────────────────
@@ -60,170 +73,190 @@ def test_blackout_wall_barrier():
     assert feed == ""
 
 
-# ── Bug 1: Session isolation ────────────────────────────────────────────────
+# ── Threshold edges (SRD 3.3.2: DIRECT ≤5, DEGRADED >5–15, BLACKOUT >15) ───
 
-def test_session_isolation_different_sessions():
+def test_direct_at_exactly_five_feet():
+    gating, _ = speak(distance_ft=5.0)
+    assert gating == GatingLevel.DIRECT
+
+
+def test_degraded_just_beyond_five_feet():
+    gating, _ = speak(distance_ft=5.1)
+    assert gating == GatingLevel.DEGRADED
+
+
+def test_degraded_at_exactly_fifteen_feet():
+    gating, _ = speak(distance_ft=15.0)
+    assert gating == GatingLevel.DEGRADED
+
+
+def test_blackout_just_beyond_fifteen_feet():
+    gating, feed = speak(distance_ft=15.1)
+    assert gating == GatingLevel.BLACKOUT
+    assert feed == ""
+
+
+def test_twenty_feet_is_now_blackout():
+    """The old implementation had DEGRADED out to 20 ft; SRD 3.3.2 ends it at 15."""
+    gating, _ = speak(distance_ft=20.0)
+    assert gating == GatingLevel.BLACKOUT
+
+
+# ── Barrier rules (SRD 3.3.2 / PRD 4.2) ─────────────────────────────────────
+
+def test_closed_door_blackout_even_same_room_distance():
+    gating, feed = speak(distance_ft=3.0, barriers=[BarrierType.CLOSED_DOOR])
+    assert gating == GatingLevel.BLACKOUT
+    assert feed == ""
+
+
+def test_metal_partition_blackout_even_same_room_distance():
+    gating, feed = speak(distance_ft=3.0, barriers=[BarrierType.METAL_PARTITION])
+    assert gating == GatingLevel.BLACKOUT
+    assert feed == ""
+
+
+def test_open_door_does_not_gate():
+    gating, _ = speak(distance_ft=3.0, barriers=[BarrierType.OPEN_DOOR])
+    assert gating == GatingLevel.DIRECT
+
+
+def test_open_door_near_band_still_degrades_by_distance():
+    gating, _ = speak(distance_ft=10.0, barriers=[BarrierType.OPEN_DOOR])
+    assert gating == GatingLevel.DEGRADED
+
+
+def test_drywall_caps_at_degraded_never_direct():
+    """DRYWALL is DEGRADED-at-best: muffled up close, never a clean signal."""
+    gating, feed = speak(distance_ft=2.0, barriers=[BarrierType.DRYWALL])
+    assert gating == GatingLevel.DEGRADED
+    assert "hello" not in feed
+
+
+def test_drywall_beyond_speak_band_is_blackout():
+    gating, _ = speak(distance_ft=20.0, barriers=[BarrierType.DRYWALL])
+    assert gating == GatingLevel.BLACKOUT
+
+
+# ── No hysteresis (decision 9) ──────────────────────────────────────────────
+
+def test_no_hysteresis_direct_to_blackout_is_instant():
     """
-    Two different session_ids must NOT share gating history.
-    Session A sets a DIRECT gating; Session B should see a fresh
-    history (no leftover state from Session A).
+    A character who just left a room must NOT keep hearing it: a DIRECT at
+    tick 0 followed by blackout geometry at tick 1 is BLACKOUT immediately —
+    no 2-tick DEGRADED carryover.
     """
-    # Session A: establish DIRECT gating at tick 0
-    gating_a, _ = SpatialConstraintsMatrix.evaluate_sensory_feed(
-        distance_ft=3.0,
-        barriers=[],
-        action_type=ActionType.SPEAK,
-        raw_text="hello",
-        actor_id="rowan",
-        recipient_id="domino",
-        session_id="session_A",
-        action_tick=0
-    )
-    assert gating_a == GatingLevel.DIRECT
+    gating_direct, _ = speak(session_id="hyst", action_tick=0)
+    assert gating_direct == GatingLevel.DIRECT
 
-    # Session B: same physical params but different session.
-    gating_b, _ = SpatialConstraintsMatrix.evaluate_sensory_feed(
-        distance_ft=2.0,
-        barriers=[],
-        action_type=ActionType.SPEAK,
-        raw_text="hello",
-        actor_id="rowan",
-        recipient_id="domino",
-        session_id="session_B",
-        action_tick=1
-    )
-    assert gating_b == GatingLevel.DIRECT
-
-
-def test_session_isolation_no_cross_pollution():
-    """
-    After session A goes DIRECT->BLACKOUT, session B must NOT be
-    affected by session A's cooldown window.
-    """
-    # Session A: DIRECT at tick 0
-    SpatialConstraintsMatrix.evaluate_sensory_feed(
-        distance_ft=3.0, barriers=[],
-        action_type=ActionType.SPEAK, raw_text="hi",
-        actor_id="rowan", recipient_id="domino",
-        session_id="alpha", action_tick=0
-    )
-
-    # Session A: BLACKOUT at tick 1 (within cooldown)
-    gating_a_cooldown, _ = SpatialConstraintsMatrix.evaluate_sensory_feed(
-        distance_ft=3.0,
-        barriers=[BarrierType.SOLID_WALL],
-        action_type=ActionType.SPEAK, raw_text="hi",
-        actor_id="rowan", recipient_id="domino",
-        session_id="alpha", action_tick=1
-    )
-
-    # Session B: same params, fresh session
-    gating_b_fresh, _ = SpatialConstraintsMatrix.evaluate_sensory_feed(
-        distance_ft=3.0,
-        barriers=[BarrierType.SOLID_WALL],
-        action_type=ActionType.SPEAK, raw_text="hi",
-        actor_id="rowan", recipient_id="domino",
-        session_id="beta", action_tick=1
-    )
-
-    # Both sessions should have the same gating for identical params
-    assert gating_a_cooldown == gating_b_fresh
-
-
-# ── Bug 2: Hysteresis logic ─────────────────────────────────────────────────
-
-def test_hysteresis_direct_to_blackout_cooldown():
-    """
-    When transitioning from DIRECT to BLACKOUT within the cooldown
-    window (2 ticks), the result should be DEGRADED, not BLACKOUT.
-    """
-    # tick 0: DIRECT
-    SpatialConstraintsMatrix.evaluate_sensory_feed(
-        distance_ft=3.0, barriers=[],
-        action_type=ActionType.SPEAK, raw_text="hi",
-        actor_id="rowan", recipient_id="domino",
-        session_id="hyst", action_tick=0
-    )
-
-    # tick 1: BLACKOUT (within 2-tick window) -> should be DEGRADED
-    gating, _ = SpatialConstraintsMatrix.evaluate_sensory_feed(
+    gating, _ = speak(
         distance_ft=3.0,
         barriers=[BarrierType.SOLID_WALL],
-        action_type=ActionType.SPEAK, raw_text="hi",
-        actor_id="rowan", recipient_id="domino",
-        session_id="hyst", action_tick=1
-    )
-    assert gating == GatingLevel.DEGRADED, (
-        f"Hysteresis should suppress BLACKOUT within cooldown; got {gating}"
-    )
-
-
-def test_hysteresis_direct_to_blackout_after_cooldown():
-    """
-    After the cooldown window expires, BLACKOUT should apply normally.
-    """
-    # tick 0: DIRECT
-    SpatialConstraintsMatrix.evaluate_sensory_feed(
-        distance_ft=3.0, barriers=[],
-        action_type=ActionType.SPEAK, raw_text="hi",
-        actor_id="rowan", recipient_id="domino",
-        session_id="hyst2", action_tick=0
-    )
-
-    # tick 5: BLACKOUT (outside 2-tick window) -> should be BLACKOUT
-    gating, _ = SpatialConstraintsMatrix.evaluate_sensory_feed(
-        distance_ft=3.0,
-        barriers=[BarrierType.SOLID_WALL],
-        action_type=ActionType.SPEAK, raw_text="hi",
-        actor_id="rowan", recipient_id="domino",
-        session_id="hyst2", action_tick=5
+        session_id="hyst",
+        action_tick=1,
     )
     assert gating == GatingLevel.BLACKOUT
 
 
-def test_hysteresis_reverse_blackout_to_direct_cooldown():
-    """
-    The reverse transition (BLACKOUT -> DIRECT) must also respect hysteresis.
-    Without it, a character can instantly go from COMPLETE SILENCE to hearing
-    everything clearly.
-    """
-    # tick 0: BLACKOUT (solid wall)
-    SpatialConstraintsMatrix.evaluate_sensory_feed(
-        distance_ft=50.0, barriers=[BarrierType.SOLID_WALL],
-        action_type=ActionType.SPEAK, raw_text="hi",
-        actor_id="rowan", recipient_id="domino",
-        session_id="hyst3", action_tick=0
+def test_no_hysteresis_blackout_to_direct_is_instant():
+    """Reverse direction: entering a room restores DIRECT on the next tick."""
+    speak(distance_ft=50.0, barriers=[BarrierType.SOLID_WALL],
+          session_id="hyst_rev", action_tick=0)
+
+    gating, _ = speak(session_id="hyst_rev", action_tick=1)
+    assert gating == GatingLevel.DIRECT
+
+
+def test_gating_is_pure_function_no_shared_state():
+    """Identical parameters produce identical gating regardless of order."""
+    results = set()
+    for i, session in enumerate(["s1", "s2", "s3"]):
+        for dist in (3.0, 10.0, 20.0):
+            gating, _ = speak(distance_ft=dist, session_id=session, action_tick=i)
+            results.add((session, dist, gating))
+    assert {g for (_, _, g) in results} == {
+        GatingLevel.DIRECT, GatingLevel.DEGRADED, GatingLevel.BLACKOUT,
+    }
+    for session, dist, gating in results:
+        expected = (GatingLevel.DIRECT if dist <= 5 else
+                    GatingLevel.DEGRADED if dist <= 15 else GatingLevel.BLACKOUT)
+        assert gating == expected
+
+
+# ── SHOUT (decision 11; gap 8) ──────────────────────────────────────────────
+
+def shout(distance_ft=10.0, barriers=None, **kw):
+    return SpatialConstraintsMatrix.evaluate_sensory_feed(
+        distance_ft=distance_ft,
+        barriers=barriers or [],
+        action_type=ActionType.SHOUT,
+        raw_text="GUARDS!",
+        actor_id="rowan",
+        recipient_id="domino",
+        shout=True,
+        **kw,
     )
 
-    # tick 1: DIRECT (no wall, close range) - within cooldown -> should be DEGRADED
+
+def test_shout_degraded_band_becomes_direct():
+    """Where speak would be DEGRADED (5–15 ft), a shout is DIRECT."""
+    speak_gating, _ = speak(distance_ft=10.0)
+    shout_gating, feed = shout(distance_ft=10.0)
+    assert speak_gating == GatingLevel.DEGRADED
+    assert shout_gating == GatingLevel.DIRECT
+    assert "GUARDS!" in feed
+
+
+def test_shout_distance_blackout_band_becomes_degraded():
+    """>15 ft but ≤30 ft: speak is BLACKOUT, a shout is DEGRADED (no verbatim)."""
+    shout_gating, feed = shout(distance_ft=20.0)
+    assert shout_gating == GatingLevel.DEGRADED
+    assert "GUARDS!" not in feed
+
+
+def test_shout_at_exactly_thirty_feet_is_degraded():
+    gating, _ = shout(distance_ft=30.0)
+    assert gating == GatingLevel.DEGRADED
+
+
+def test_shout_beyond_thirty_feet_is_blackout():
+    gating, feed = shout(distance_ft=31.0)
+    assert gating == GatingLevel.BLACKOUT
+    assert feed == ""
+
+
+def test_shout_cannot_lift_closed_door_blackout():
+    """Barrier blackouts are never lifted by volume (PRD 4.2)."""
+    gating, feed = shout(distance_ft=3.0, barriers=[BarrierType.CLOSED_DOOR])
+    assert gating == GatingLevel.BLACKOUT
+    assert feed == ""
+
+
+def test_shout_cannot_lift_metal_partition_blackout():
+    gating, _ = shout(distance_ft=3.0, barriers=[BarrierType.METAL_PARTITION])
+    assert gating == GatingLevel.BLACKOUT
+
+
+def test_shout_cannot_lift_solid_wall_blackout():
+    gating, _ = shout(distance_ft=3.0, barriers=[BarrierType.SOLID_WALL])
+    assert gating == GatingLevel.BLACKOUT
+
+
+def test_shout_drywall_capped_at_degraded():
+    gating, feed = shout(distance_ft=3.0, barriers=[BarrierType.DRYWALL])
+    assert gating == GatingLevel.DEGRADED
+    assert "GUARDS!" not in feed
+
+
+def test_shout_flag_matches_action_type_path():
+    """app.py passes shout=True alongside action_type=SHOUT; both routes agree."""
     gating, _ = SpatialConstraintsMatrix.evaluate_sensory_feed(
-        distance_ft=3.0, barriers=[],
-        action_type=ActionType.SPEAK, raw_text="hi",
-        actor_id="rowan", recipient_id="domino",
-        session_id="hyst3", action_tick=1
-    )
-    assert gating == GatingLevel.DEGRADED, (
-        f"Reverse hysteresis should suppress DIRECT within cooldown; got {gating}"
-    )
-
-
-def test_hysteresis_reverse_blackout_to_direct_after_cooldown():
-    """
-    After the cooldown expires, DIRECT should apply normally.
-    """
-    # tick 0: BLACKOUT
-    SpatialConstraintsMatrix.evaluate_sensory_feed(
-        distance_ft=50.0, barriers=[BarrierType.SOLID_WALL],
-        action_type=ActionType.SPEAK, raw_text="hi",
-        actor_id="rowan", recipient_id="domino",
-        session_id="hyst4", action_tick=0
-    )
-
-    # tick 10: DIRECT (outside window) -> should be DIRECT
-    gating, _ = SpatialConstraintsMatrix.evaluate_sensory_feed(
-        distance_ft=3.0, barriers=[],
-        action_type=ActionType.SPEAK, raw_text="hi",
-        actor_id="rowan", recipient_id="domino",
-        session_id="hyst4", action_tick=10
+        distance_ft=10.0,
+        barriers=[],
+        action_type=ActionType.SHOUT,
+        raw_text="GUARDS!",
+        actor_id="rowan",
+        recipient_id="domino",
+        shout=True,
     )
     assert gating == GatingLevel.DIRECT
