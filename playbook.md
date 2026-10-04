@@ -1,5 +1,12 @@
 # Sovereign Persona Mesh (SPM) Implementation Playbook
 
+> ⚠️ **STATUS 2026-09-25 — Lemonade 11.9 upgrade.** SPM still requests `google/gemma-4-26B-A4B-it` / `google/gemma-4-E4B-it`. `lemonade_client.py` fuzzy-matches these to a gemma id, (the `google/gemma-4-*` vLLM checkpoints are being deleted). SPM is user-facing roleplay/story chat and lets the user pick any backend model; Gemma is chosen because it writes well. **Don't point it at `hermes-coder`** (a coding agent model). Use Lemonade's own Gemma builds: `Gemma-4-26B-A4B-it-GGUF` (downloaded, 17 GB), `Gemma-4-E4B-it-GGUF` (downloaded, 5.6 GB) or `Gemma-4-12B-it-GGUF` (pullable). The old `google/gemma-4-*` vLLM checkpoints are being deleted (owner decision 2026-09-26). Since 2026-09-26 nothing is pinned: Lemonade swaps LLMs on demand, so a request for a Gemma model simply evicts Flash-Next and loads Gemma (~6 s for E4B), and Hermes' next `hermes-coder` request swaps back (~15 s). No manual unload needed. Also, `spm-sleep-cycle.service` was **already failing before the upgrade**: it runs system `python3`, which has no `asyncpg` (last run 2026-09-25 10:45, ModuleNotFoundError).
+> Lemonade is now **11.9.0** (Fedora RPM, `/opt/bin/lemond`), running as the systemd **user** service `lemond.service`, started from the desktop launcher (not at boot).
+> Config lives in `~/.config/lemonade/`. The `~/lemonade-bin` install, its `nohup` launch and `/tmp/lemonade_daemon.log` no longer exist.
+> Default LLM: alias `hermes-coder` → `Qwen3.8-Flash-Next-GGUF-UD-IQ4_XS` (loaded on demand, 98k ctx); `Qwen3.6-35B-A3B-MTP-GGUF` is the fallback.
+> Hermes is 0.21.5. Canonical playbook: `~/Desktop/lemonade_playbook.md (master: ~/Desktop/Lemonade-Upgrade-2026-09-25/lemonade_playbook.md)`.
+
+
 > **Author**: Antigravity (Senior Code Architect & Auditor)  
 > **Executor**: Hermes Agent (Autonomous Software Engineering Agent)  
 > **Target Environment**: AMD Ryzen AI Max 395 (Strix Halo APU), Fedora 44 Desktop, Rootless Podman  
