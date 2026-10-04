@@ -6,7 +6,9 @@ mkdir -p "$SYSTEMD_DIR"
 
 SERVICE_FILE="$SYSTEMD_DIR/spm-sleep-cycle.service"
 TIMER_FILE="$SYSTEMD_DIR/spm-sleep-cycle.timer"
-SCRIPT_PATH="$(pwd)/scripts/sleep_cycle.py"
+# Run from the repo root. Uses the project's own venv (system python3 has no asyncpg) and runs the
+# script as a module so the `core` and `scripts` packages import.
+VENV_PYTHON="$(pwd)/.venv/bin/python"
 
 cat << EOF > "$SERVICE_FILE"
 [Unit]
@@ -16,7 +18,7 @@ After=network.target
 [Service]
 Type=oneshot
 WorkingDirectory=$(pwd)
-ExecStart=/usr/bin/env python3 $SCRIPT_PATH
+ExecStart=$VENV_PYTHON -m scripts.sleep_cycle
 StandardOutput=journal
 StandardError=journal
 

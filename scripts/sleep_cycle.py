@@ -36,6 +36,9 @@ class MemoryConsolidationWorker:
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 256,
             "temperature": 0.3,
+            # Gemma 4 GGUF reasons by default and spends the whole 256-token budget on reasoning_content,
+            # leaving content empty. The summary is one sentence; no reasoning needed.
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(url, json=payload)
@@ -119,6 +122,9 @@ class MemoryConsolidationWorker:
 
         if not summary_node or not summary_node.strip(". \n"):
             logger.error(f"[Sleep Cycle] Empty summary for {char_id}. Keeping {len(batch)} logs for the next run.")
+            return False
+        if "memory consolidation engine" in summary_node.lower():
+            logger.error(f"[Sleep Cycle] Model echoed the instructions for {char_id}. Keeping {len(batch)} logs for the next run.")
             return False
 
         # Embed the summary so the retriever (which requires an embedding and the session) can find it
