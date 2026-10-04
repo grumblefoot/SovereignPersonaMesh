@@ -25,7 +25,7 @@ from proxy.rag.retriever import EpisodicRAGRetriever
 from proxy.rag.import_worker import BulkImportWorker, get_import_worker, _compute_dynamic_batch_size, BULK_IMPORT_THRESHOLD
 from proxy.rag.tier_manager import MemoryTierManager
 from proxy.rag.lore_extractor import LoreExtractionWorker
-from proxy.backend_client.lemonade_client import LemonadeLLMClient, DEFAULT_CHAT_MODEL, SPM_VIRTUAL_MODEL_ID
+from proxy.backend_client.lemonade_client import LemonadeLLMClient, LLMBackendError, DEFAULT_CHAT_MODEL, SPM_VIRTUAL_MODEL_ID
 from proxy.backend_client.evennia_client import EvenniaWorldClient
 from scripts.onnx_embedder import CPUEmbeddingEngine
 from core.resource_manager import strings
@@ -297,7 +297,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                 "model": request.model,
                 "choices": [{
                     "index": 0,
-                    "delta": {"content": "*Luna hears muffled sounds from another room...*"},
+                    "delta": {"content": f"*{target_char.replace('_', ' ').title()} hears only muffled sounds from elsewhere...*"},
                     "finish_reason": "stop"
                 }]
             }
@@ -414,8 +414,12 @@ The text after </think> must ONLY be narrative and dialogue.
             max_tokens=backend_max_tokens,
             stop=stop,
         )
-        async for chunk in parser.process_token_stream(raw_stream):
-            pass
+        try:
+            async for chunk in parser.process_token_stream(raw_stream):
+                pass
+        except LLMBackendError as e:
+            logger.error(f"[SPMProxy] Backend failure for {target_char}; turn not saved: {e}")
+            return JSONResponse(status_code=502, content={"error": {"message": str(e), "type": "llm_backend_error"}})
         inner_monologue, public_resp = parser.get_final_buffers()
 
         logger.info(f"[BackendReturnSPMLog] Monologue: {inner_monologue} | Public: {public_resp}")
@@ -481,15 +485,27 @@ The text after </think> must ONLY be narrative and dialogue.
             stop=stop,
         )
 
-        async for public_chunk in parser.process_token_stream(raw_stream):
-            chunk_data = {
+        def _chunk(content):
+            return "data: " + json.dumps({
                 "id": "chatcmpl-spm-turn",
                 "object": "chat.completion.chunk",
                 "created": int(time.time()),
                 "model": request.model,
-                "choices": [{"index": 0, "delta": {"content": public_chunk}, "finish_reason": None}]
-            }
-            yield f"data: {json.dumps(chunk_data)}\n\n"
+                "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}]
+            }) + "\n\n"
+
+        try:
+            async for public_chunk in parser.process_token_stream(raw_stream):
+                yield _chunk(public_chunk)
+        except LLMBackendError as e:
+            # Tell the user instead of inventing a reply; skip persistence, GM actions and lore extraction.
+            logger.error(f"[SPMProxy] Backend failure for {target_char}; turn not saved: {e}")
+            yield _chunk(f"*[SPM: the LLM backend is unavailable ({e}). This turn was not saved.]*")
+            yield "data: " + json.dumps({"id": "chatcmpl-spm-turn", "object": "chat.completion.chunk",
+                                         "created": int(time.time()), "model": request.model,
+                                         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}) + "\n\n"
+            yield "data: [DONE]\n\n"
+            return
 
         final_chunk = {
             "id": "chatcmpl-spm-turn",

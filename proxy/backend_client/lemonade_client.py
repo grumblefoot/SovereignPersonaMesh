@@ -27,6 +27,10 @@ LEGACY_MODEL_IDS = {
 MODELS_CACHE_SECONDS = 30.0
 
 
+class LLMBackendError(RuntimeError):
+    """The LLM backend could not produce a reply (unreachable or non-200)."""
+
+
 class LemonadeLLMClient:
     def __init__(self, base_url: Optional[str] = None):
         # Resolve the default at call time (not definition time) so tests can redirect DEFAULT_BASE_URL.
@@ -149,8 +153,7 @@ class LemonadeLLMClient:
                     async with self.client.stream("POST", fallback_endpoint, json=fallback_payload) as fb_resp:
                         if fb_resp.status_code != 200:
                             logger.error(f"[LemonadeClient] LLM Backend error {fb_resp.status_code}")
-                            yield f"Error from LLM Backend: {fb_resp.status_code}"
-                            return
+                            raise LLMBackendError(f"LLM backend returned HTTP {fb_resp.status_code}")
                         
                         in_reasoning = False
                         async for line in fb_resp.aiter_lines():
@@ -180,8 +183,7 @@ class LemonadeLLMClient:
 
                 if response.status_code != 200:
                     logger.error(f"[LemonadeClient] LLM Backend error {response.status_code}")
-                    yield f"Error from LLM Backend: {response.status_code}"
-                    return
+                    raise LLMBackendError(f"LLM backend returned HTTP {response.status_code}")
 
                 in_reasoning = False
                 async for line in response.aiter_lines():
@@ -210,8 +212,10 @@ class LemonadeLLMClient:
 
                 if in_reasoning:
                     yield "</thinking>"
+        except LLMBackendError:
+            raise
         except Exception as e:
+            # Never invent a reply here: a made-up line would be shown as the character's turn and saved as memory.
             logger.error(f"[LemonadeClient] Stream connection error: {e}")
-            # Mock fallback for testing when backend isn't actively running
-            yield f"<thinking>I hear movements nearby. I should proceed with caution.</thinking> I am ready."
+            raise LLMBackendError(f"LLM backend unreachable: {e}") from e
 

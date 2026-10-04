@@ -2,7 +2,7 @@ import pytest
 import json
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from proxy.backend_client.lemonade_client import LemonadeLLMClient
+from proxy.backend_client.lemonade_client import LemonadeLLMClient, LLMBackendError
 
 @pytest.fixture
 async def client():
@@ -136,13 +136,14 @@ async def test_generate_stream_error_status(client):
         mock_stream.return_value = MockStreamContext(MockResponse(500))
         
         tokens = []
-        async for chunk in client.generate_stream():
-            tokens.append(chunk)
-            
-        assert tokens == ["Error from LLM Backend: 500"]
+        with pytest.raises(LLMBackendError, match="HTTP 500"):
+            async for chunk in client.generate_stream():
+                tokens.append(chunk)
+        # The error must not be emitted as if it were story text
+        assert tokens == []
 
 @pytest.mark.asyncio
-async def test_generate_stream_exception_fallback(client):
+async def test_generate_stream_connection_error_raises_instead_of_inventing_reply(client):
     with patch.object(client.client, 'get', new_callable=AsyncMock) as mock_get, \
          patch.object(client.client, 'stream') as mock_stream:
          
@@ -150,10 +151,10 @@ async def test_generate_stream_exception_fallback(client):
         mock_stream.side_effect = Exception("Connection Refused")
         
         tokens = []
-        async for chunk in client.generate_stream():
-            tokens.append(chunk)
-            
-        assert "I hear movements nearby." in "".join(tokens)
+        with pytest.raises(LLMBackendError, match="unreachable"):
+            async for chunk in client.generate_stream():
+                tokens.append(chunk)
+        assert tokens == []
 
 
 def _models(*entries):
