@@ -4,11 +4,12 @@ Emulates /v1/chat/completions endpoint for SillyTavern, handling spatial routing
 sensory gating bypass, RAG retrieval, and real-time monologue stripping over SSE.
 """
 
+import hashlib
 import json
+import os
 import time
 import asyncio
 import logging
-import uuid
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
@@ -68,9 +69,15 @@ class ChatCompletionRequest(BaseModel):
     model: str = DEFAULT_CHAT_MODEL
     messages: List[ChatCompletionMessage]
     temperature: Optional[float] = 0.7
-    max_tokens: Optional[int] = 128000
+    # No default: SillyTavern always sends its own cap, and the old 128000 default made the
+    # `or 300` fallback below unreachable while telling the backend to generate without limit.
+    max_tokens: Optional[int] = None
     stream: Optional[bool] = True
     stop: Optional[List[str]] = None
+    # FR-001 chat identity: these were silently dropped before they were declared here,
+    # because model_dump() only contains declared fields.
+    session_id: Optional[str] = None
+    user: Optional[str] = None
 
 
 @router.get("/v1/models")
@@ -135,12 +142,43 @@ async def _gather_public_response(prompt: str, model: str, temperature: float,
     return public_resp
 
 
+# Shared, un-redactable context blocks (decision 12): ST's Summary and Author's Note go to every
+# character's prompt, so by default they are stripped to keep hidden intent out of other characters.
+_SHARED_NOTE_REGEX = re.compile(r"^\s*\[?\s*(summary|author'?s\s+note)\s*[:\]]", re.IGNORECASE)
+
+
+def _assemble_system_prompt(messages: List[ChatCompletionMessage], settings: dict) -> str:
+    """Join ALL system messages in order (the old code kept only the first, dropping world info,
+    persona and scenario). Summary/Author's Note blocks are stripped unless the
+    st_passthrough_shared_notes setting opts in (per decision 12)."""
+    passthrough = bool(settings.get("st_passthrough_shared_notes", False))
+    parts = []
+    for m in messages:
+        if m.role != "system" or not m.content:
+            continue
+        if not passthrough and _SHARED_NOTE_REGEX.match(m.content):
+            logger.info("[SPMProxy] Stripped shared Summary/Author's Note block from character prompt.")
+            continue
+        parts.append(m.content)
+    if not parts:
+        return "You are a character inside the Sovereign Persona Mesh."
+    return "\n\n".join(parts)
+
+
 def _extract_session_id(request: Request, body: dict) -> str:
     """
     Extract session_id from request with precedence:
-    X-Session-ID header > body session_id > X-Chat-ID > user/character pair.
+    X-SPM-Chat-ID (ST extension, stable per chat) > X-Session-ID > body session_id >
+    X-Chat-ID/X-Conversation-ID > legacy st_{user}_{char} pair.
     Implements FR-001 session-bound context isolation.
+
+    The legacy fallback embeds the target character, which gives every group-chat member its
+    own world; a content fingerprint replacing it rides on the Sprint 2 perception table.
     """
+    spm_chat_id = request.headers.get("X-SPM-Chat-ID")
+    # A literal "{{spmChatId}}" means the ST extension failed to load and the macro never resolved.
+    if spm_chat_id and not spm_chat_id.startswith("{{"):
+        return f"st_chat_{safe_char_id(spm_chat_id, default='unidentified')}"
     header_session = request.headers.get("X-Session-ID") or request.headers.get("x-session-id")
     if header_session:
         return header_session
@@ -245,6 +283,8 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     Triggers async bulk import when > 10 messages detected for a new session.
     """
     t0 = time.time()
+    if os.getenv("SPM_LOG_HEADERS") == "1":
+        logger.info(f"[SillyIntoSPMLog] Raw request headers: {dict(req.headers)}")
     logger.info(f"[SillyIntoSPMLog] Request payload: {request.model_dump()}")
 
     # Extract session ID for FR-001 session isolation
@@ -310,11 +350,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     settings = get_settings_manager().get_settings()
     backend_max_tokens = settings.get("backend_max_tokens", 2048)
 
-    system_prompt = "You are Luna, an intelligent character inside the Sovereign Persona Mesh."
-    for m in request.messages:
-        if m.role == "system":
-            system_prompt = m.content
-            break
+    system_prompt = _assemble_system_prompt(request.messages, settings)
 
     # RAG Memory Retrieval (filters out query_text to eliminate regeneration bleed)
     retrieved_memories = []
@@ -425,7 +461,8 @@ The text after </think> must ONLY be narrative and dialogue.
         logger.info(f"[BackendReturnSPMLog] Monologue: {inner_monologue} | Public: {public_resp}")
 
         # Dispatch any GM actions found in the monologue sequentially in background
-        task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char))
+        task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
+                                                turn_index=sum(1 for m in request.messages if m.role == 'user')))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
@@ -450,7 +487,7 @@ The text after </think> must ONLY be narrative and dialogue.
                         session_id, user_text
                     )
                     emb = await embedder.generate_embedding(user_text)
-                    emb_str = "[" + ",".join(map(str, emb)) + "]"
+                    emb_str = None if emb is None else "[" + ",".join(map(str, emb)) + "]"
                     await conn.execute(
                         f"""
                         INSERT INTO {table_name} (session_id, sensory_input, inner_monologue, public_response, episodic_embedding)
@@ -524,7 +561,8 @@ The text after </think> must ONLY be narrative and dialogue.
         logger.info(f"[SPMReturnSillyLog] Sent streaming chunks to SillyTavern. Final public response: {public_resp}")
 
         # Dispatch any GM actions found in the monologue sequentially in background
-        task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char))
+        task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
+                                                turn_index=sum(1 for m in request.messages if m.role == 'user')))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
@@ -558,7 +596,7 @@ The text after </think> must ONLY be narrative and dialogue.
                         session_id, user_text
                     )
                     emb = await embedder.generate_embedding(user_text)
-                    emb_str = "[" + ",".join(map(str, emb)) + "]"
+                    emb_str = None if emb is None else "[" + ",".join(map(str, emb)) + "]"
                     await conn.execute(
                         f"""
                         INSERT INTO {table_name} (session_id, sensory_input, inner_monologue, public_response, episodic_embedding)
@@ -741,11 +779,19 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
         task.add_done_callback(_background_tasks.discard)
         task.add_done_callback(_log_task_done)
 
-async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str):
+def _gm_action_key(session_id: str, turn_index: int, idx: int, action: dict) -> str:
+    """Deterministic per (session, turn, action): a regenerate re-derives the same key, so the
+    engine can drop the duplicate. The old uuid4 keys made every regenerate re-apply its actions."""
+    payload = json.dumps(action, sort_keys=True)
+    return "gm-" + hashlib.sha1(f"{session_id}|{turn_index}|{idx}|{payload}".encode()).hexdigest()[:32]
+
+
+async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str,
+                               turn_index: int = 0):
     """Extracts GM actions from the parser and dispatches them sequentially in the background."""
     actions = parser.extract_gm_actions()
 
-    for action in actions:
+    for idx, action in enumerate(actions):
         action_type = action.get("type")
         logger.info(f"[GMAction] Dispatching GM Action: {action}")
         try:
@@ -754,7 +800,7 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
                     character_id=action.get("entity", target_char),
                     room_id=action.get("room_id", ""),
                     session_id=session_id,
-                    idempotency_key=str(uuid.uuid4())
+                    idempotency_key=_gm_action_key(session_id, turn_index, idx, action)
                 )
             elif action_type == "CREATE_ROOM":
                 await evennia_client.create_room(
@@ -762,7 +808,7 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
                     name=action.get("name", "New Room"),
                     desc=action.get("desc", ""),
                     session_id=session_id,
-                    idempotency_key=str(uuid.uuid4())
+                    idempotency_key=_gm_action_key(session_id, turn_index, idx, action)
                 )
             else:
                 logger.warning(f"[GMAction] Unrecognized GM action type: {action_type}")

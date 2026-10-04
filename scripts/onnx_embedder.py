@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 
 
 class CPUEmbeddingEngine:
+    #: True once a real model is loaded. The stub must never fake vectors: random embeddings
+    #: poisoned RAG recall and changed on every restart (embeddings plan, phase 0).
+    available: bool = False
+
     def __init__(self, dimension: int = 3584, num_threads: int = 4):
         self.dimension = dimension
         self.num_threads = num_threads
@@ -20,25 +24,21 @@ class CPUEmbeddingEngine:
 
     def _initialize_onnx(self):
         """Initialize ONNX runtime session configured for multi-threaded CPU inference."""
-        logger.info(f"Initializing CPU Embedding Engine (dim={self.dimension}, threads={self.num_threads})...")
+        logger.warning(f"CPU Embedding Engine is a stub (dim={self.dimension}): no model loaded, embeddings disabled until Sprint 1.")
         # Stub: Hermes will integrate actual ONNX model weights (e.g. Gemma/bge-large-en)
         pass
 
-    async def generate_embedding(self, text: str) -> List[float]:
-        """
-        Generate embedding vector for input text asynchronously on CPU worker pool.
-        """
-        if not text.strip():
-            return [0.0] * self.dimension
+    async def generate_embedding(self, text: str):
+        """Return the embedding for `text`, or None while no real model is loaded.
 
-        # Stub implementation: Returns synthetic normalized vector matching target dimension
-        np.random.seed(hash(text) % (2**32 - 1))
-        vec = np.random.randn(self.dimension).astype(np.float32)
-        norm = np.linalg.norm(vec)
-        if norm > 0:
-            vec = vec / norm
-        return vec.tolist()
+        Phase 0 of the embeddings plan: the old stub returned a random unit vector seeded by
+        Python's salted hash(), so stored vectors were noise and differed per process. Callers
+        must treat None as "store NULL / skip vector search".
+        """
+        if not self.available or self.model is None:
+            return None
+        raise NotImplementedError("real ONNX inference lands with the provider layer (Sprint 1)")
 
-    async def batch_generate_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Batch embedding generation on CPU threads."""
+    async def batch_generate_embeddings(self, texts: List[str]):
+        """Batch form of generate_embedding; entries are None while no model is loaded."""
         return [await self.generate_embedding(t) for t in texts]

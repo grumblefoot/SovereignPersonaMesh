@@ -1,0 +1,11 @@
+{
+    "display_name": "SPM Chat ID",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "",
+    "author": "SPM (Sovereign Persona Mesh)",
+    "version": "0.1.0",
+    "homePage": ""
+}

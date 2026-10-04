@@ -13,6 +13,7 @@ import pytest
 from scripts.sleep_cycle import MemoryConsolidationWorker
 from core.resource_manager import strings
 from tests._testdb import TEST_DB_NAME
+from tests._fakes import DeterministicEmbedder
 
 
 DB_CONFIG = {
@@ -149,7 +150,7 @@ async def test_process_character_empty_table():
 @pytest.mark.asyncio
 async def test_core_memory_node_insertion():
     """Verify that consolidation inserts a node with is_core_memory=TRUE."""
-    worker = MemoryConsolidationWorker(DB_CONFIG, "http://localhost:13305/v1")
+    worker = MemoryConsolidationWorker(DB_CONFIG, "http://localhost:13305/v1", embedder=DeterministicEmbedder())
     conn = await asyncpg.connect(**DB_CONFIG)
     try:
         await conn.execute("SELECT create_csa_memory_table($1);", "test_core_insert")
@@ -347,7 +348,7 @@ async def test_failed_summary_keeps_logs_and_writes_nothing(failure):
 
 @pytest.mark.asyncio
 async def test_backlog_consolidated_per_session_and_day_recent_kept():
-    worker = MemoryConsolidationWorker(DB_CONFIG, "http://localhost:13305/v1")
+    worker = MemoryConsolidationWorker(DB_CONFIG, "http://localhost:13305/v1", embedder=DeterministicEmbedder())
     conn = await asyncpg.connect(**DB_CONFIG)
     try:
         table = "csa_memory_test_sc_backlog"

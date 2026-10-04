@@ -235,7 +235,7 @@ class BulkImportWorker:
                                 strings.get("sql.insert_csa_memory", table_suffix=safe_char_id(character_id)),
                                 session_id,
                                 msg.get("content", ""),
-                                "[" + ",".join(map(str, embeddings[i])) + "]",
+                                None if embeddings[i] is None else "[" + ",".join(map(str, embeddings[i])) + "]",
                                 msg.get("inner_monologue", None),
                                 msg.get("importance_score", 5),
                                 msg.get("is_core_memory", False),

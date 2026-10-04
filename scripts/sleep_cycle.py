@@ -129,7 +129,9 @@ class MemoryConsolidationWorker:
 
         # Embed the summary so the retriever (which requires an embedding and the session) can find it
         embedding = await self.embedder.generate_embedding(summary_node)
-        embedding_str = "[" + ",".join(map(str, embedding)) + "]"
+        if embedding is None:
+            logger.warning(f"[Sleep Cycle] No embedder available: core node for {char_id} stored without a vector (re-embed job will fill it in).")
+        embedding_str = None if embedding is None else "[" + ",".join(map(str, embedding)) + "]"
 
         # 4. Commit the core memory node and delete exactly the logs it summarises
         async with conn.transaction():
