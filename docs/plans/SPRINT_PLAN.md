@@ -169,3 +169,17 @@ Each plan lists its full set. These are the ones that block the start of a sprin
 - "Two parallel tracks" in Sprints 1–2 assumes two workers. Solo, wall-clock is the sum.
 - In Sprint 1, backend embedding calls exist before the scheduler does (Sprint 2). Acceptable interim; the provider layer should make its call sites queue-ready so wiring in Sprint 2 is mechanical.
 - FR-001 session-isolation tests assume the `st_user_<char>` key shape; the chat-identity fix must update them deliberately, not incidentally.
+
+---
+
+## 6. Decision record (2026-10-04)
+
+All 17 decisions in §3 are resolved (owner, via the review doc). Sprint 0 is unblocked.
+
+- **Approved as recommended:** 1, 2, 3, 5, 6, 7, 8, 9, 10, 13, 14, 15, 17.
+- **4 — modified:** EmbeddingGemma-300m is a **provisional** default. Run a bake-off with Sprint 1/3 calibration: 30–50 real chat/lore queries across EmbeddingGemma-300m, Qwen3-Embedding-0.6B and the backend's own `/v1/embeddings`, scored on recall@5, latency and memory (incl. NPU slot behaviour). The per-row `embedding_space_id` makes a later swap a re-embed job, not a migration.
+- **11 — modified:** gating syntax markers are **fail-open hints, never requirements**. Unclosed/mismatched/absent markers degrade to plain `speak` (a line heard normally, never a leak); every gate is opt-in per message; add malformed-marker fixtures (missing closer, swapped delimiter, mixed styles between turns) to the 14-scenario suite.
+- **12 — resolved:** **strip ST Summary and Author's Note by default** (they are shared, un-redactable text and would leak hidden intent to every character), with a per-chat opt-in pass-through for secret-free chats. The canon event log is the shared story truth; private monologues live only in per-character memory; the admin thoughts tab is a read-only dev window, gated by the deferred OPEN-001 auth.
+- **16 — partially open:** PRD 5.3 split approved; the sub-items (character-card overflow behaviour, summaries on/off, keep hardware tiers as preset aliases) stay open until Sprint 4.
+
+Sprint 0 manual-check updates: `max_loaded_models` is **resolved** — the 2-slot experiment caused an OOM and was reverted to 1 on 2026-10-03 (verified: loading a second LLM evicts the first; backup `~/.config/lemonade/config.json.bak-2026-10-03`). Hermes is verified working as a local agent (first headless turn ≈ 1.5–2 min: ~26 s model swap + ~59 s prefill). Still to run: NPU embed-model slot behaviour under 1-slot config; log one raw SillyTavern request.
