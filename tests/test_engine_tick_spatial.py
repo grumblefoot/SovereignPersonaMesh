@@ -182,7 +182,7 @@ def test_closed_door_blacks_out_speech_over_http(client, app_module):
     # BLACKOUT is filtered out of the consequence payload entirely — the
     # listener receives nothing, not even a murmur. (The actor always sees
     # their own utterance, so only other recipients are checked for leaks.)
-    assert "solo" not in res
+    assert res["solo"]["gating_level"] == "blackout" and res["solo"]["sensory_feed"] == ""
     feeds = {rid: c["sensory_feed"] for rid, c in res.items() if rid != "rowan"}
     assert all("psst" not in f for f in feeds.values())
 
@@ -197,7 +197,7 @@ def test_metal_partition_blacks_out_speech_over_http(client, app_module):
     })
 
     orig = app_mod._compute_distance_and_barriers
-    app_mod._compute_distance_and_barriers = lambda a, t, at, world=None: (
+    app_mod._compute_distance_and_barriers = lambda a, t, at, world=None, session_id=None: (
         (3.0, [BarrierType.METAL_PARTITION]) if a == t else orig(a, t, at, world=world)
     )
     try:
@@ -231,7 +231,7 @@ def test_no_hysteresis_carryover_over_http(client, app_module):
                                   session_id="hyst", template_key="layout"))
     # With the old hysteresis, solo would still hear DEGRADED here; now it is
     # instant BLACKOUT (no consequence at all).
-    assert "solo" not in res2
+    assert res2["solo"]["gating_level"] == "blackout" and res2["solo"]["sensory_feed"] == ""
     feeds = {rid: c["sensory_feed"] for rid, c in res2.items() if rid != "rowan"}
     assert all("two" not in f for f in feeds.values())
 
@@ -256,7 +256,7 @@ def test_shout_lands_direct_where_speak_would(client, app_module):
 
     # Force the 10 ft open-space geometry (no barrier) for cross-room pairs.
     orig = app_mod._compute_distance_and_barriers
-    app_mod._compute_distance_and_barriers = lambda a, t, at, world=None: (
+    app_mod._compute_distance_and_barriers = lambda a, t, at, world=None, session_id=None: (
         (10.0, []) if (a != t and a and t) else orig(a, t, at, world=world)
     )
     try:
@@ -282,7 +282,7 @@ def test_shout_cannot_lift_barrier_blackout_over_http(client, app_module):
     })
     res = consequences_by(action(client, "rowan", "shout", "CANNOT REACH YOU",
                                  session_id="doorwall", template_key="layout"))
-    assert "solo" not in res  # BLACKOUT filtered from consequences
+    assert res["solo"]["gating_level"] == "blackout" and res["solo"]["sensory_feed"] == ""  # BLACKOUT filtered from consequences
     feeds = {rid: c["sensory_feed"] for rid, c in res.items() if rid != "rowan"}
     assert all("CANNOT REACH YOU" not in f for f in feeds.values())
 
@@ -312,11 +312,11 @@ def test_adjacency_uses_acting_sessions_layout(client, app_module):
     # Any edge in the acting world resolves to a 10 ft open corridor;
     # missing edges fall through to the real 45 ft + wall computation.
     orig = app_mod._compute_distance_and_barriers
-    def patched(actor_room, target_room_id, action_type, world=None):
+    def patched(actor_room, target_room_id, action_type, world=None, session_id=None):
         if world is not None and actor_room and actor_room in world \
            and target_room_id in world[actor_room].exits:
             return (10.0, [])
-        return orig(actor_room, target_room_id, action_type, world=world)
+        return orig(actor_room, target_room_id, action_type, world=world, session_id=session_id)
     app_mod._compute_distance_and_barriers = patched
     try:
         open_res = consequences_by(action(
@@ -327,6 +327,6 @@ def test_adjacency_uses_acting_sessions_layout(client, app_module):
         walled_res = consequences_by(action(
             client, "rowan", "speak", "walled session audible",
             session_id="walled", template_key="twin"))
-        assert "solo" not in walled_res  # 45 ft + wall → BLACKOUT
+        assert walled_res["solo"]["gating_level"] == "blackout" and walled_res["solo"]["sensory_feed"] == ""  # present, silent (PRD 4.1.1)
     finally:
         app_mod._compute_distance_and_barriers = orig

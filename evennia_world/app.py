@@ -53,12 +53,32 @@ class AppState:
         self.current_world: Dict[str, RoomMetadata] = {}
         self.room_to_template: Dict[str, str] = {}
         self.session_worlds: Dict[str, Dict[str, Dict[str, RoomMetadata]]] = {}
-        # B5: per-session FIFO of seen idempotency keys -> result message.
-        self.idempotency_seen: Dict[str, "OrderedDict[str, str]"] = {}
+        # B5: per-session FIFO of seen idempotency keys -> {digest, message}.
+        self.idempotency_seen: Dict[str, "OrderedDict[str, Dict[str, str]]"] = {}
+        # A2: per-session stateful edges (doors etc.): (a,b) sorted tuple -> edge dict.
+        self.session_edges: Dict[str, Dict[tuple, Dict[str, Any]]] = {}
+        # A2: per-session mutation audit (origin tracking), FIFO-capped.
+        self.mutation_log: Dict[str, List[Dict[str, Any]]] = {}
 
 app_state = AppState()
 
 IDEMPOTENCY_KEY_CAP = 512
+MUTATION_LOG_CAP = 256
+
+
+def _log_mutation(session_id: str, kind: str, origin: str, detail: Dict[str, Any]) -> None:
+    log = app_state.mutation_log.setdefault(session_id, [])
+    log.append({"kind": kind, "origin": origin, **detail})
+    while len(log) > MUTATION_LOG_CAP:
+        log.pop(0)
+
+
+def _edge_key(a: str, b: str) -> tuple:
+    return tuple(sorted((a, b)))
+
+
+def _session_edge(session_id: str, a: str, b: str) -> Optional[Dict[str, Any]]:
+    return app_state.session_edges.get(session_id, {}).get(_edge_key(a, b))
 
 
 def _session_tick(session_id: str) -> int:
@@ -101,11 +121,28 @@ def _resolve_action_tick(session_id: str, turn_id: Optional[str]) -> int:
     return tick
 
 
-def _check_duplicate(session_id: str, key: Optional[str]) -> Optional[str]:
-    """Return the stored message if this idempotency key was already applied, else None."""
+def _payload_digest(payload: BaseModel) -> str:
+    import hashlib, json as _json
+    body = payload.model_dump(exclude={"idempotency_key"})
+    return hashlib.sha1(_json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _check_duplicate(session_id: str, key: Optional[str], digest: Optional[str] = None) -> Optional[str]:
+    """Return the stored message if this idempotency key was already applied.
+
+    A repeated key with a DIFFERENT payload digest is a conflict (HTTP 409), matching
+    the engine contract's MutationConflict semantics."""
     if not key:
         return None
-    return app_state.idempotency_seen.get(session_id, {}).get(key)
+    seen = app_state.idempotency_seen.get(session_id, {}).get(key)
+    if seen is None:
+        return None
+    if digest is not None and seen.get("digest") not in (None, digest):
+        raise HTTPException(status_code=409, detail=f"idempotency_key '{key}' was already used for a different mutation")
+    return seen.get("message")
+
+
+_last_digest: Dict[str, Optional[str]] = {"v": None}
 
 
 def _record_idempotency(session_id: str, key: Optional[str], message: str) -> None:
@@ -115,7 +152,7 @@ def _record_idempotency(session_id: str, key: Optional[str], message: str) -> No
     seen = app_state.idempotency_seen.get(session_id)
     if seen is None:
         seen = app_state.idempotency_seen[session_id] = OrderedDict()
-    seen[key] = message
+    seen[key] = {"digest": _last_digest.get("v"), "message": message}
     seen.move_to_end(key)
     while len(seen) > IDEMPOTENCY_KEY_CAP:
         seen.popitem(last=False)
@@ -260,7 +297,8 @@ async def submit_action(payload: ActionPayload, background_tasks: BackgroundTask
             same_room = (actor_room is not None and
                          room_id == actor_room)
             dist, barriers = _compute_distance_and_barriers(
-                actor_room, room_id, payload.action_type, world=world
+                actor_room, room_id, payload.action_type, world=world,
+                session_id=payload.session_id,
             )
 
             gating, feed = SpatialConstraintsMatrix.evaluate_sensory_feed(
@@ -276,7 +314,9 @@ async def submit_action(payload: ActionPayload, background_tasks: BackgroundTask
                 shout=(payload.action_type == ActionType.SHOUT),
             )
 
-            if gating != GatingLevel.BLACKOUT:
+            if True:  # BLACKOUT recipients are included with an empty feed (PRD 4.1.1: the proxy's zero-inference bypass needs to see them)
+                if gating == GatingLevel.BLACKOUT:
+                    feed = ""
                 consequences.append(SensoryConsequence(
                     recipient_id=char_id,
                     sensory_feed=feed,
@@ -386,15 +426,19 @@ class CreateRoomPayload(BaseModel):
     template_key: str = "dynamic"
     session_id: str = "default_session"
     idempotency_key: Optional[str] = None
+    origin: str = "system"  # gm | system | user (A2: mutation provenance)
 
 @app.post("/api/v1/world/rooms")
 async def create_room(payload: CreateRoomPayload, background_tasks: BackgroundTasks):
     """Create a new room dynamically and add it to the session world."""
-    # B5: honor idempotency keys — a repeated key creates nothing and reports the duplicate.
-    dup = _check_duplicate(payload.session_id, payload.idempotency_key)
+    # B5/A2: honor idempotency keys — replay returns the original result; a different
+    # payload under the same key is a 409 conflict.
+    digest = _payload_digest(payload)
+    dup = _check_duplicate(payload.session_id, payload.idempotency_key, digest)
     if dup is not None:
         return {
             "success": True,
+            "duplicate": True,
             "message": f"Duplicate request (idempotency key already applied): {dup}",
             "room_id": payload.room_id,
         }
@@ -417,7 +461,9 @@ async def create_room(payload: CreateRoomPayload, background_tasks: BackgroundTa
     world[payload.room_id] = new_room
 
     room_msg = f"Room '{payload.room_name}' created successfully."
+    _last_digest["v"] = digest
     _record_idempotency(payload.session_id, payload.idempotency_key, room_msg)
+    _log_mutation(payload.session_id, "CREATE_ROOM", payload.origin, {"room_id": payload.room_id})
 
     background_tasks.add_task(_persist_room, payload.session_id, payload.template_key, payload.room_id, new_room)
     
@@ -437,12 +483,15 @@ class CharacterMovePayload(BaseModel):
     template_key: str = "dynamic"
     session_id: str = "default_session"
     idempotency_key: Optional[str] = None
+    origin: str = "system"  # gm | system | user (A2: mutation provenance)
 
 
 class CharacterResponse(BaseModel):
     """Generic response for character operations."""
     success: bool
     message: str
+    duplicate: bool = False          # A2: idempotent replay marker
+    origin: Optional[str] = None     # A2: echoed mutation provenance
     character_id: Optional[str] = None
     room_id: Optional[str] = None
 
@@ -551,11 +600,13 @@ async def move_character(payload: CharacterMovePayload, background_tasks: Backgr
     """Move an existing character from their current room to a new one."""
     session_id = payload.session_id
 
-    # B5: honor idempotency keys — a repeated key changes nothing and reports the duplicate.
-    dup = _check_duplicate(session_id, payload.idempotency_key)
+    # B5/A2: honor idempotency keys; conflicting reuse is a 409.
+    digest = _payload_digest(payload)
+    dup = _check_duplicate(session_id, payload.idempotency_key, digest)
     if dup is not None:
         return CharacterResponse(
             success=True,
+            duplicate=True,
             message=f"Duplicate request (idempotency key already applied): {dup}",
             character_id=payload.character_id,
             room_id=payload.room_id,
@@ -605,7 +656,9 @@ async def move_character(payload: CharacterMovePayload, background_tasks: Backgr
             background_tasks.add_task(_persist_room, session_id, tmpl_key, r_id, room_obj)
 
     move_msg = f"Character '{payload.character_id}' moved to room '{payload.room_id}'"
+    _last_digest["v"] = digest
     _record_idempotency(session_id, payload.idempotency_key, move_msg)
+    _log_mutation(session_id, "MOVE", payload.origin, {"character_id": payload.character_id, "room_id": payload.room_id})
 
     return CharacterResponse(
         success=True,
@@ -617,11 +670,18 @@ async def move_character(payload: CharacterMovePayload, background_tasks: Backgr
 
 # ── World configuration ─────────────────────────────────────────────────
 
+class PlacementPayload(BaseModel):
+    character_id: str
+    room_id: str
+
+
 class WorldConfigPayload(BaseModel):
     """Switch the active world to a different template."""
     template_key: str
     flavor_text: Optional[str] = None
     session_id: str = "default_session"
+    placements: List[PlacementPayload] = []
+    origin: str = "system"
 
 
 @app.post("/api/v1/world/configure", response_model=CharacterResponse)
@@ -657,9 +717,21 @@ async def configure_world(payload: WorldConfigPayload):
 
     
     app_state.current_world = app_state.session_worlds[session_id_for_config][payload.template_key]
+
+    # A2: optional seed placements — validate every room first, apply only if all valid.
+    world_now = app_state.session_worlds[session_id_for_config][payload.template_key]
+    bad = [pl.room_id for pl in payload.placements if pl.room_id not in world_now]
+    if bad:
+        raise HTTPException(status_code=400, detail=f"Unknown room(s) in placements: {bad}; nothing was placed")
+    for pl in payload.placements:
+        if pl.character_id not in world_now[pl.room_id].present_characters:
+            world_now[pl.room_id].present_characters.append(pl.character_id)
+        _log_mutation(session_id_for_config, "PLACE", payload.origin, {"character_id": pl.character_id, "room_id": pl.room_id})
+
     return CharacterResponse(
         success=True,
-        message=f"World loaded: template '{payload.template_key}'",
+        message=f"World loaded: template '{payload.template_key}'" + (f" with {len(payload.placements)} placement(s)" if payload.placements else ""),
+        origin=payload.origin,
     )
 
 
@@ -670,15 +742,106 @@ async def list_templates():
 
 
 @app.delete("/api/v1/world/admin/reset")
-async def reset_world_state():
-    """Clear in-memory cache of world state for factory reset."""
+async def reset_world_state(session_id: Optional[str] = None):
+    """Factory reset. With ?session_id=X, clear ONLY that session (A2, adapter gap 9);
+    without, clear everything as before."""
+    if session_id is not None:
+        for store in (app_state.session_worlds, app_state.idempotency_seen,
+                      app_state.session_ticks, app_state.session_turn_ticks,
+                      app_state.session_edges, app_state.mutation_log):
+            store.pop(session_id, None)
+        return {"status": "success", "message": f"Session '{session_id}' world state cleared"}
     app_state.session_worlds.clear()
     app_state.idempotency_seen.clear()
     app_state.session_ticks.clear()
     app_state.session_turn_ticks.clear()
+    app_state.session_edges.clear()
+    app_state.mutation_log.clear()
 
     app_state.current_world = {}
     return {"status": "success", "message": "In-memory world state cache cleared"}
+
+# ── A2: snapshot + stateful barriers ────────────────────────────────────
+
+@app.get("/api/v1/world/snapshot")
+async def world_snapshot(session_id: str = "default_session", template_key: str = "dynamic"):
+    """Full session graph for the proxy's perception layer (adapter gap 1): rooms,
+    edges (explicit stateful edges first, exit-derived defaults for the rest),
+    occupants and the per-session tick. Create-on-read via _ensure_world."""
+    world = _ensure_world(template_key, session_id)
+    rooms, occupants, edges, seen = [], [], [], set()
+    for rid, room in world.items():
+        rooms.append({
+            "room_id": rid, "name": room.room_name, "description": room.description,
+            "flavor_text": getattr(room, "flavor_text", "") or "",
+            "present_characters": list(room.present_characters),
+            "nearby_objects": list(room.nearby_objects),
+            "exits": list(room.exits),
+        })
+        for ch in room.present_characters:
+            occupants.append({"entity_id": ch, "room_id": rid, "kind": "character", "posture": []})
+    for key, edge in app_state.session_edges.get(session_id, {}).items():
+        a, b = key
+        seen.add(key)
+        edges.append({"a": a, "b": b, "barrier": edge.get("barrier", "none"),
+                      "state": edge.get("state", "closed"),
+                      "distance_ft": float(edge.get("distance_ft", 15.0))})
+    for rid, room in world.items():
+        for ex in room.exits:
+            key = _edge_key(rid, ex)
+            if key in seen or ex not in world:
+                continue
+            seen.add(key)
+            # Exit-derived default mirrors _compute_distance_and_barriers' heuristic.
+            edges.append({"a": key[0], "b": key[1], "barrier": "closed_door",
+                          "state": "closed", "distance_ft": 15.0})
+    return {"session_id": session_id, "tick": _session_tick(session_id),
+            "rooms": rooms, "edges": edges, "occupants": occupants}
+
+
+class BarrierPayload(BaseModel):
+    """Create or update a stateful edge between two rooms (adapter gap 4)."""
+    session_id: str = "default_session"
+    template_key: str = "dynamic"
+    a: str
+    b: str
+    barrier: str = "closed_door"   # closed_door | open_door | metal_partition | solid_wall | drywall | none
+    state: str = "closed"          # open | closed
+    distance_ft: float = 15.0
+    idempotency_key: Optional[str] = None
+    origin: str = "system"
+
+
+@app.post("/api/v1/world/barrier")
+async def set_barrier(payload: BarrierPayload):
+    """Set a door/partition's type and state on the edge (a, b), both directions.
+    The spatial evaluation reads this before any heuristic, so closing a door
+    blacks the pair out and opening it restores line of sound."""
+    digest = _payload_digest(payload)
+    dup = _check_duplicate(payload.session_id, payload.idempotency_key, digest)
+    if dup is not None:
+        return {"success": True, "duplicate": True, "message": dup}
+    world = _ensure_world(payload.template_key, payload.session_id)
+    missing = [r for r in (payload.a, payload.b) if r not in world]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Unknown room(s): {missing}")
+    if payload.state not in ("open", "closed"):
+        raise HTTPException(status_code=400, detail="state must be 'open' or 'closed'")
+    _str_to_barrier(payload.barrier)  # validates the name
+    edges = app_state.session_edges.setdefault(payload.session_id, {})
+    edges[_edge_key(payload.a, payload.b)] = {
+        "barrier": payload.barrier, "state": payload.state, "distance_ft": payload.distance_ft,
+    }
+    # Keep exits consistent so adjacency exists for pathing/snapshots.
+    for x, y in ((payload.a, payload.b), (payload.b, payload.a)):
+        if y not in world[x].exits:
+            world[x].exits.append(y)
+    msg = f"Edge ({payload.a}, {payload.b}) set: {payload.barrier}/{payload.state}"
+    _last_digest["v"] = digest
+    _record_idempotency(payload.session_id, payload.idempotency_key, msg)
+    _log_mutation(payload.session_id, "SET_BARRIER", payload.origin,
+                  {"a": payload.a, "b": payload.b, "barrier": payload.barrier, "state": payload.state})
+    return {"success": True, "duplicate": False, "message": msg}
 
 
 # ── Lock info ───────────────────────────────────────────────────────────
@@ -723,6 +886,7 @@ def _compute_distance_and_barriers(
     target_room_id: str,
     action_type: ActionType,
     world: Optional[Dict[str, RoomMetadata]] = None,
+    session_id: Optional[str] = None,
 ) -> tuple[float, List[BarrierType]]:
     """Compute distance (ft) and barriers between actor room and target room.
 
@@ -740,6 +904,14 @@ def _compute_distance_and_barriers(
 
     if actor_room == target_room_id:
         return (3.0, [])
+
+    # A2: an explicit stateful edge (door set by /world/barrier) overrides heuristics.
+    if session_id is not None:
+        edge = _session_edge(session_id, actor_room, target_room_id)
+        if edge is not None:
+            if edge.get("state") == "open" or edge.get("barrier") in (None, "none", "open_door"):
+                return (float(edge.get("distance_ft", 15.0)), [])
+            return (float(edge.get("distance_ft", 15.0)), [_str_to_barrier(edge["barrier"])])
 
     # Check adjacency via exit lists — in the session's own topology.
     lookup = world if world is not None else app_state.current_world  # NOTE: global read alias (legacy callers)
@@ -803,7 +975,32 @@ async def startup_event():
         logging.info("Evennia World State Engine connected to PostgreSQL")
     except Exception as e:
         logging.error(f"Failed to create asyncpg pool: {e}")
-        
+
+    # A2: rebuild session worlds from Postgres so a restart keeps placements.
+    # Runs ONCE per process (TestClient re-entries must not resurrect state), and
+    # SPM_WORLD_RELOAD=0 disables it entirely (the test suite sets this).
+    # Ticks resume from each session's max persisted action_tick (objective_world_log);
+    # stateful edges are runtime-only for now (persistence joins Sprint 2 seeding).
+    if app_state._db_pool and not getattr(app_state, "_reload_done", False) and os.getenv("SPM_WORLD_RELOAD", "1") != "0":
+        app_state._reload_done = True
+        try:
+            async with app_state._db_pool.acquire() as conn:
+                rows = await conn.fetch("SELECT session_id, template_key, room_id, room_data FROM world_state_sessions")
+                for row in rows:
+                    try:
+                        room = RoomMetadata(**json.loads(row["room_data"]))
+                    except Exception as exc:
+                        logging.error(f"Skipping unloadable room {row['room_id']}: {exc}")
+                        continue
+                    app_state.session_worlds.setdefault(row["session_id"], {}).setdefault(row["template_key"], {})[row["room_id"]] = room
+                ticks = await conn.fetch("SELECT session_id, MAX(action_tick) AS t FROM objective_world_log GROUP BY session_id")
+                for row in ticks:
+                    app_state.session_ticks[row["session_id"]] = int(row["t"] or 0)
+                if rows:
+                    logging.info(f"Reloaded {len(rows)} room(s) across {len(app_state.session_worlds)} session(s) from Postgres")
+        except Exception as e:
+            logging.error(f"World state reload skipped: {e}")
+
     _ensure_world("dynamic")
 
 async def shutdown_event():
