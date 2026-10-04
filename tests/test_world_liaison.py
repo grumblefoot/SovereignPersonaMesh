@@ -149,7 +149,8 @@ class TestHybridWorldBuilder:
         assert "cellar" in rooms
         assert "tavern_upstairs" in rooms
         assert rooms["cellar"].room_name == "The Dungeon Cellar"
-        assert len(rooms["cellar"].present_characters) == 3
+        # B6: templates ship empty — characters enter only via explicit placement.
+        assert rooms["cellar"].present_characters == []
 
     def test_instantiate_unknown_fallback(self):
         b = HybridWorldBuilder()
@@ -189,7 +190,9 @@ class TestHybridWorldBuilder:
 
     def test_remove_character_from_room(self):
         b = HybridWorldBuilder()
-        rooms = b.instantiate_world("dungeon_cellar")
+        b.instantiate_world("dungeon_cellar")
+        # B6: templates ship empty — place the character explicitly first.
+        assert b.add_character_to_room("dungeon_cellar", "cellar", "rowan") is True
         assert b.remove_character_from_room("dungeon_cellar", "cellar", "rowan") is True
         room = b.get_room("dungeon_cellar", "cellar")
         assert room is not None
@@ -197,6 +200,8 @@ class TestHybridWorldBuilder:
 
     def test_get_nearby_characters(self):
         b = HybridWorldBuilder()
+        for c in ("rowan", "domino", "luna"):
+            b.add_character_to_room("dungeon_cellar", "cellar", c)
         chars = b.get_nearby_characters("dungeon_cellar", "cellar")
         assert "rowan" in chars
         assert "domino" in chars
@@ -204,6 +209,10 @@ class TestHybridWorldBuilder:
 
     def test_get_all_characters_in_world(self):
         b = HybridWorldBuilder()
+        b.add_character_to_room("dungeon_cellar", "cellar", "rowan")
+        b.add_character_to_room("dungeon_cellar", "cellar", "domino")
+        b.add_character_to_room("dungeon_cellar", "cellar", "luna")
+        b.add_character_to_room("dungeon_cellar", "tavern_upstairs", "seamus")
         chars = b.get_all_characters_in_world("dungeon_cellar")
         assert chars == {"rowan", "domino", "luna", "seamus"}
 
@@ -245,6 +254,7 @@ def reset_world_state(app_module):
     app_module.app_state.current_world = {}
     app_module.app_state.room_to_template = {}
     app_module.app_state.session_worlds = {}
+    app_module.app_state.idempotency_seen = {}
     app_module.app_state.action_tick_counter = 0
     app_module.lock_manager = type(app_module.lock_manager)(default_ttl=60.0)
     app_module.world_builder = HybridWorldBuilder()
@@ -257,6 +267,18 @@ def client(app_module):
     from starlette.testclient import TestClient
     with TestClient(app=app_module.app, base_url="http://test") as c:
         yield c
+
+
+def place(client, char_id, room_id, template_key="dungeon_cellar", session_id="default_session"):
+    """Explicitly place a character in a room (B6: templates ship empty)."""
+    r = client.post("/api/v1/world/characters", json={
+        "character_id": char_id,
+        "room_id": room_id,
+        "template_key": template_key,
+        "session_id": session_id,
+    })
+    assert r.status_code == 200, f"placement of {char_id} in {room_id} failed: {r.text}"
+    return r
 
 
 # ── Health ────────────────────────────────────────────────────────────────
@@ -275,6 +297,8 @@ class TestHealthEndpoint:
 
 class TestActionEndpoint:
     def test_submit_speak_action(self, client):
+        place(client, "rowan", "cellar")
+        place(client, "domino", "cellar")
         r = client.post("/api/v1/world/action", json={
             "character_id": "rowan",
             "action_type": "speak",
@@ -295,6 +319,8 @@ class TestActionEndpoint:
             assert "barriers" in c
 
     def test_submit_whisper_action(self, client):
+        place(client, "rowan", "cellar")
+        place(client, "domino", "cellar")
         r = client.post("/api/v1/world/action", json={
             "character_id": "rowan",
             "action_type": "whisper",
@@ -337,6 +363,7 @@ class TestActionEndpoint:
 
 class TestWorldStateEndpoint:
     def test_query_cellar_character(self, client):
+        place(client, "rowan", "cellar")
         r = client.get("/api/v1/world/state", params={"character_id": "rowan"})
         assert r.status_code == 200
         data = r.json()
@@ -353,6 +380,7 @@ class TestWorldStateEndpoint:
         assert "Unknown Location" in data["current_room"]["room_name"]
 
     def test_query_distances(self, client):
+        place(client, "rowan", "cellar")
         r = client.get("/api/v1/world/state", params={"character_id": "rowan"})
         data = r.json()
         assert isinstance(data["distances"], dict)
@@ -424,6 +452,8 @@ class TestLockEndpoint:
 
 class TestCharacterEndpoints:
     def test_list_characters(self, client):
+        place(client, "rowan", "cellar")
+        place(client, "seamus", "tavern_upstairs")
         r = client.get("/api/v1/world/characters?template_key=dungeon_cellar")
         assert r.status_code == 200
         data = r.json()
@@ -457,6 +487,7 @@ class TestCharacterEndpoints:
         assert r.status_code == 404
 
     def test_remove_character(self, client):
+        place(client, "rowan", "cellar")
         r = client.delete("/api/v1/world/characters/rowan")
         assert r.status_code == 200
         assert r.json()["success"] is True

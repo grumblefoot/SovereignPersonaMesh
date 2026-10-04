@@ -14,11 +14,7 @@
                 "exits": [
                     "tavern_upstairs"
                 ],
-                "present_characters": [
-                    "rowan",
-                    "domino",
-                    "luna"
-                ],
+                "present_characters": [],
                 "nearby_objects": [
                     "wooden_crate",
                     "iron_partition"
@@ -32,9 +28,7 @@
                 "exits": [
                     "cellar"
                 ],
-                "present_characters": [
-                    "seamus"
-                ],
+                "present_characters": [],
                 "nearby_objects": [
                     "oak_table",
                     "hearth"
@@ -48,9 +42,7 @@
                 "description": "A plain, quiet chamber with a large stone table in the center.",
                 "lighting": "normal",
                 "exits": [],
-                "present_characters": [
-                    "luna"
-                ],
+                "present_characters": [],
                 "nearby_objects": [
                     "stone_table"
                 ]

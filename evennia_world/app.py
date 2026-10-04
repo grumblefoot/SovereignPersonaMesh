@@ -8,6 +8,7 @@ import time
 import json
 import asyncio
 import logging
+from collections import OrderedDict
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
@@ -44,8 +45,32 @@ class AppState:
         self.current_world: Dict[str, RoomMetadata] = {}
         self.room_to_template: Dict[str, str] = {}
         self.session_worlds: Dict[str, Dict[str, Dict[str, RoomMetadata]]] = {}
+        # B5: per-session FIFO of seen idempotency keys -> result message.
+        self.idempotency_seen: Dict[str, "OrderedDict[str, str]"] = {}
 
 app_state = AppState()
+
+IDEMPOTENCY_KEY_CAP = 512
+
+
+def _check_duplicate(session_id: str, key: Optional[str]) -> Optional[str]:
+    """Return the stored message if this idempotency key was already applied, else None."""
+    if not key:
+        return None
+    return app_state.idempotency_seen.get(session_id, {}).get(key)
+
+
+def _record_idempotency(session_id: str, key: Optional[str], message: str) -> None:
+    """Remember an applied idempotency key, FIFO-capped per session."""
+    if not key:
+        return
+    seen = app_state.idempotency_seen.get(session_id)
+    if seen is None:
+        seen = app_state.idempotency_seen[session_id] = OrderedDict()
+    seen[key] = message
+    seen.move_to_end(key)
+    while len(seen) > IDEMPOTENCY_KEY_CAP:
+        seen.popitem(last=False)
 
 import os
 # Database config
@@ -63,11 +88,16 @@ def _ensure_world(template_key: str = "dynamic", session_id: str = "default_sess
     if session_id not in app_state.session_worlds:
         app_state.session_worlds[session_id] = {}
     if template_key not in app_state.session_worlds[session_id]:
-        app_state.session_worlds[session_id][template_key] = world_builder.instantiate_world(template_key)
+        # Deep copy so sessions never share RoomMetadata objects (B3: a move in
+        # one session must not mutate another session's world).
+        fresh = world_builder.instantiate_world(template_key)
+        app_state.session_worlds[session_id][template_key] = {
+            rid: RoomMetadata(**r.model_dump()) for rid, r in fresh.items()
+        }
     # Also sync the legacy app_state.current_world for backward compatibility
     
     if not app_state.current_world:
-        app_state.current_world = app_state.session_worlds[session_id].get(template_key, {})
+        app_state.current_world = app_state.session_worlds[session_id][template_key]
     return app_state.session_worlds[session_id][template_key]
 
 
@@ -186,21 +216,10 @@ async def submit_action(payload: ActionPayload, background_tasks: BackgroundTask
                     barriers=barriers,
                 ))
 
-    # Always include Seamus (or any "upstairs" / distant character) if they exist
-    for room_id, room in world.items():
-        if "upstairs" in room_id or "tavern" in room_id:
-            for char_id in room.present_characters:
-                if char_id not in seen_ids:
-                    seen_ids.add(char_id)
-                    gating = GatingLevel.DEGRADED
-                    feed = strings.get("app.muffled_sounds", room_id=room_id)
-                    consequences.append(SensoryConsequence(
-                        recipient_id=char_id,
-                        sensory_feed=feed,
-                        gating_level=gating,
-                        distance_ft=45.0,
-                        barriers=["closed_door", "solid_wall"],
-                    ))
+    # NOTE: The former "always include Seamus / upstairs / tavern characters with a
+    # fabricated DEGRADED muffled feed" block (B7) has been removed. Sensory
+    # consequences now come only from real spatial evaluation; distance propagation
+    # across rooms is Sprint 2 work.
 
     return ActionResponse(
         success=True,
@@ -297,10 +316,20 @@ class CreateRoomPayload(BaseModel):
     description: str
     template_key: str = "dynamic"
     session_id: str = "default_session"
+    idempotency_key: Optional[str] = None
 
 @app.post("/api/v1/world/rooms")
 async def create_room(payload: CreateRoomPayload, background_tasks: BackgroundTasks):
     """Create a new room dynamically and add it to the session world."""
+    # B5: honor idempotency keys — a repeated key creates nothing and reports the duplicate.
+    dup = _check_duplicate(payload.session_id, payload.idempotency_key)
+    if dup is not None:
+        return {
+            "success": True,
+            "message": f"Duplicate request (idempotency key already applied): {dup}",
+            "room_id": payload.room_id,
+        }
+
     _ensure_world(payload.template_key, payload.session_id)
     world = _get_session_world(payload.session_id, payload.template_key)
     
@@ -317,12 +346,15 @@ async def create_room(payload: CreateRoomPayload, background_tasks: BackgroundTa
         nearby_objects=[]
     )
     world[payload.room_id] = new_room
-    
+
+    room_msg = f"Room '{payload.room_name}' created successfully."
+    _record_idempotency(payload.session_id, payload.idempotency_key, room_msg)
+
     background_tasks.add_task(_persist_room, payload.session_id, payload.template_key, payload.room_id, new_room)
     
     return {
         "success": True,
-        "message": f"Room '{payload.room_name}' created successfully.",
+        "message": room_msg,
         "room_id": payload.room_id
     }
 
@@ -334,6 +366,8 @@ class CharacterMovePayload(BaseModel):
     character_id: str
     room_id: str
     template_key: str = "dynamic"
+    session_id: str = "default_session"
+    idempotency_key: Optional[str] = None
 
 
 class CharacterResponse(BaseModel):
@@ -367,11 +401,11 @@ async def add_character_to_world(payload: CharacterMovePayload, background_tasks
 
     # Also update the active world if the room is in app_state.current_world
     if app_state.current_world and payload.room_id in app_state.current_world:
-        _remove_character_from_all_rooms(payload.character_id, payload.session_id if hasattr(payload, 'session_id') else "default_session")
+        _remove_character_from_all_rooms(payload.character_id, payload.session_id)
         if payload.character_id not in app_state.current_world[payload.room_id].present_characters:
             app_state.current_world[payload.room_id].present_characters.append(payload.character_id)
 
-    session_id = payload.session_id if hasattr(payload, 'session_id') else "default_session"
+    session_id = payload.session_id
     background_tasks.add_task(_persist_room, session_id, payload.template_key, payload.room_id, app_state.current_world[payload.room_id] if payload.room_id in app_state.current_world else room)
 
     return CharacterResponse(
@@ -444,7 +478,17 @@ async def list_characters(template_key: str = "dynamic", session_id: Optional[st
 @app.post("/api/v1/world/move", response_model=CharacterResponse)
 async def move_character(payload: CharacterMovePayload, background_tasks: BackgroundTasks):
     """Move an existing character from their current room to a new one."""
-    session_id = payload.session_id if hasattr(payload, 'session_id') else "default_session"
+    session_id = payload.session_id
+
+    # B5: honor idempotency keys — a repeated key changes nothing and reports the duplicate.
+    dup = _check_duplicate(session_id, payload.idempotency_key)
+    if dup is not None:
+        return CharacterResponse(
+            success=True,
+            message=f"Duplicate request (idempotency key already applied): {dup}",
+            character_id=payload.character_id,
+            room_id=payload.room_id,
+        )
     
     # Track which rooms were modified to persist them
     modified_rooms = set()
@@ -489,9 +533,12 @@ async def move_character(payload: CharacterMovePayload, background_tasks: Backgr
         if room_obj:
             background_tasks.add_task(_persist_room, session_id, tmpl_key, r_id, room_obj)
 
+    move_msg = f"Character '{payload.character_id}' moved to room '{payload.room_id}'"
+    _record_idempotency(session_id, payload.idempotency_key, move_msg)
+
     return CharacterResponse(
         success=True,
-        message=f"Character '{payload.character_id}' moved to room '{payload.room_id}'",
+        message=move_msg,
         character_id=payload.character_id,
         room_id=payload.room_id,
     )
@@ -503,6 +550,7 @@ class WorldConfigPayload(BaseModel):
     """Switch the active world to a different template."""
     template_key: str
     flavor_text: Optional[str] = None
+    session_id: str = "default_session"
 
 
 @app.post("/api/v1/world/configure", response_model=CharacterResponse)
@@ -513,12 +561,16 @@ async def configure_world(payload: WorldConfigPayload):
             status_code=404,
             detail=f"Template '{payload.template_key}' not found",
         )
-    session_id_for_config = payload.template_key
-    world_inst = world_builder.instantiate_world(payload.template_key)
+    # B4: key the world by the real session id, not the template key.
+    session_id_for_config = payload.session_id
+    # Same per-session deep copy as _ensure_world: instantiate_world's copies share
+    # present_characters lists with the template (shallow model_copy).
+    world_inst = {rid: RoomMetadata(**r.model_dump())
+                  for rid, r in world_builder.instantiate_world(payload.template_key).items()}
     if payload.flavor_text:
         for rm in world_inst.values():
             rm.flavor_text = payload.flavor_text
-    app_state.session_worlds[session_id_for_config] = {payload.template_key: world_inst}
+    app_state.session_worlds.setdefault(session_id_for_config, {})[payload.template_key] = world_inst
     
     # Try to load existing rooms for this session from database
     if app_state._db_pool:
@@ -550,6 +602,7 @@ async def list_templates():
 async def reset_world_state():
     """Clear in-memory cache of world state for factory reset."""
     app_state.session_worlds.clear()
+    app_state.idempotency_seen.clear()
     
     app_state.current_world = {}
     return {"status": "success", "message": "In-memory world state cache cleared"}
