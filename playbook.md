@@ -1,16 +1,18 @@
 # Sovereign Persona Mesh (SPM) Implementation Playbook
 
-> ⚠️ **STATUS 2026-09-25 — Lemonade 11.9 upgrade.** SPM still requests `google/gemma-4-26B-A4B-it` / `google/gemma-4-E4B-it`. `lemonade_client.py` fuzzy-matches these to a gemma id, (the `google/gemma-4-*` vLLM checkpoints are being deleted). SPM is user-facing roleplay/story chat and lets the user pick any backend model; Gemma is chosen because it writes well. **Don't point it at `hermes-coder`** (a coding agent model). Use Lemonade's own Gemma builds: `Gemma-4-26B-A4B-it-GGUF` (downloaded, 17 GB), `Gemma-4-E4B-it-GGUF` (downloaded, 5.6 GB) or `Gemma-4-12B-it-GGUF` (pullable). The old `google/gemma-4-*` vLLM checkpoints are being deleted (owner decision 2026-09-26). Since 2026-09-26 nothing is pinned: Lemonade swaps LLMs on demand, so a request for a Gemma model simply evicts Flash-Next and loads Gemma (~6 s for E4B), and Hermes' next `hermes-coder` request swaps back (~15 s). No manual unload needed. Also, `spm-sleep-cycle.service` was **already failing before the upgrade**: it runs system `python3`, which has no `asyncpg` (last run 2026-09-25 10:45, ModuleNotFoundError).
-> Lemonade is now **11.9.0** (Fedora RPM, `/opt/bin/lemond`), running as the systemd **user** service `lemond.service`, started from the desktop launcher (not at boot).
-> Config lives in `~/.config/lemonade/`. The `~/lemonade-bin` install, its `nohup` launch and `/tmp/lemonade_daemon.log` no longer exist.
-> Default LLM: alias `hermes-coder` → `Qwen3.8-Flash-Next-GGUF-UD-IQ4_XS` (loaded on demand, 98k ctx); `Qwen3.6-35B-A3B-MTP-GGUF` is the fallback.
-> Hermes is 0.21.5. Canonical playbook: `~/Desktop/lemonade_playbook.md (master: ~/Desktop/Lemonade-Upgrade-2026-09-25/lemonade_playbook.md)`.
+> ✅ **STATUS 2026-10-03: re-assessed after the pause; working end to end.** Full report: [docs/STATE_ASSESSMENT_2026-10-03.md](docs/STATE_ASSESSMENT_2026-10-03.md). Open items: [known_issues.md](known_issues.md) (OPEN-001…012).
+> - **Stack:** SillyTavern (8000) → SPM proxy (5050) → Lemonade 11.9 (13305, user service `lemond`, started on demand). World engine stand-in on 4005, Postgres `spm-postgres` on 5432. All SPM processes run on **SPM's own `.venv`** (`~/.local/bin/start_spm.sh`); `spm-demo-mvp` is no longer used.
+> - **Models:** SillyTavern currently asks for `Qwen3.8-27B-GGUF` (the narrator LLM of Lemonade's RPG-HaloTales-V2 collection, text only). `spm-sovereign-mesh` and the retired `google/gemma-4-*` ids resolve to `Gemma-4-26B-A4B-it-GGUF` (`SPM_DEFAULT_MODEL`); the sleep cycle uses `Gemma-4-E4B-it-GGUF`. **Never `hermes-coder`** (coding agent alias; excluded by the resolver). Lemonade swaps LLMs on demand (one LLM loaded at a time).
+> - **Tests:** `.venv/bin/python -m pytest tests/` → **431 passed, 1 skipped** (as of `f6b6a44`). The suite rebuilds a throwaway `spm_test` database each run and never touches `litellm_postgres`, the live Evennia, Lemonade or `config/config.json`. `RUN_LIVE_LLM_TESTS=1` enables the one live-LLM test.
+> - **Sleep cycle:** `spm-sleep-cycle.timer` (03:00) runs `.venv/bin/python -m scripts.sleep_cycle`; working again since 2026-10-03.
+> - **Corrections to this playbook** (details in the assessment §4): the embedder is a **stub** (RAG recall is not functional); the FIFO queue is **not wired**; the ambient-log bypass filter is **not called**; the Phase 7 SLA/TTFT figures measured a fabricated fallback reply and are **retracted**; the world engine is a **FastAPI stand-in**, not Evennia/Django; monologue tags are `<think>`/`<thinking>`, not `<ctrl94>`. Strikethroughs below mark the claims that were wrong.
+> - Lemonade operations: `~/Desktop/lemonade_playbook.md`.
 
 
 > **Author**: Antigravity (Senior Code Architect & Auditor)  
 > **Executor**: Hermes Agent (Autonomous Software Engineering Agent)  
 > **Target Environment**: AMD Ryzen AI Max 395 (Strix Halo APU), Fedora 44 Desktop, Rootless Podman  
-> **Primary Models**: `google/gemma-4-26B-A4B-it` (Inference on Port 13305) & `google/gemma-4-E4B-it` (WSD & Consolidation)  
+> **Primary Models** (2026-10-03): Lemonade GGUF builds on port 13305 (`Gemma-4-26B-A4B-it-GGUF` default, `Qwen3.8-27B-GGUF` in SillyTavern) & `Gemma-4-E4B-it-GGUF` (consolidation). Originally `google/gemma-4-*` via vLLM (retired).  
 
 ---
 
@@ -20,7 +22,7 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
 
 1. **Sensory Gating (The Objective Frame)**: Characters only perceive events within physical proximity and line of sight/hearing.
 2. **Episodic Decoupling (The Memory Barrier)**: Character memories are committed to isolated PostgreSQL vector spaces (`csa_memory_{character_id}`).
-3. **Private Inner Monologue**: Two-state token parsing state machine (`<ctrl94>thoughts` vs `</ctrl94>` public response).
+3. **Private Inner Monologue**: Two-state token parsing state machine (`<think>`/`<thinking>` monologue vs public response; originally `<ctrl94>`, migrated in v0.3).
 4. **Zero-LLM Core Rule**: Proxy routing, state evaluation, tag parsing, and spatial gating are strictly executed in Python code.
 5. **Temporal Anchor (Logical Clock)**: "Time" and "ticks" within SPM are anchored exclusively to the **count of user-initiated messages**. System and assistant messages do not advance the clock. This decouples the Evennia engine's temporal state from real-world time, ensuring game events progress identically whether a user responds instantly or hours later.
 
@@ -42,7 +44,7 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
     │   ├── api/
     │   │   └── routes.py             # OpenAI-compatible /v1/chat/completions endpoint
     │   ├── core/
-    │   │   ├── fifo_queue.py         # Asyncio FIFO request queue (100% GPU safety margin)
+    │   │   ├── fifo_queue.py         # Asyncio FIFO request queue (NOT wired into the request path; OPEN-004)
     │   │   ├── stream_parser.py      # Two-state monologue parser with fail-safe passthrough
     │   │   └── sensory_filter.py     # Observer Inference Gating & Bypass Protocol
     │   ├── rag/
@@ -53,7 +55,7 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
     │       └── evennia_client.py     # Async REST client for Evennia (Port 4005)
     ├── evennia_world/
     │   ├── app.py                    # Evennia REST API service (Port 4005)
-    │   ├── models.py                 # Pydantic & Django ORM data models
+    │   ├── models.py                 # Pydantic models (engine is a FastAPI in-memory stand-in; no Evennia/Django import)
     │   ├── spatial_matrix.py         # Deterministic Spatial & Acoustic Constraints Matrix
     │   ├── session_lock.py           # Tick & Session Lock manager
     │   └── hybrid_builder.py         # Hybrid Semantic-Template World Builder
@@ -63,15 +65,9 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
     │   ├── onnx_embedder.py          # CPU offloaded embedding worker (AVX-512)
     │   └── setup_systemd_timer.sh    # Systemd timer installer script
     ├── tests/
-    │   ├── test_e2e_integration.py    # End-to-end SPM integration tests (Seraphina, 20 tests)
-    │   ├── test_proxy_routes.py       # SPM Proxy routes (13 tests)
-    │   ├── test_retriever.py          # RAG retriever with pgvector (10 tests)
-    │   ├── test_sensory_filter.py     # Observer inference gating (4 tests)
-    │   ├── test_sleep_cycle.py        # Nightly memory consolidation (10 tests)
-    │   ├── test_spatial_matrix.py     # Spatial gating rules (4 tests)
-    │   ├── test_stream_parser.py      # Monologue stream parser (15 tests)
-    │   ├── test_world_liaison.py      # Evennia liaison endpoints (54 tests)
-    │   └── conftest.py                # Shared fixtures (asyncpg session pool)
+    │   ├── test_*.py                  # 415 test functions; run `.venv/bin/python -m pytest tests/` for the current count
+    │   ├── _testdb.py                 # Throwaway spm_test DB settings (never the live litellm_postgres)
+    │   └── conftest.py                # Rebuilds spm_test from scripts/init_db.sql; isolates config, Evennia, Lemonade
     ├── README.md
     ├── playbook.md                   # Master engineering playbook
     ├── requirements.txt
@@ -116,27 +112,27 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
 
 - [x] **Phase 4: Observer Inference Gating & Bypass Protocol** *(Completed by Hermes)*
   - [x] Test `ObserverInferenceGatingFilter.evaluate_and_bypass()` with asyncpg pool (4/4 tests passing).
-  - [x] Verified zero-inference ambient log commits to `csa_memory_{id}` for characters in `Blackout` or `Null` sensory state.
+  - [x] ~~Verified zero-inference ambient log commits~~ Unit-tested only: `ObserverInferenceGatingFilter` is not called from `routes.py` (2026-10-03, OPEN-003).
 
 - [x] **Phase 5: RAG Search & Game AI Decay Engine** *(Completed by Hermes & Antigravity)*
   - [x] Verify cosine distance search using pgvector `<=>` operator (< 0.35 limit).
   - [x] Implement mathematical scoring algorithm:
     $$\text{RAG Score} = (1 - \text{cosine\_distance}) \times e^{-\lambda \Delta t} \times \left(1 + \frac{\text{importance}}{10}\right) \times \text{access\_multiplier}$$
-  - [x] Verify CPU-offloaded embedding generation via `scripts/onnx_embedder.py`.
+  - [ ] ~~Verify CPU-offloaded embedding generation~~ `scripts/onnx_embedder.py` is a **stub** returning random vectors; no ONNX model is loaded (2026-10-03, OPEN-002).
 
 - [x] **Phase 6: Nightly Sleep Cycle Consolidation (3:00 AM)** *(Completed by Hermes & Antigravity)*
   - [x] Connect `scripts/sleep_cycle.py` to `google/gemma-4-E4B-it` backend.
   - [x] Validate first-person single-sentence core memory synthesis.
   - [x] Verify volatile log pruning while enforcing `is_core_memory = TRUE` retention rules.
-  - [x] Execute `scripts/setup_systemd_timer.sh` and verify user timer status (`systemctl --user status spm-sleep-cycle.timer`).
+  - [x] Execute `scripts/setup_systemd_timer.sh` and verify user timer status (`systemctl --user status spm-sleep-cycle.timer`). *(The service failed every night until 2026-10-03; fixed in `d36cfe4`.)*
   - [x] Write comprehensive unit tests in `tests/test_sleep_cycle.py` (8/8 unit tests in test_sleep_cycle.py, 88 total across all phases).
 
 - [x] **Phase 7: End-to-End Verification & SLA Benchmarking** *(Completed by Hermes)*
   - [x] Run full `pytest` suite across all components (80/80 passed in 1.84s).
   - [x] Validate SillyTavern / OpenAI integration endpoint (`http://localhost:5050/v1/chat/completions` — serving, proxy responds in ~1.6ms TTFT).
   - [x] Verify System SLA Benchmarks:
-    - Proxy Routing Overhead: ~1.6ms (well under 150ms SLA).
-    - TTFT: ~1.9ms (well under 1.8s SLA at 32K context — backend unavailable for full context load test).
+    - ~~Proxy Routing Overhead: ~1.6ms~~ Measured without a backend; unverified against a live stack.
+    - ~~TTFT: ~1.9ms~~ **Retracted 2026-10-03:** with the backend unavailable, the client returned a fabricated reply, so this timed the mock. SLA-1 is unverified.
     - Zero-Inference Bypass SLA-2: ~1.8ms (well under 10ms SLA).
     - Memory Retention SLA-3: Verified via unit tests (zero-loss on `is_core_memory = TRUE` enforced by sleep_cycle pruning logic).
 
@@ -173,7 +169,7 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
 
 1. **Adhere to the Zero-LLM Core Rule**: Do not insert LLM calls inside proxy routing, state evaluation, tag parsing, or spatial gating. Keep core routing 100% Python regex/heuristic driven.
 2. **Follow Existing Component Contracts**: Ensure function signatures and Pydantic schemas in `proxy/` and `evennia_world/` remain consistent with PRD/SRD specifications.
-3. **Execute Test Verification**: Run `pytest tests/` after completing each phase.
+3. **Execute Test Verification**: Run `.venv/bin/python -m pytest tests/` after completing each phase. Tests must never use the live database, Evennia, Lemonade or `config/config.json`; `tests/conftest.py` enforces this.
 4. **Checkpoint Triggers**: Pause and request Antigravity audit upon completing Phase 3 (Proxy & Stream Parser) and Phase 6 (Sleep Cycle & Systemd Timer).
 
 ---
@@ -199,4 +195,4 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
 | 2026-09-07 | V0.4 | CERTIFIED | Senior Auditor certified V0.4 fixes (Pivot Parser & GM Bleedthrough): Extracted SillyTavern payloads into E2E stream tests. Implemented Surgical Pivot Parser in `proxy/core/stream_parser.py` (EOF fallback for unclosed `<think>` tags). Mitigated Post-Think planning bleed via prompt tuning in `routes.py` and aggressive regex heuristics. Fixed hysteresis test leaks. 246/246 tests passing. |
 | 2026-09-07 | TDD Sprint | CERTIFIED | Senior Auditor certified Test Driven Development Sprint. Implemented heavy unit and integration testing across `routes.py`, `stream_parser.py`, `telemetry.py`, `evennia_world/app.py`, and `lemonade_client.py`. Tested HTTP fallbacks and error paths. 313/313 tests passing, pushing global repository code coverage to exactly 90% (2283 statements). |
 | 2026-09-08 | Lore Extraction Cadence | CERTIFIED | Senior Auditor certified Lore Extraction Cadence re-architecture: moved Lore Extraction from synchronous pre-generation blocking to post-generation background dispatch (`_dispatch_lore_extraction`). Key changes: (1) `routes.py` — removed pre-generation `extract_initial_rules` await block (was blocking Evennia routing on first message), added `_dispatch_lore_extraction()` at end of both streaming and non-streaming paths with configurable cadence (default=3), proper `user_msg_count <= 1` initial extraction vs `(user_msg_count - 1) % cadence == 0` periodic review, full turn history including assistant monologue+public response for extractor context. (2) `lore_extractor.py` — added `<thinking>` block stripping in `_execute_extraction()` (LLM wraps JSON response in thinking analysis tags, corrupting JSON payload), added idempotent INSERT with `fetchval` duplicate check. (3) TDD test suite — `test_lore_cadence.py` (13 tests calling `_dispatch_lore_extraction` directly: db_pool guards, initial/periodic cadence, model selection, assistant turn format, prefill stub filtering, background task lifecycle, exception logging). (4) Test fixes — `test_fr001_session_isolation.py` (replaced `TestClient` proxy tests with direct `_extract_session_id()` calls), `test_stream_bleedthrough.py` (added monkeypatch mocks for DB/Evennia/LLM), `test_gm_actions_flow.py` (fixed unawaited async function), `test_st_parser.py` (fixed mock `fetchval` blocking inserts, made live LLM test opt-in via `RUN_LIVE_LLM_TESTS=1`). 384/384 tests passing, 1 skipped (live LLM), 0 failures. |
-
+| 2026-10-03 | Re-assessment | REVIEWED | Re-assessed after the pause (Claude, with the owner). Found that the test suite had been truncating live character memories, planting fake core memories and rewriting the live config on every run; fixed by a throwaway `spm_test` DB and backend isolation. Fixed: sleep-cycle data loss and dead service (OPS-001), SQL injection via character names, multi-word character persistence, GM_ACTION leaks after `</think>`, fabricated replies on LLM outage, model resolution, lore extraction with reasoning models, persona leakage into lore (BUG-012), tier detection, logging, reload in production. Spec drift and corrections recorded in `docs/STATE_ASSESSMENT_2026-10-03.md`. 431 passed, 1 skipped. Branch `V0.4` (`f6b6a44`), not pushed. |

@@ -1,5 +1,7 @@
 # Inter-Agent Handover & Task Documentation (`handoff.md`)
 
+> **Superseded 2026-10-03.** The DESIGN-002 task queue below is complete: the pending-rules panel and the cadence/alternate-model settings are in `proxy/ui/index.html`. The test count below (217) is historical. Current state: [docs/STATE_ASSESSMENT_2026-10-03.md](docs/STATE_ASSESSMENT_2026-10-03.md); open work: [known_issues.md](known_issues.md).
+
 ## 📌 Executive Summary
 This document facilitates handover between **Antigravity (Elephant)** and **Hermes (Goldfish)** under the **Elephant - Goldfish flow**.
 
