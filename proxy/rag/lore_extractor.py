@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 
 import asyncpg
 
-from proxy.backend_client.lemonade_client import LemonadeLLMClient
+from proxy.backend_client.lemonade_client import LemonadeLLMClient, DEFAULT_CHAT_MODEL
 from scripts.onnx_embedder import CPUEmbeddingEngine
 
 logger = logging.getLogger(__name__)
@@ -110,11 +110,11 @@ class LoreExtractionWorker:
                 
         self.logger.info(f"Successfully processed extraction for {character_id}")
 
-    async def extract_initial_rules(self, session_id: str, character_id: str, context_text: str, model: str = "google/gemma-4-26B-A4B-it"):
+    async def extract_initial_rules(self, session_id: str, character_id: str, context_text: str, model: str = DEFAULT_CHAT_MODEL):
         prompt = strings.get("rag.lore_extractor.initial_rules_prompt", context_text=context_text)
         await self._execute_extraction(prompt, session_id, character_id, model)
 
-    async def periodic_review_rules(self, session_id: str, character_id: str, recent_messages: List[Dict], model: str = "google/gemma-4-26B-A4B-it"):
+    async def periodic_review_rules(self, session_id: str, character_id: str, recent_messages: List[Dict], model: str = DEFAULT_CHAT_MODEL):
         messages_str = "\n".join([f"{m.get('role', 'user')}: {m.get('content', '')}" for m in recent_messages])
         prompt = strings.get("rag.lore_extractor.periodic_rules_prompt", recent_messages=messages_str)
         await self._execute_extraction(prompt, session_id, character_id, model)

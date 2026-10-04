@@ -25,7 +25,7 @@ from proxy.rag.retriever import EpisodicRAGRetriever
 from proxy.rag.import_worker import BulkImportWorker, get_import_worker, _compute_dynamic_batch_size, BULK_IMPORT_THRESHOLD
 from proxy.rag.tier_manager import MemoryTierManager
 from proxy.rag.lore_extractor import LoreExtractionWorker
-from proxy.backend_client.lemonade_client import LemonadeLLMClient
+from proxy.backend_client.lemonade_client import LemonadeLLMClient, DEFAULT_CHAT_MODEL, SPM_VIRTUAL_MODEL_ID
 from proxy.backend_client.evennia_client import EvenniaWorldClient
 from scripts.onnx_embedder import CPUEmbeddingEngine
 from core.resource_manager import strings
@@ -65,7 +65,7 @@ class ChatCompletionMessage(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    model: str = "google/gemma-4-26B-A4B-it"
+    model: str = DEFAULT_CHAT_MODEL
     messages: List[ChatCompletionMessage]
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 128000
@@ -75,12 +75,17 @@ class ChatCompletionRequest(BaseModel):
 
 @router.get("/v1/models")
 async def list_models():
+    """SPM's virtual id plus Lemonade's chat models, so SillyTavern can offer the real choices."""
+    ids = [SPM_VIRTUAL_MODEL_ID]
+    try:
+        backend_ids = await lemonade_client._chat_model_ids()
+    except Exception as e:
+        logger.warning(f"[SPMProxy] Could not list backend models: {e}")
+        backend_ids = None
+    ids += backend_ids if backend_ids else [DEFAULT_CHAT_MODEL]
     return {
         "object": "list",
-        "data": [
-            {"id": "spm-sovereign-mesh", "object": "model", "owned_by": "spm"},
-            {"id": "google/gemma-4-26B-A4B-it", "object": "model", "owned_by": "spm"}
-        ]
+        "data": [{"id": i, "object": "model", "owned_by": "spm" if i == SPM_VIRTUAL_MODEL_ID else "lemonade"} for i in ids],
     }
 
 

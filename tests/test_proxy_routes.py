@@ -29,7 +29,9 @@ class TestProxyModelsEndpoint:
         assert data["object"] == "list"
         model_ids = [m["id"] for m in data["data"]]
         assert "spm-sovereign-mesh" in model_ids
-        assert "google/gemma-4-26B-A4B-it" in model_ids
+        # Lemonade is unreachable under test, so the default chat model is listed instead
+        assert "Gemma-4-26B-A4B-it-GGUF" in model_ids
+        assert not any(m.startswith("google/") for m in model_ids)
 
 
 class TestStreamParserFailSafe:
