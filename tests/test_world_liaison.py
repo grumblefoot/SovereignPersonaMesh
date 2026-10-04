@@ -496,19 +496,23 @@ class TestCharacterEndpoints:
         assert data["character_id"] == "rowan"
 
     def test_move_character(self, client):
+        # A2: destinations are validated against the SESSION world, so the move
+        # names the template whose rooms it uses.
         r = client.post("/api/v1/world/move", json={
             "character_id": "luna",
             "room_id": "tavern_upstairs",
+            "template_key": "dungeon_cellar",
         })
         assert r.status_code == 200
         assert r.json()["success"] is True
 
     def test_move_character_unknown_room(self, client):
+        # A2: an unknown destination is 404 (the old API silently returned 200).
         r = client.post("/api/v1/world/move", json={
             "character_id": "luna",
             "room_id": "nowhere",
         })
-        assert r.status_code == 200
+        assert r.status_code == 404
 
 
 # ── World configuration ───────────────────────────────────────────────────
