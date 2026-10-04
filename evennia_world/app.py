@@ -10,14 +10,14 @@ import asyncio
 import logging
 from collections import OrderedDict
 from fastapi import FastAPI, HTTPException, BackgroundTasks
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from pydantic import BaseModel, Field
 import asyncpg
 
 from .models import (
     ActionPayload, ActionResponse, SensoryConsequence, GatingLevel,
     WorldStateQuery, CharacterWorldState, SessionLockPayload, RoomMetadata,
-    ActionType, BarrierType
+    ActionType, BarrierType, TickRequest, TickResponse
 )
 from .spatial_matrix import SpatialConstraintsMatrix
 from .session_lock import SessionLockManager, LockError
@@ -40,7 +40,15 @@ lock_manager = SessionLockManager()
 world_builder = HybridWorldBuilder()
 class AppState:
     def __init__(self):
+        # Legacy global tick. Kept only so older callers/tests that poke the
+        # attribute keep working; it is NO LONGER the source of truth
+        # (decision 10): the authoritative clock is per-session below.
         self.action_tick_counter: int = 1420
+        # Decision 10: per-session tick and turn_id -> tick map, mirroring
+        # proxy/engine/in_process.py's _SessionState. A new turn_id advances
+        # the session tick by 1; a repeated turn_id (regeneration) reuses it.
+        self.session_ticks: Dict[str, int] = {}
+        self.session_turn_ticks: Dict[str, Dict[str, int]] = {}
         self._db_pool = None
         self.current_world: Dict[str, RoomMetadata] = {}
         self.room_to_template: Dict[str, str] = {}
@@ -51,6 +59,46 @@ class AppState:
 app_state = AppState()
 
 IDEMPOTENCY_KEY_CAP = 512
+
+
+def _session_tick(session_id: str) -> int:
+    """Current tick value for a session (0 before its first advance)."""
+    return app_state.session_ticks.get(session_id, 0)
+
+
+def _advance_session_tick(session_id: str) -> int:
+    """Advance a session's clock by one and return the new tick."""
+    tick = app_state.session_ticks.get(session_id, 0) + 1
+    app_state.session_ticks[session_id] = tick
+    return tick
+
+
+def _tick_for_turn(session_id: str, turn_id: str) -> Tuple[int, bool]:
+    """Resolve the tick for a turn_id (decision 10).
+
+    Returns (tick, advanced). A new turn_id advances the session tick by 1;
+    a repeated turn_id returns the same tick with advanced=False, so
+    regenerations never move the clock.
+    """
+    turns = app_state.session_turn_ticks.setdefault(session_id, {})
+    if turn_id in turns:
+        return turns[turn_id], False
+    tick = _advance_session_tick(session_id)
+    turns[turn_id] = tick
+    return tick, True
+
+
+def _resolve_action_tick(session_id: str, turn_id: Optional[str]) -> int:
+    """Tick an action should carry.
+
+    With turn_id: idempotent per turn (regenerations reuse the tick).
+    Without: legacy behavior — advance once per call — so old callers that
+    never send turn ids keep seeing a strictly incrementing tick.
+    """
+    if turn_id is None:
+        return _advance_session_tick(session_id)
+    tick, _advanced = _tick_for_turn(session_id, turn_id)
+    return tick
 
 
 def _check_duplicate(session_id: str, key: Optional[str]) -> Optional[str]:
@@ -137,10 +185,26 @@ async def health_check():
     """Quick readiness probe."""
     return {
         "status": "ok",
-        "tick": app_state.action_tick_counter,
+        # Decision 10: report the default_session's session tick so existing
+        # readiness checks keep seeing a tick field.
+        "tick": _session_tick("default_session"),
         "template": list(app_state.current_world.keys()) if app_state.current_world else "none",
         "uptime_seconds": round(time.time() - app.state.start_time, 1),
     }
+
+
+# ── Clock ───────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/world/tick", response_model=TickResponse)
+async def advance_tick(payload: TickRequest):
+    """
+    Advance the session clock once per NEW turn_id (decision 10).
+
+    A repeated turn_id (regeneration, swipe, retry) returns the same tick with
+    advanced=false, so callers can drive the clock idempotently.
+    """
+    tick, advanced = _tick_for_turn(payload.session_id, payload.turn_id)
+    return TickResponse(tick=tick, turn_id=payload.turn_id, advanced=advanced)
 
 
 # ── Action evaluation ───────────────────────────────────────────────────
@@ -148,13 +212,15 @@ async def health_check():
 @app.post("/api/v1/world/action", response_model=ActionResponse)
 async def submit_action(payload: ActionPayload, background_tasks: BackgroundTasks):
     """
-    Evaluates physical intentions (speak|whisper|move|manipulate).
+    Evaluates physical intentions (speak|whisper|shout|move|manipulate).
     Returns action_tick and sensory feeds for recipient characters based on
     real room positions, distances, and the SpatialConstraintsMatrix.
     Supports session-scoped world state for FR-001 isolation.
+    With turn_id, the tick advances at most once per turn (decision 10).
     """
-    
-    app_state.action_tick_counter += 1
+    # Per-session clock (decision 10). turn_id present -> idempotent per turn;
+    # absent -> legacy advance-per-call so old callers keep working.
+    action_tick = _resolve_action_tick(payload.session_id, payload.turn_id)
 
     # Ensure session-scoped world is loaded
     template_key = getattr(payload, "template_key", "dynamic")
@@ -162,16 +228,18 @@ async def submit_action(payload: ActionPayload, background_tasks: BackgroundTask
     world = _get_session_world(payload.session_id, template_key)
     if not world:
         _ensure_world()
+        # NOTE: legacy fallback — only reachable when the session world could
+        # not be created; reads the global read-alias world.
         world = app_state.current_world
 
     # Find which room the actor is in
-    actor_room = _find_actor_room(payload.character_id, payload.session_id)
+    actor_room = _find_actor_room(payload.character_id, payload.session_id, template_key)
     loc_id = actor_room if actor_room else "unknown"
 
     background_tasks.add_task(
         _log_objective_action,
         payload.session_id,
-        app_state.action_tick_counter,
+        action_tick,
         payload.character_id,
         loc_id,
         payload.action_type.value,
@@ -192,7 +260,7 @@ async def submit_action(payload: ActionPayload, background_tasks: BackgroundTask
             same_room = (actor_room is not None and
                          room_id == actor_room)
             dist, barriers = _compute_distance_and_barriers(
-                actor_room, room_id, payload.action_type
+                actor_room, room_id, payload.action_type, world=world
             )
 
             gating, feed = SpatialConstraintsMatrix.evaluate_sensory_feed(
@@ -204,7 +272,8 @@ async def submit_action(payload: ActionPayload, background_tasks: BackgroundTask
                 recipient_id=char_id,
                 is_target=is_target,
                 session_id=payload.session_id,
-                action_tick=app_state.action_tick_counter,
+                action_tick=action_tick,
+                shout=(payload.action_type == ActionType.SHOUT),
             )
 
             if gating != GatingLevel.BLACKOUT:
@@ -223,7 +292,7 @@ async def submit_action(payload: ActionPayload, background_tasks: BackgroundTask
 
     return ActionResponse(
         success=True,
-        action_tick=app_state.action_tick_counter,
+        action_tick=action_tick,
         consequences=consequences,
     )
 
@@ -268,7 +337,7 @@ async def query_world_state(character_id: str, session_id: str = "default_sessio
     # Look up the room in session-scoped world first, then fall back to legacy app_state.current_world
     room = world.get(char_room)
     if room is None:
-        room = app_state.current_world.get(char_room)
+        room = app_state.current_world.get(char_room)  # NOTE: global read alias — room not in the session's world.
     if room is None:
         room = RoomMetadata(
             room_id="unknown", room_name="Unknown Location",
@@ -400,6 +469,8 @@ async def add_character_to_world(payload: CharacterMovePayload, background_tasks
     )
 
     # Also update the active world if the room is in app_state.current_world
+    # NOTE: global read alias — current_world mirrors the first-loaded world for
+    # legacy callers; the session world is kept in sync below via _persist_room.
     if app_state.current_world and payload.room_id in app_state.current_world:
         _remove_character_from_all_rooms(payload.character_id, payload.session_id)
         if payload.character_id not in app_state.current_world[payload.room_id].present_characters:
@@ -425,7 +496,7 @@ async def remove_character_from_world(character_id: str, background_tasks: Backg
             world_builder.remove_character_from_room(template_key, room_id, character_id)
             modified_rooms.add((template_key, room_id))
 
-    target_worlds = [app_state.current_world]
+    target_worlds = [app_state.current_world]  # NOTE: global read alias (legacy mirror), session worlds appended.
     if session_id in app_state.session_worlds:
         for tmpl_dict in app_state.session_worlds[session_id].values():
             target_worlds.append(tmpl_dict)
@@ -439,8 +510,8 @@ async def remove_character_from_world(character_id: str, background_tasks: Backg
         room_obj = None
         if session_id in app_state.session_worlds and tmpl_key in app_state.session_worlds[session_id] and r_id in app_state.session_worlds[session_id][tmpl_key]:
             room_obj = app_state.session_worlds[session_id][tmpl_key][r_id]
-        elif r_id in app_state.current_world:
-            room_obj = app_state.current_world[r_id]
+        elif r_id in app_state.current_world:  # NOTE: global read alias (legacy mirror).
+            room_obj = app_state.current_world[r_id]  # NOTE: global read alias (legacy mirror).
         if room_obj:
             background_tasks.add_task(_persist_room, session_id, tmpl_key, r_id, room_obj)
 
@@ -500,7 +571,7 @@ async def move_character(payload: CharacterMovePayload, background_tasks: Backgr
                 modified_rooms.add((tmpl_key, room_id))
             
     # Remove from session worlds
-    target_worlds = [app_state.current_world]
+    target_worlds = [app_state.current_world]  # NOTE: global read alias (legacy mirror), session worlds appended.
     if session_id in app_state.session_worlds:
         for tmpl_dict in app_state.session_worlds[session_id].values():
             target_worlds.append(tmpl_dict)
@@ -514,9 +585,9 @@ async def move_character(payload: CharacterMovePayload, background_tasks: Backgr
         payload.template_key, payload.room_id, payload.character_id,
     )
     
-    if app_state.current_world and payload.room_id in app_state.current_world:
-        if payload.character_id not in app_state.current_world[payload.room_id].present_characters:
-            app_state.current_world[payload.room_id].present_characters.append(payload.character_id)
+    if app_state.current_world and payload.room_id in app_state.current_world:  # NOTE: global read alias (legacy mirror).
+        if payload.character_id not in app_state.current_world[payload.room_id].present_characters:  # NOTE: global read alias (legacy mirror).
+            app_state.current_world[payload.room_id].present_characters.append(payload.character_id)  # NOTE: global read alias (legacy mirror).
     elif session_id in app_state.session_worlds and payload.template_key in app_state.session_worlds[session_id]:
         room_obj = app_state.session_worlds[session_id][payload.template_key].get(payload.room_id)
         if room_obj and payload.character_id not in room_obj.present_characters:
@@ -528,8 +599,8 @@ async def move_character(payload: CharacterMovePayload, background_tasks: Backgr
         room_obj = None
         if session_id in app_state.session_worlds and tmpl_key in app_state.session_worlds[session_id] and r_id in app_state.session_worlds[session_id][tmpl_key]:
             room_obj = app_state.session_worlds[session_id][tmpl_key][r_id]
-        elif r_id in app_state.current_world:
-            room_obj = app_state.current_world[r_id]
+        elif r_id in app_state.current_world:  # NOTE: global read alias (legacy mirror).
+            room_obj = app_state.current_world[r_id]  # NOTE: global read alias (legacy mirror).
         if room_obj:
             background_tasks.add_task(_persist_room, session_id, tmpl_key, r_id, room_obj)
 
@@ -603,7 +674,9 @@ async def reset_world_state():
     """Clear in-memory cache of world state for factory reset."""
     app_state.session_worlds.clear()
     app_state.idempotency_seen.clear()
-    
+    app_state.session_ticks.clear()
+    app_state.session_turn_ticks.clear()
+
     app_state.current_world = {}
     return {"status": "success", "message": "In-memory world state cache cleared"}
 
@@ -625,6 +698,7 @@ def _find_actor_room(character_id: str, session_id: str = "default_session", tem
     """Find the room_id where character_id is present in the active world for a session."""
     world = _get_session_world(session_id, template_key)
     if not world:
+        # NOTE: global read alias — the session has no world yet.
         world = app_state.current_world
     for room_id, room in world.items():
         if character_id in room.present_characters:
@@ -648,12 +722,18 @@ def _compute_distance_and_barriers(
     actor_room: Optional[str],
     target_room_id: str,
     action_type: ActionType,
+    world: Optional[Dict[str, RoomMetadata]] = None,
 ) -> tuple[float, List[BarrierType]]:
     """Compute distance (ft) and barriers between actor room and target room.
 
     Same room → 0-5 ft, no barriers.
     Adjacent room → ~15 ft, closed door barrier.
     Other room → 45 ft, closed door + solid wall.
+
+    Adjacency is read from the ACTING session's world when ``world`` is passed
+    (the /world/action path). The global ``app_state.current_world`` is only a
+    read alias for legacy callers that have no session in hand (e.g. the void
+    graph helpers); NOTE each such use at its call site.
     """
     if actor_room is None:
         return (45.0, [_str_to_barrier("closed_door"), _str_to_barrier("solid_wall")])
@@ -661,8 +741,9 @@ def _compute_distance_and_barriers(
     if actor_room == target_room_id:
         return (3.0, [])
 
-    # Check adjacency via exit lists
-    actor_room_obj = app_state.current_world.get(actor_room)
+    # Check adjacency via exit lists — in the session's own topology.
+    lookup = world if world is not None else app_state.current_world  # NOTE: global read alias (legacy callers)
+    actor_room_obj = lookup.get(actor_room)
     if actor_room_obj and target_room_id in actor_room_obj.exits:
         if actor_room_obj.lighting == "abstract" or actor_room in ("central_nexus", "node_alpha", "node_beta"):
             return (20.0, [_str_to_barrier("solid_wall")])
@@ -675,10 +756,11 @@ def _compute_distance_and_barriers(
 def _compute_all_distances(character_id: str, session_id: str = "default_session", template_key: str = "dynamic") -> Dict[str, float]:
     """Compute distances from character_id to every other character in the world for a session."""
     distances: Dict[str, float] = {}
-    world = _get_session_world(session_id)
+    world = _get_session_world(session_id, template_key)
     if not world:
+        # NOTE: global read alias — session has no world for this template.
         world = app_state.current_world
-    char_room = _find_actor_room(character_id, session_id)
+    char_room = _find_actor_room(character_id, session_id, template_key)
 
     for room_id, room in world.items():
         for other_id in room.present_characters:
@@ -688,14 +770,14 @@ def _compute_all_distances(character_id: str, session_id: str = "default_session
                 # Same room: pick a representative distance
                 distances[other_id] = min(3.0, 4.0)
             else:
-                dist, _ = _compute_distance_and_barriers(char_room, room_id, ActionType.SPEAK)
+                dist, _ = _compute_distance_and_barriers(char_room, room_id, ActionType.SPEAK, world=world)
                 distances[other_id] = dist
     return distances
 
 
 def _remove_character_from_all_rooms(character_id: str, session_id: str = "default_session") -> None:
     """Remove a character from every room in the active world for a session."""
-    target_worlds = [app_state.current_world]
+    target_worlds = [app_state.current_world]  # NOTE: global read alias (legacy mirror), session worlds appended.
     if session_id in app_state.session_worlds:
         for tmpl_dict in app_state.session_worlds[session_id].values():
             target_worlds.append(tmpl_dict)

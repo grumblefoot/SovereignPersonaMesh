@@ -309,7 +309,8 @@ async def test_mutation_to_unknown_room_is_invalid(engine, sid):
 
 async def test_speak_consequences_follow_spatial_gating(engine, sid):
     await engine.ensure_world(sid, seed=two_room_seed())
-    # Age the clock past the hysteresis window so raw gating shows through.
+    # Ticks still advance for turn bookkeeping; gating no longer uses a
+    # hysteresis window (decision 9 removed it).
     await engine.advance_tick(sid, "turn_1")
     await engine.advance_tick(sid, "turn_2")
     await engine.advance_tick(sid, "turn_3")
@@ -325,9 +326,11 @@ async def test_speak_consequences_follow_spatial_gating(engine, sid):
     assert bob.gating == GatingLevel.DIRECT
     assert "The key is under the mat" in bob.sensory_feed
 
-    carol = by_recipient["carol"]      # adjacent through a closed door: degraded, no leak
-    assert carol.gating == GatingLevel.DEGRADED
-    assert "The key is under the mat" not in carol.sensory_feed
+    # Adjacent through a CLOSED door: SRD 3.3.2 / PRD 4.2 black it out
+    # entirely — no feed, not even a murmur.
+    carol = by_recipient["carol"]
+    assert carol.gating == GatingLevel.BLACKOUT
+    assert carol.sensory_feed == ""
 
 
 async def test_entity_state_reports_room_and_distances(engine, sid):
