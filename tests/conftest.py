@@ -79,6 +79,18 @@ def isolated_settings(tmp_path, monkeypatch):
     config_manager.reset_settings_manager()
 
 @pytest.fixture(autouse=True)
+def isolated_embeddings(monkeypatch):
+    """Force the 'none' embedding provider for tests (phase-0 behaviour: NULL
+    vectors, no network). Tests that need vectors build a fake/openai_compat
+    service explicitly via proxy.embeddings.create_embedding_service()."""
+    import proxy.embeddings as embeddings_module
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "none")
+    embeddings_module.reset_embedding_service()
+    yield
+    embeddings_module.reset_embedding_service()
+
+
+@pytest.fixture(autouse=True)
 def reset_clients():
     """Clear cached clients between tests to avoid 'Event loop is closed' errors."""
     evennia_client._client = None

@@ -19,6 +19,7 @@ from datetime import datetime
 
 from config.hardware_tiers import get_hardware_config, HardwareTierEnum
 from scripts.onnx_embedder import CPUEmbeddingEngine
+from proxy.embeddings import space_id_for
 from core.resource_manager import strings
 from core.identifiers import safe_char_id
 
@@ -230,6 +231,12 @@ class BulkImportWorker:
                         await conn.execute(
                             strings.get("sql.create_csa_memory_table"), safe_char_id(character_id)
                         )
+                        # Stamp vectors with the active embedding space so they
+                        # stay visible to space-filtered recall (None when the
+                        # provider is 'none' or the embedder is a test double).
+                        space_id = None
+                        if any(e is not None for e in embeddings):
+                            space_id = await space_id_for(self.embedder, conn)
                         for i, msg in enumerate(batch):
                             await conn.execute(
                                 strings.get("sql.insert_csa_memory", table_suffix=safe_char_id(character_id)),
@@ -241,6 +248,7 @@ class BulkImportWorker:
                                 msg.get("is_core_memory", False),
                                 True,
                                 1,
+                                space_id if embeddings[i] is not None else None,
                             )
                             # Record discovered spatial locations during bulk import for dynamic UI map
                             content_txt = msg.get("content", "")

@@ -113,6 +113,9 @@ async def startup_event():
         await get_telemetry_collector().hydrate_from_db(pool)
         
         logger.info("[SPMProxyMain] Database connection pool initialized and injected into routes & admin routes.")
+        from proxy.embeddings import get_embedding_service
+        svc = get_embedding_service()
+        logger.info(f"[SPMProxyMain] Embeddings: provider={svc.provider_name} model={svc.model or '-'}")
     except Exception as e:
         logger.warning(f"[SPMProxyMain] Could not initialize DB pool on startup: {e}")
 

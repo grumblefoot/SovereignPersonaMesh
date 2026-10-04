@@ -1,44 +1,65 @@
-"""
-CPU Offloading Embedding Engine (ONNX Runtime).
-Executes vectorization on host CPU threads using AVX-512 extensions to prevent GPU resource contention.
+"""DEPRECATED shim over proxy.embeddings (kept for old import sites).
+
+The provider layer (proxy/embeddings/) replaced this module in Sprint 1
+Track B. ``CPUEmbeddingEngine`` now delegates every call to the process-wide
+EmbeddingService; it fabricates nothing. Phase-0 behaviour is preserved: when
+no embedding provider is available (provider 'none', misconfiguration, or an
+outage), every call returns None and callers store NULL / skip vector search.
+
+New code should use ``proxy.embeddings.get_embedding_service()`` directly.
+The real local ONNX runtime ('onnx_local', EmbeddingGemma-300m) is phase 4 of
+docs/plans/embeddings.md and lives in proxy/embeddings when it lands.
 """
 
-import os
 import logging
-import numpy as np
-from typing import List
+from typing import List, Optional
+
+from proxy.embeddings import get_embedding_service
 
 logger = logging.getLogger(__name__)
 
 
 class CPUEmbeddingEngine:
-    #: True once a real model is loaded. The stub must never fake vectors: random embeddings
-    #: poisoned RAG recall and changed on every restart (embeddings plan, phase 0).
-    available: bool = False
+    """Deprecated: thin delegate to the EmbeddingService singleton."""
 
-    def __init__(self, dimension: int = 3584, num_threads: int = 4):
+    def __init__(self, dimension: Optional[int] = None, num_threads: int = 4):
+        # Both arguments are legacy no-ops: the service owns model and dimension.
         self.dimension = dimension
         self.num_threads = num_threads
         self.model = None
-        self._initialize_onnx()
+        logger.debug(
+            "[CPUEmbeddingEngine] deprecated shim constructed; calls delegate "
+            "to proxy.embeddings.get_embedding_service()."
+        )
 
-    def _initialize_onnx(self):
-        """Initialize ONNX runtime session configured for multi-threaded CPU inference."""
-        logger.warning(f"CPU Embedding Engine is a stub (dim={self.dimension}): no model loaded, embeddings disabled until Sprint 1.")
-        # Stub: Hermes will integrate actual ONNX model weights (e.g. Gemma/bge-large-en)
-        pass
+    @property
+    def available(self) -> bool:
+        """True when a real embedding provider is configured."""
+        try:
+            return get_embedding_service().available
+        except Exception:
+            return False
 
-    async def generate_embedding(self, text: str):
-        """Return the embedding for `text`, or None while no real model is loaded.
-
-        Phase 0 of the embeddings plan: the old stub returned a random unit vector seeded by
-        Python's salted hash(), so stored vectors were noise and differed per process. Callers
-        must treat None as "store NULL / skip vector search".
-        """
-        if not self.available or self.model is None:
+    async def generate_embedding(self, text: str) -> Optional[List[float]]:
+        """Embed `text`, or None when no provider is available (store NULL)."""
+        try:
+            return await get_embedding_service().generate_embedding(text)
+        except Exception as e:
+            logger.warning("[CPUEmbeddingEngine] embedding failed: %s", e)
             return None
-        raise NotImplementedError("real ONNX inference lands with the provider layer (Sprint 1)")
 
     async def batch_generate_embeddings(self, texts: List[str]):
-        """Batch form of generate_embedding; entries are None while no model is loaded."""
-        return [await self.generate_embedding(t) for t in texts]
+        """Batch form of generate_embedding; failed entries are None."""
+        try:
+            return await get_embedding_service().batch_generate_embeddings(texts)
+        except Exception as e:
+            logger.warning("[CPUEmbeddingEngine] batch embedding failed: %s", e)
+            return [None] * len(texts)
+
+    async def ensure_space(self, conn) -> Optional[int]:
+        """Active embedding-space id for stamping rows, or None (provider 'none')."""
+        try:
+            return await get_embedding_service().ensure_space(conn)
+        except Exception as e:
+            logger.warning("[CPUEmbeddingEngine] ensure_space failed: %s", e)
+            return None

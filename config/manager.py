@@ -26,10 +26,30 @@ _DEFAULT_VALUES: Dict[str, Any] = {
     "SPM_HARDWARE_TIER": "SOVEREIGN",
     "EVENNIA_LIAISON_URL": "http://localhost:4005",
     "backend_max_tokens": 128000,
+    # ── Embeddings (embeddings plan phases 1-3, OPEN-002) ──
+    # auto | openai_compat | none | fake  (onnx_local is phase 4 and raises).
+    # auto resolves to openai_compat for a loopback/LAN base URL and to
+    # 'none' for a cloud URL: memories never go to a cloud embedder
+    # implicitly (SPRINT_PLAN decision 5 / PRD SLA-2).
+    "EMBEDDING_PROVIDER": "auto",
+    # Empty string means "use BACKEND_LLM_URL" (the chat backend serves
+    # /v1/embeddings on Lemonade, KoboldCpp --embeddingsmodel, llama-server
+    # --embedding). A llama.cpp user can point this at a second instance.
+    "EMBEDDING_URL": "",
+    # Empty string means "use BACKEND_API_KEY".
+    "EMBEDDING_API_KEY": "",
+    # Provisional default per decision 4 (bake-off pending): Lemonade serves
+    # embed-gemma-300m-FLM at 768 dims in its own 'embedding' slot.
+    "EMBEDDING_MODEL": "embed-gemma-300m-FLM",
+    # 0 = the model's native dimension (locked on first successful embed).
+    "EMBEDDING_DIM": 0,
+    "EMBEDDING_TIMEOUT_S": 3,
+    # Explicit SLA-2 opt-in: lets `auto` pick a non-local EMBEDDING_URL.
+    "EMBEDDING_ALLOW_REMOTE": False,
 }
 
 # Integer-typed keys that should always produce int values.
-_INT_KEYS = frozenset({"SPM_PROXY_PORT", "backend_max_tokens"})
+_INT_KEYS = frozenset({"SPM_PROXY_PORT", "backend_max_tokens", "EMBEDDING_DIM", "EMBEDDING_TIMEOUT_S"})
 
 # Mapping from config key → env var name (some differ, e.g. backend_max_tokens → BACKEND_MAX_TOKENS).
 _ENV_VAR_MAP: Dict[str, str] = {
@@ -39,6 +59,13 @@ _ENV_VAR_MAP: Dict[str, str] = {
     "SPM_HARDWARE_TIER": "SPM_HARDWARE_TIER",
     "EVENNIA_LIAISON_URL": "EVENNIA_LIAISON_URL",
     "backend_max_tokens": "BACKEND_MAX_TOKENS",
+    "EMBEDDING_PROVIDER": "EMBEDDING_PROVIDER",
+    "EMBEDDING_URL": "EMBEDDING_URL",
+    "EMBEDDING_API_KEY": "EMBEDDING_API_KEY",
+    "EMBEDDING_MODEL": "EMBEDDING_MODEL",
+    "EMBEDDING_DIM": "EMBEDDING_DIM",
+    "EMBEDDING_TIMEOUT_S": "EMBEDDING_TIMEOUT_S",
+    "EMBEDDING_ALLOW_REMOTE": "EMBEDDING_ALLOW_REMOTE",
 }
 
 

@@ -18,7 +18,7 @@
   "sql": {
     "register_import": "INSERT INTO spm_chat_imports (session_id, character_id, status, total_messages, processed_messages) VALUES ($1, $2, 'pending', $3, 0) RETURNING import_id;",
     "update_import": "UPDATE spm_chat_imports SET status = $1, processed_messages = COALESCE($2, processed_messages), error_log = COALESCE($3, error_log), updated_at = NOW() WHERE import_id = $4::uuid;",
-    "insert_csa_memory": "INSERT INTO csa_memory_{table_suffix} (session_id, sensory_input, episodic_embedding, inner_monologue, importance_score, is_core_memory, is_subjective, access_count) VALUES ($1, $2, $3, $4, $5, $6, $7, $8);",
+    "insert_csa_memory": "INSERT INTO csa_memory_{table_suffix} (session_id, sensory_input, episodic_embedding, inner_monologue, importance_score, is_core_memory, is_subjective, access_count, embedding_space_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);",
     "create_csa_memory_table": "SELECT create_csa_memory_table($1);",
     "check_import_status": "SELECT import_id, session_id, character_id, status, total_messages, processed_messages, error_log, created_at, updated_at FROM spm_chat_imports WHERE session_id = $1;",
     "get_all_imports": "SELECT import_id, session_id, character_id, status, total_messages, processed_messages, error_log, created_at, updated_at FROM spm_chat_imports ORDER BY created_at DESC;",

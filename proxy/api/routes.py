@@ -28,7 +28,7 @@ from proxy.rag.tier_manager import MemoryTierManager
 from proxy.rag.lore_extractor import LoreExtractionWorker
 from proxy.backend_client.lemonade_client import LemonadeLLMClient, LLMBackendError, DEFAULT_CHAT_MODEL, SPM_VIRTUAL_MODEL_ID
 from proxy.backend_client.evennia_client import EvenniaWorldClient
-from scripts.onnx_embedder import CPUEmbeddingEngine
+from proxy.embeddings import get_embedding_service, space_id_for
 from core.resource_manager import strings
 
 from proxy.core.telemetry import get_telemetry_collector
@@ -55,7 +55,7 @@ fifo_queue = InferenceFIFOQueue()
 prompt_builder = CognitivePromptBuilder()
 lemonade_client = LemonadeLLMClient()
 evennia_client = EvenniaWorldClient()
-embedder = CPUEmbeddingEngine()
+embedder = get_embedding_service()
 
 
 
@@ -364,12 +364,17 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         try:
             retriever = EpisodicRAGRetriever(_db_pool)
             query_emb = await embedder.generate_embedding(user_text)
+            query_space_id = None
+            if query_emb is not None:
+                async with _db_pool.acquire() as conn:
+                    query_space_id = await space_id_for(embedder, conn)
             retrieved_memories = await retriever.retrieve_memories(
                 character_id=target_char,
                 query_embedding=query_emb,
                 top_k=3,
                 session_id=session_id,
                 query_text=user_text,
+                embedding_space_id=query_space_id,
             )
         except Exception as e:
             logger.warning(f"[SPMProxy] Memory retrieval skipped: {e}")
@@ -381,6 +386,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             retrieved_lore = await retriever.retrieve_lore_rules(
                 character_id=target_char,
                 query_embedding=query_emb,
+                embedding_space_id=query_space_id,
             )
         except Exception as e:
             logger.warning(f"[SPMProxy] Lore retrieval skipped: {e}")
@@ -494,12 +500,13 @@ The text after </think> must ONLY be narrative and dialogue.
                     )
                     emb = await embedder.generate_embedding(user_text)
                     emb_str = None if emb is None else "[" + ",".join(map(str, emb)) + "]"
+                    space_id = await space_id_for(embedder, conn) if emb is not None else None
                     await conn.execute(
                         f"""
-                        INSERT INTO {table_name} (session_id, sensory_input, inner_monologue, public_response, episodic_embedding)
-                        VALUES ($1, $2, $3, $4, $5::vector);
+                        INSERT INTO {table_name} (session_id, sensory_input, inner_monologue, public_response, episodic_embedding, embedding_space_id)
+                        VALUES ($1, $2, $3, $4, $5::vector, $6);
                         """,
-                        session_id, user_text, inner_monologue, public_resp, emb_str
+                        session_id, user_text, inner_monologue, public_resp, emb_str, space_id
                     )
             except Exception as e:
                 logger.warning(f"[SPMProxy] Failed to persist turn memory: {e}")
@@ -603,12 +610,13 @@ The text after </think> must ONLY be narrative and dialogue.
                     )
                     emb = await embedder.generate_embedding(user_text)
                     emb_str = None if emb is None else "[" + ",".join(map(str, emb)) + "]"
+                    space_id = await space_id_for(embedder, conn) if emb is not None else None
                     await conn.execute(
                         f"""
-                        INSERT INTO {table_name} (session_id, sensory_input, inner_monologue, public_response, episodic_embedding)
-                        VALUES ($1, $2, $3, $4, $5::vector);
+                        INSERT INTO {table_name} (session_id, sensory_input, inner_monologue, public_response, episodic_embedding, embedding_space_id)
+                        VALUES ($1, $2, $3, $4, $5::vector, $6);
                         """,
-                        session_id, user_text, inner_monologue, public_resp, emb_str
+                        session_id, user_text, inner_monologue, public_resp, emb_str, space_id
                     )
             except Exception as e:
                 logger.warning(f"[SPMProxy] Failed to persist turn memory: {e}")
