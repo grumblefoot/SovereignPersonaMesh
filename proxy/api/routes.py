@@ -299,13 +299,19 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     is_bulk = await _check_bulk_import(request, session_id, _db_pool)
 
     # --- Step 1: spatial routing via Evennia ---
-    world_res = await evennia_client.submit_action(
-        character_id="user",
-        action_type="speak",
-        raw_text=user_text,
-        target_id=target_char,
-        session_id=session_id
-    )
+    # OPEN-010: if the world engine is down, degrade to an ungated turn instead of a raw 500.
+    # Roleplay must survive an engine outage; the turn simply has no spatial consequences.
+    try:
+        world_res = await evennia_client.submit_action(
+            character_id="user",
+            action_type="speak",
+            raw_text=user_text,
+            target_id=target_char,
+            session_id=session_id
+        )
+    except Exception as e:
+        logger.error(f"[SPMProxy] World engine unavailable; continuing ungated for session {session_id}: {e}")
+        world_res = {"consequences": [], "engine_unavailable": True}
 
     # Find sensory consequence for target character
     sensory_feed = user_text

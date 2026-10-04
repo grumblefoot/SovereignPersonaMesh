@@ -68,3 +68,26 @@ def test_blackout_bypass_names_the_target_character_not_luna():
         resp = client.post("/v1/chat/completions", json={**PAYLOAD, "stream": True})
     assert "Mira hears only muffled sounds" in resp.text
     assert "Luna" not in resp.text
+
+
+def test_world_engine_outage_degrades_to_ungated_turn():
+    """OPEN-010: with Evennia unreachable (conftest points it at a closed port), the chat
+    route must still serve the turn ungated instead of returning a raw 500."""
+
+    async def fake_stream(*args, **kwargs):
+        yield "<think>planning</think>"
+        yield "The tavern is quiet tonight."
+
+    with patch("proxy.api.routes.lemonade_client.generate_stream", fake_stream), \
+         patch("proxy.api.routes._dispatch_lore_extraction"), \
+         TestClient(app) as client:
+        resp = client.post("/v1/chat/completions", json={**PAYLOAD, "stream": True})
+
+    assert resp.status_code == 200
+    text = "".join(
+        json.loads(line[6:])["choices"][0]["delta"].get("content", "")
+        for line in resp.text.splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    )
+    assert "tavern is quiet" in text
+    assert "think" not in text
