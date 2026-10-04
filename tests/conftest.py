@@ -64,6 +64,8 @@ _UNREACHABLE = "http://127.0.0.1:9"
 @pytest.fixture(autouse=True)
 def isolated_backends(monkeypatch):
     """Keep tests off the live world engine and LLM server. RUN_LIVE_LLM_TESTS=1 re-enables Lemonade."""
+    # The engine's startup reload must not resurrect prior tests' persisted worlds.
+    monkeypatch.setenv("SPM_WORLD_RELOAD", "0")
     monkeypatch.setattr(evennia_client, "base_url", f"{_UNREACHABLE}/api/v1")
     if os.environ.get("RUN_LIVE_LLM_TESTS") != "1":
         monkeypatch.setattr(lemonade_client_module, "DEFAULT_BASE_URL", f"{_UNREACHABLE}/v1")
