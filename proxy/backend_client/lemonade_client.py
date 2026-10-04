@@ -10,10 +10,13 @@ from typing import AsyncGenerator, Dict, Any, Optional, List, Tuple
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_BASE_URL = "http://localhost:13305/v1"
+
 
 class LemonadeLLMClient:
-    def __init__(self, base_url: str = "http://localhost:13305/v1"):
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url: Optional[str] = None):
+        # Resolve the default at call time (not definition time) so tests can redirect DEFAULT_BASE_URL.
+        self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
         self._client = None
 
 

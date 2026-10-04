@@ -66,8 +66,9 @@ DEFAULT_CONFIG: Dict[str, Any] = get_default_settings()
 class SettingsManager:
     """Manages persistent reading and writing of SPM settings."""
 
-    def __init__(self, config_path: str = _CONFIG_PATH):
-        self.config_path = config_path
+    def __init__(self, config_path: Optional[str] = None):
+        # Resolve the default at call time (not definition time) so tests can redirect _CONFIG_PATH.
+        self.config_path = config_path or _CONFIG_PATH
         self._ensure_config_file()
 
     def _ensure_config_file(self) -> None:

@@ -157,3 +157,29 @@ class TestResetSettingsManager:
         assert isinstance(mgr, SettingsManager)
         settings = mgr.get_settings()
         assert isinstance(settings, dict)
+
+
+# ---------------------------------------------------------------------------
+# Bug 5: tests wrote the live config/config.json (BACKEND_LLM_URL -> :9999)
+# ---------------------------------------------------------------------------
+
+class TestLiveConfigIsolation:
+    """The test suite must never modify the real config/config.json."""
+
+    def test_admin_config_post_does_not_touch_live_config(self, tmp_path):
+        from fastapi.testclient import TestClient
+        import config.manager as config_manager
+        from proxy.main import app as proxy_app
+
+        live_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "config.json"
+        )
+        before = open(live_path, "rb").read() if os.path.exists(live_path) else None
+
+        with TestClient(proxy_app) as client:
+            resp = client.post("/admin/api/v1/config", json={"BACKEND_LLM_URL": "http://127.0.0.1:9999/v1"})
+            assert resp.status_code == 200
+
+        after = open(live_path, "rb").read() if os.path.exists(live_path) else None
+        assert after == before
+        assert config_manager.get_settings_manager().config_path == str(tmp_path / "config.json")
