@@ -133,3 +133,18 @@ def test_detect_hardware_tier_below_16gb_returns_experimental():
     with patch("builtins.open", mock_open(read_data=mock_mem)):
         tier = _detect_hardware_tier()
         assert tier == HardwareTierEnum.EXPERIMENTAL
+
+
+def test_detect_hardware_tier_real_strix_halo_memtotal_is_sovereign():
+    """The actual 128 GB Strix Halo reports MemTotal 130473104 kB (~124.4 GiB) because of reserved memory."""
+    from proxy.rag.import_worker import _detect_hardware_tier, HardwareTierEnum
+
+    with patch("builtins.open", mock_open(read_data="MemTotal:       130473104 kB\n")):
+        assert _detect_hardware_tier() == HardwareTierEnum.SOVEREIGN
+
+
+def test_detect_hardware_tier_96gb_is_performance():
+    from proxy.rag.import_worker import _detect_hardware_tier, HardwareTierEnum
+
+    with patch("builtins.open", mock_open(read_data=f"MemTotal: {96 * 1024 * 1024} kB\n")):
+        assert _detect_hardware_tier() == HardwareTierEnum.PERFORMANCE

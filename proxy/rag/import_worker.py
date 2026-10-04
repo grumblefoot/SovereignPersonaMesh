@@ -32,6 +32,9 @@ MAX_BATCH_SIZE = 32
 BULK_IMPORT_THRESHOLD = 10
 
 
+SOVEREIGN_MIN_MEMTOTAL_GIB = 120
+
+
 def _detect_hardware_tier() -> HardwareTierEnum:
     """Auto-detect hardware tier from /proc on Linux."""
     try:
@@ -46,8 +49,9 @@ def _detect_hardware_tier() -> HardwareTierEnum:
 
     total_mem_gb = total_mem_kb / (1024 * 1024)
 
-    # Strix Halo 128GB GTT -> SOVEREIGN
-    if total_mem_gb >= 128:
+    # Strix Halo 128GB -> SOVEREIGN. MemTotal excludes firmware/VRAM reservations, so the real 128 GB Strix Halo
+    # reports ~124.4 GiB; the old ">= 128" check put it in PERFORMANCE.
+    if total_mem_gb >= SOVEREIGN_MIN_MEMTOTAL_GIB:
         return HardwareTierEnum.SOVEREIGN
     # >= 16GB -> EXPERIMENTAL minimum
     elif total_mem_gb >= 16:
