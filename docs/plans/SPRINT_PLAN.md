@@ -183,3 +183,9 @@ All 17 decisions in §3 are resolved (owner, via the review doc). Sprint 0 is un
 - **16 — partially open:** PRD 5.3 split approved; the sub-items (character-card overflow behaviour, summaries on/off, keep hardware tiers as preset aliases) stay open until Sprint 4.
 
 Sprint 0 manual-check updates: `max_loaded_models` is **resolved** — the 2-slot experiment caused an OOM and was reverted to 1 on 2026-10-03 (verified: loading a second LLM evicts the first; backup `~/.config/lemonade/config.json.bak-2026-10-03`). Hermes is verified working as a local agent (first headless turn ≈ 1.5–2 min: ~26 s model swap + ~59 s prefill). Still to run: NPU embed-model slot behaviour under 1-slot config; log one raw SillyTavern request.
+
+---
+
+## 7. Sprint 0: complete (2026-10-04)
+
+All Sprint 0 items landed on `V0.4` (`02f3ac5`..`b7babfe`); full suite 478 passed, 1 skipped (431 at sprint start). Verified live end to end with one SillyTavern message: `X-SPM-Chat-ID` arrived resolved, the session became `st_chat_<uuid>`, the world room and turn memory persisted under that session, embeddings stored NULL (phase 0), lore extracted 8 pending character/world rules and none about the user, and no monologue or GM_ACTION text leaked to the frontend. The raw-request manual check is closed: ST's Custom source natively sends only accept/authorization/content-type/user-agent — no chat id — confirming the extension was required. Engine-side bonus fix: sessions no longer share room objects (found by Hermes, extended to configure_world in review). Sprint 1 starts with the engine hardening list in proxy/engine/http_adapter.py's docstring (ten verified gaps) and the embedding provider layer.
