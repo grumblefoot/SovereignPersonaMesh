@@ -242,16 +242,16 @@ The project was paused from about 2026-09-09. A full re-assessment (code, live s
 
 | ID | P | Item |
 |---|---|---|
-| OPEN-001 | P0 | **No authentication** on admin routes (factory reset, shutdown, config, lore) or the Evennia reset; `CORS *`; `0.0.0.0` binds; the thought SSE exposes private monologues to the network. |
-| OPEN-002 | P0 | **Embedder is a random-vector stub** (`scripts/onnx_embedder.py`), so RAG recall and lore triggers don't work. Choose a model and dimension (3584 rules out HNSW). |
-| OPEN-003 | P1 | **Sensory gating is inert by default**: actor is always `user`/`speak`, the raw last-15 history goes to the LLM, there is no whisper/move detection, and the ambient-log filter is unused. |
-| OPEN-004 | P1 | **FIFO GPU queue is never used**; chat, lore extraction and the sleep cycle can call the GPU at the same time. |
-| OPEN-005 | P1 | `GM_ACTION` lets the LLM write world state, against the Zero-LLM rule and PRD 11.1.1. Keep it and amend the spec, or restrict it. |
-| OPEN-006 | P1 | Spatial matrix drift: degraded extends to 20 ft (spec 15); closed doors and metal partitions don't black out; adjacency reads the global world, not the session's. |
-| OPEN-007 | P2 | Lore rules have no `session_id`, so they bleed across chats. |
-| OPEN-008 | P2 | No token-budget enforcement; `backend_max_tokens` is 128000. |
+| OPEN-001 | Deferred | **Owner decision 2026-10-03: return to this later; not a priority while SPM is dev-only on the homelab network.** **No authentication** on admin routes (factory reset, shutdown, config, lore) or the Evennia reset; `CORS *`; `0.0.0.0` binds; the thought SSE exposes private monologues to the network. |
+| OPEN-002 | P0 | Plan: [docs/plans/embeddings.md](docs/plans/embeddings.md). **Embedder is a random-vector stub** (`scripts/onnx_embedder.py`), so RAG recall and lore triggers don't work. Choose a model and dimension (3584 rules out HNSW). |
+| OPEN-003 | P0 | Plan: [docs/plans/gating.md](docs/plans/gating.md). **Sensory gating is inert by default**: actor is always `user`/`speak`, the raw last-15 history goes to the LLM, there is no whisper/move detection, and the ambient-log filter is unused. |
+| OPEN-004 | P1 | Plan: [docs/plans/fifo_queue.md](docs/plans/fifo_queue.md). **FIFO GPU queue is never used**; chat, lore extraction and the sleep cycle can call the GPU at the same time. |
+| OPEN-005 | P1 | Plan: [docs/plans/gm_actions_and_lore_scope.md](docs/plans/gm_actions_and_lore_scope.md). Owner decision: make it a user on/off option (helps local models; paid-API users may want to save tokens). `GM_ACTION` lets the LLM write world state, against the Zero-LLM rule and PRD 11.1.1. Keep it and amend the spec, or restrict it. |
+| OPEN-006 | P0 | Part of the gating plan. Spatial matrix drift: degraded extends to 20 ft (spec 15); closed doors and metal partitions don't black out; adjacency reads the global world, not the session's. |
+| OPEN-007 | P2 | Plan: [docs/plans/gm_actions_and_lore_scope.md](docs/plans/gm_actions_and_lore_scope.md). Owner decision: scope lore per chat; after the main features. Lore rules have no `session_id`, so they bleed across chats. |
+| OPEN-008 | P2 | Plan: [docs/plans/token_budget.md](docs/plans/token_budget.md). Owner decision: user-configurable; after the main features. No token-budget enforcement; `backend_max_tokens` is 128000. |
 | OPEN-009 | P2 | Tick is global, increments on every action (including regenerations) and isn't reloaded at startup, contradicting the playbook's "user-message clock". |
 | OPEN-010 | P2 | Evennia down → raw HTTP 500 from the chat route (give it the same treatment as the LLM-outage fix). |
 | OPEN-011 | P3 | Streamed replies can start with blank lines; dead code (`_gather_public_response`, vibe-profiler style card, unused ST parser import). |
-| OPEN-012 | P3 | Live database still holds test residue (cleanup blocked pending owner approval; backup and exact list in the assessment §6). |
-
+| OPEN-012 | ✅ Done | Live database reset 2026-10-03 with owner approval (dropped and rebuilt from `scripts/init_db.sql`; backups in `~/Desktop/Experiments/SillyTavern/db-backups/`). |
+| OPEN-013 | P1 | World engine: real Evennia vs the FastAPI stand-in. Evaluation: [docs/plans/world_engine.md](docs/plans/world_engine.md). |
