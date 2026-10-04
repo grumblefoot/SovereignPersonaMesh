@@ -153,11 +153,11 @@ async def test_core_memory_node_insertion():
     try:
         await conn.execute("SELECT create_csa_memory_table($1);", "test_core_insert")
 
-        # Insert a volatile record within 24h
+        # Insert a volatile record that has left the 24h hot window
         await conn.execute(
             """INSERT INTO csa_memory_test_core_insert
                (session_id, sensory_input, inner_monologue, is_core_memory, timestamp)
-               VALUES ($1, $2, $3, FALSE, NOW())""",
+               VALUES ($1, $2, $3, FALSE, NOW() - INTERVAL '30 hours')""",
             "test", "Walked into the tavern", "Felt nervous",
         )
 
@@ -174,11 +174,13 @@ async def test_core_memory_node_insertion():
         assert core_nodes[0]["is_core_memory"] is True
         # Verify the sensory_input is the consolidation summary
         assert core_nodes[0]["sensory_input"] == "I entered the tavern and felt nervous."
-        # Verify session_id is set correctly
-        session_check = await conn.fetchval(
-            "SELECT session_id FROM csa_memory_test_core_insert WHERE is_core_memory = TRUE LIMIT 1"
+        # The node stays in the source session and is embedded, so the retriever can find it
+        node = await conn.fetchrow(
+            "SELECT session_id, episodic_embedding IS NOT NULL AS has_emb "
+            "FROM csa_memory_test_core_insert WHERE is_core_memory = TRUE LIMIT 1"
         )
-        assert session_check == "sleep_cycle_consolidated"
+        assert node["session_id"] == "test"
+        assert node["has_emb"] is True
     finally:
         await conn.close()
 
@@ -262,7 +264,7 @@ async def test_run_processes_all_tables():
         await conn.execute(
             """INSERT INTO csa_memory_test_run
                (session_id, sensory_input, is_core_memory, timestamp)
-               VALUES ($1, $2, FALSE, NOW())""",
+               VALUES ($1, $2, FALSE, NOW() - INTERVAL '30 hours')""",
             "test", "Run test record",
         )
 
@@ -305,3 +307,98 @@ async def test_synthesis_is_first_person_sentence():
     assert result.endswith(".")
     # Should be a single sentence (one period, no extra periods)
     assert result.count(".") == 1
+
+
+# ── Regression: a failed or empty summary must never lose memories ──────
+
+async def _seed(conn, table, rows):
+    await conn.execute("SELECT create_csa_memory_table($1);", table.replace("csa_memory_", ""))
+    await conn.execute(f"TRUNCATE {table};")
+    for session_id, text, age_hours in rows:
+        await conn.execute(
+            f"""INSERT INTO {table} (session_id, sensory_input, is_core_memory, timestamp)
+                VALUES ($1, $2, FALSE, NOW() - make_interval(hours => $3))""",
+            session_id, text, age_hours,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [Exception("connection refused"), ""])
+async def test_failed_summary_keeps_logs_and_writes_nothing(failure):
+    worker = MemoryConsolidationWorker(DB_CONFIG, "http://localhost:13305/v1")
+    conn = await asyncpg.connect(**DB_CONFIG)
+    try:
+        table = "csa_memory_test_sc_fail"
+        await _seed(conn, table, [("s1", "Old log A", 30), ("s1", "Old log B", 72)])
+
+        with patch.object(worker, "_call_consolidation_model", new_callable=AsyncMock) as mock_call:
+            if isinstance(failure, Exception):
+                mock_call.side_effect = failure
+            else:
+                mock_call.return_value = failure
+            await worker.process_character_sleep_cycle(conn, table)
+
+        assert await conn.fetchval(f"SELECT COUNT(*) FROM {table} WHERE is_core_memory = TRUE") == 0
+        assert await conn.fetchval(f"SELECT COUNT(*) FROM {table} WHERE is_core_memory = FALSE") == 2
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_backlog_consolidated_per_session_and_day_recent_kept():
+    worker = MemoryConsolidationWorker(DB_CONFIG, "http://localhost:13305/v1")
+    conn = await asyncpg.connect(**DB_CONFIG)
+    try:
+        table = "csa_memory_test_sc_backlog"
+        await _seed(conn, table, [
+            ("s1", "Day-3 log", 72), ("s1", "Day-4 log", 96),
+            ("s2", "Other session log", 72),
+            ("s1", "Recent log", 2),
+        ])
+
+        with patch.object(worker, "_call_consolidation_model", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = "I remember it."
+            await worker.process_character_sleep_cycle(conn, table)
+
+        nodes = await conn.fetch(
+            f"SELECT session_id FROM {table} WHERE is_core_memory = TRUE AND episodic_embedding IS NOT NULL"
+        )
+        assert sorted(n["session_id"] for n in nodes) == ["s1", "s1", "s2"]
+        remaining = await conn.fetch(f"SELECT sensory_input FROM {table} WHERE is_core_memory = FALSE")
+        assert [r["sensory_input"] for r in remaining] == ["Recent log"]
+        # Prompts never mix sessions
+        for call in mock_call.await_args_list:
+            prompt = call.args[0]
+            assert not ("Other session log" in prompt and "Day-3 log" in prompt)
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_partial_failure_only_commits_successful_batches():
+    worker = MemoryConsolidationWorker(DB_CONFIG, "http://localhost:13305/v1")
+    conn = await asyncpg.connect(**DB_CONFIG)
+    try:
+        table = "csa_memory_test_sc_partial"
+        await _seed(conn, table, [("good", "Good log", 30), ("bad", "Bad log", 30)])
+
+        async def fake_call(prompt):
+            if "Bad log" in prompt:
+                raise Exception("backend error")
+            return "I recall the good day."
+
+        with patch.object(worker, "_call_consolidation_model", side_effect=fake_call):
+            await worker.process_character_sleep_cycle(conn, table)
+
+        assert await conn.fetchval(f"SELECT COUNT(*) FROM {table} WHERE is_core_memory = TRUE AND session_id = 'good'") == 1
+        assert await conn.fetchval(f"SELECT COUNT(*) FROM {table} WHERE is_core_memory = FALSE AND session_id = 'good'") == 0
+        assert await conn.fetchval(f"SELECT COUNT(*) FROM {table} WHERE is_core_memory = FALSE AND session_id = 'bad'") == 1
+    finally:
+        await conn.close()
+
+
+def test_default_consolidation_model_exists_in_lemonade_catalogue():
+    """The old google/gemma-4-E4B-it id no longer exists in Lemonade 11.9."""
+    import inspect
+    from scripts import sleep_cycle
+    assert "google/gemma" not in inspect.getsource(sleep_cycle)
