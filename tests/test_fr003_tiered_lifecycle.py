@@ -23,13 +23,14 @@ from fastapi.testclient import TestClient
 from proxy.main import app as proxy_app
 from proxy.api.routes import set_db_pool
 from proxy.rag.tier_manager import MemoryTierManager, COLD_ARCHIVE_DIR
+from tests._testdb import TEST_DB_NAME
 
 DB_CONFIG = {
     "host": "localhost",
     "port": 5432,
     "user": "spm_user",
     "password": "spm_secure_password",
-    "database": "litellm_postgres",
+    "database": TEST_DB_NAME,
 }
 
 

@@ -1,7 +1,40 @@
 """Shared fixtures for SPM test suite."""
 import asyncio
+import os
+from pathlib import Path
+
 import pytest_asyncio
 import asyncpg
+
+from tests._testdb import LIVE_DB_NAME, TEST_DB_CONFIG, TEST_DB_NAME
+
+# Point the app's own pools (proxy startup, admin routes, Evennia) at the test database.
+# Set before the app modules are imported below.
+os.environ["POSTGRES_DB"] = TEST_DB_NAME
+os.environ["SPM_DB_NAME"] = TEST_DB_NAME
+
+_INIT_SQL = Path(__file__).resolve().parent.parent / "scripts" / "init_db.sql"
+
+
+async def _rebuild_test_database():
+    if TEST_DB_NAME == LIVE_DB_NAME:
+        raise RuntimeError(f"Refusing to rebuild the live database '{LIVE_DB_NAME}' for tests.")
+    admin = await asyncpg.connect(**{**TEST_DB_CONFIG, "database": "postgres"})
+    try:
+        await admin.execute(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}" WITH (FORCE);')
+        await admin.execute(f'CREATE DATABASE "{TEST_DB_NAME}";')
+    finally:
+        await admin.close()
+    conn = await asyncpg.connect(**TEST_DB_CONFIG)
+    try:
+        await conn.execute(_INIT_SQL.read_text())
+    finally:
+        await conn.close()
+
+
+def pytest_sessionstart(session):
+    """Start every run from a fresh test database built from scripts/init_db.sql."""
+    asyncio.run(_rebuild_test_database())
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -13,13 +46,7 @@ async def db_pool():
     """
     loop = asyncio.get_running_loop()
     assert loop is not None, "No event loop running"
-    pool = await asyncpg.create_pool(
-        host="localhost",
-        port=5432,
-        user="spm_user",
-        password="spm_secure_password",
-        database="litellm_postgres",
-    )
+    pool = await asyncpg.create_pool(**TEST_DB_CONFIG)
     yield pool
     await pool.close()
 

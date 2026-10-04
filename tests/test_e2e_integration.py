@@ -31,13 +31,14 @@ from proxy.core.sensory_filter import ObserverInferenceGatingFilter
 from proxy.rag.retriever import EpisodicRAGRetriever
 from evennia_world.hybrid_builder import HybridWorldBuilder
 from evennia_world.session_lock import SessionLockManager
+from tests._testdb import TEST_DB_NAME
 
 DB_CONFIG = {
     "host": "localhost",
     "port": 5432,
     "user": "spm_user",
     "password": "spm_secure_password",
-    "database": "litellm_postgres",
+    "database": TEST_DB_NAME,
 }
 
 

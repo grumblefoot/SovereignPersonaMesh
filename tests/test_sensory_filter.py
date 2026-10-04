@@ -6,13 +6,14 @@ Tests zero-inference ambient log commits to litellm_postgres.
 import pytest
 import asyncpg
 from proxy.core.sensory_filter import ObserverInferenceGatingFilter
+from tests._testdb import TEST_DB_NAME
 
 DB_CONFIG = {
     "host": "localhost",
     "port": 5432,
     "user": "spm_user",
     "password": "spm_secure_password",
-    "database": "litellm_postgres",
+    "database": TEST_DB_NAME,
 }
 
 

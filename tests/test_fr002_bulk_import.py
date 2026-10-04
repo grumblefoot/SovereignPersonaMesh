@@ -28,6 +28,7 @@ from proxy.rag.import_worker import (
 )
 from proxy.main import app as proxy_app
 from proxy.api.routes import _check_bulk_import, _extract_target_char, _extract_session_id, set_db_pool
+from tests._testdb import TEST_DB_NAME
 
 
 DB_CONFIG = {
@@ -35,7 +36,7 @@ DB_CONFIG = {
     "port": 5432,
     "user": "spm_user",
     "password": "spm_secure_password",
-    "database": "litellm_postgres",
+    "database": TEST_DB_NAME,
 }
 
 
