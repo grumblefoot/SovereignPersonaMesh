@@ -31,6 +31,7 @@ from scripts.onnx_embedder import CPUEmbeddingEngine
 from core.resource_manager import strings
 
 from proxy.core.telemetry import get_telemetry_collector
+from core.identifiers import safe_char_id
 
 logger = logging.getLogger(__name__)
 
@@ -96,19 +97,19 @@ def _extract_target_char(messages: List[ChatCompletionMessage]) -> str:
             # Pattern 1: [CharName's Personality=...]
             match = re.search(r"\[([A-Za-z0-9_\-\s]+)'s\s+Personality=", content, re.IGNORECASE)
             if match:
-                return match.group(1).strip().lower()
+                return safe_char_id(match.group(1))
             # Pattern 2: [Character: CharName] or Character: CharName
             match = re.search(r"(?:\[Character:\s*|Character:\s*)([A-Za-z0-9_\-\s]+)(?:\]|\n|$)", content, re.IGNORECASE)
             if match:
-                return match.group(1).strip().lower()
+                return safe_char_id(match.group(1))
             # Pattern 3: [<CharName>:] or [<CharName>'s ...]
             match = re.search(r"\[([A-Za-z0-9_\-\s]+)(?:'s|:)", content)
             if match:
-                char_name = match.group(1).strip().lower()
+                char_name = safe_char_id(match.group(1))
                 if char_name not in ("scenario", "system", "user", "assistant", "context"):
                     return char_name
         elif msg.name:
-            return msg.name.strip().lower()
+            return safe_char_id(msg.name)
     return "default"
 
 
@@ -431,9 +432,9 @@ The text after </think> must ONLY be narrative and dialogue.
 
         if _db_pool and public_resp:
             try:
-                table_name = f"csa_memory_{target_char.lower()}"
+                table_name = f"csa_memory_{safe_char_id(target_char)}"
                 async with _db_pool.acquire() as conn:
-                    await conn.execute("SELECT create_csa_memory_table($1);", target_char.lower())
+                    await conn.execute("SELECT create_csa_memory_table($1);", safe_char_id(target_char))
                     await conn.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS public_response TEXT;")
                     await conn.execute(
                         f"DELETE FROM {table_name} WHERE session_id = $1 AND LOWER(sensory_input) = LOWER($2);",
@@ -527,9 +528,9 @@ The text after </think> must ONLY be narrative and dialogue.
         # Persist finalized turn without duplicate bleed on regeneration
         if _db_pool and public_resp:
             try:
-                table_name = f"csa_memory_{target_char.lower()}"
+                table_name = f"csa_memory_{safe_char_id(target_char)}"
                 async with _db_pool.acquire() as conn:
-                    await conn.execute("SELECT create_csa_memory_table($1);", target_char.lower())
+                    await conn.execute("SELECT create_csa_memory_table($1);", safe_char_id(target_char))
                     await conn.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS public_response TEXT;")
                     await conn.execute(
                         f"DELETE FROM {table_name} WHERE session_id = $1 AND LOWER(sensory_input) = LOWER($2);",

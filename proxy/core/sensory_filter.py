@@ -7,6 +7,7 @@ import logging
 import asyncpg
 from typing import Dict, Any, Optional
 from core.resource_manager import strings
+from core.identifiers import safe_char_id
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +36,10 @@ class ObserverInferenceGatingFilter:
 
     async def _commit_ambient_log(self, character_id: str, session_id: str, ambient_text: str):
         """Commits deterministic ambient log directly to csa_memory_{character_id} without LLM inference."""
-        table_name = f"csa_memory_{character_id.lower()}"
+        table_name = f"csa_memory_{safe_char_id(character_id)}"
         async with self.db_pool.acquire() as conn:
             # Ensure table exists
-            await conn.execute("SELECT create_csa_memory_table($1);", character_id.lower())
+            await conn.execute("SELECT create_csa_memory_table($1);", safe_char_id(character_id))
             await conn.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS public_response TEXT;")
             await conn.execute(f"""
                 INSERT INTO {table_name} (session_id, sensory_input, inner_monologue, public_response, is_core_memory, is_subjective, importance_score)

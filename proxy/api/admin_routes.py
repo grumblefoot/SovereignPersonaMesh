@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from config.manager import get_settings_manager
 from proxy.core.telemetry import get_telemetry_collector
 from core.resource_manager import strings
+from core.identifiers import safe_char_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/api/v1", tags=["admin"])
@@ -328,7 +329,7 @@ async def approve_lore(char_id: str, rule_id: str):
     if pool is None:
         return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
     
-    table_name = f"csa_lore_rules_{char_id.lower()}"
+    table_name = f"csa_lore_rules_{safe_char_id(char_id)}"
     try:
         async with pool.acquire() as conn:
             res = await conn.execute(f"UPDATE {table_name} SET status = 'active' WHERE id = $1::uuid;", rule_id)
@@ -346,7 +347,7 @@ async def reject_lore(char_id: str, rule_id: str):
     if pool is None:
         return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
     
-    table_name = f"csa_lore_rules_{char_id.lower()}"
+    table_name = f"csa_lore_rules_{safe_char_id(char_id)}"
     try:
         async with pool.acquire() as conn:
             res = await conn.execute(f"DELETE FROM {table_name} WHERE id = $1::uuid;", rule_id)

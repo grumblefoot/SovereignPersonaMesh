@@ -11,6 +11,7 @@ from scripts.onnx_embedder import CPUEmbeddingEngine
 logger = logging.getLogger(__name__)
 
 from core.resource_manager import strings
+from core.identifiers import safe_char_id
 
 
 class LoreExtractionWorker:
@@ -89,10 +90,10 @@ class LoreExtractionWorker:
                 emb = await self.embedding_engine.generate_embedding(rule_text)
                 emb_str = "[" + ",".join(map(str, emb)) + "]"
                 
-                table_name = f"csa_lore_rules_{character_id.lower()}"
+                table_name = f"csa_lore_rules_{safe_char_id(character_id)}"
                 
                 async with self.db_pool.acquire() as conn:
-                    await conn.execute(strings.get("sql.create_csa_lore_rules_table"), character_id.lower())
+                    await conn.execute(strings.get("sql.create_csa_lore_rules_table"), safe_char_id(character_id))
                     
                     # Check if rule exists
                     existing = await conn.fetchval(strings.get("sql.check_lore_rule_exists").format(table_name=table_name), rule_text)

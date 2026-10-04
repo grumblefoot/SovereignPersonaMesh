@@ -7,6 +7,7 @@ import logging
 import asyncpg
 from typing import List, Dict, Any, Optional
 from core.resource_manager import strings
+from core.identifiers import safe_char_id
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +32,10 @@ class EpisodicRAGRetriever:
         Filters out query_text exact matches to prevent regenerated turn bleedthrough.
         Calculates RAG Score = (1 - cosine_dist) * exp(-lambda * delta_t) * (1 + importance/10) * access_count.
         """
-        table_name = f"csa_memory_{character_id.lower()}"
+        table_name = f"csa_memory_{safe_char_id(character_id)}"
         async with self.db_pool.acquire() as conn:
             # Ensure table exists
-            await conn.execute("SELECT create_csa_memory_table($1);", character_id.lower())
+            await conn.execute("SELECT create_csa_memory_table($1);", safe_char_id(character_id))
 
             embedding_str = "[" + ",".join(map(str, query_embedding)) + "]"
             clean_query = query_text.strip().lower() if query_text else ""
@@ -102,10 +103,10 @@ class EpisodicRAGRetriever:
         Retrieves active lore rules for a character.
         Returns all 'invariant' rules, and 'conditional_trigger'/'game_over' rules that match the query embedding.
         """
-        table_name = f"csa_lore_rules_{character_id.lower()}"
+        table_name = f"csa_lore_rules_{safe_char_id(character_id)}"
         async with self.db_pool.acquire() as conn:
             # Ensure table exists (create if missing)
-            await conn.execute("SELECT create_csa_lore_rules_table($1);", character_id.lower())
+            await conn.execute("SELECT create_csa_lore_rules_table($1);", safe_char_id(character_id))
             
             # Fetch Invariants
             invariants_query = f"SELECT id, rule_text, rule_type FROM {table_name} WHERE rule_type = 'invariant' AND status = 'active';"

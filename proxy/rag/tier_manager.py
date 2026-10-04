@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import asyncpg
+from core.identifiers import safe_char_id
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ class MemoryTierManager:
         Returns a summary dict with keys:
           archive_id, archive_path, record_count, deleted_count, char_id.
         """
-        char_id = character_id.lower()
+        char_id = safe_char_id(character_id)
         table_name = f"csa_memory_{char_id}"
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
@@ -199,7 +200,7 @@ class MemoryTierManager:
         Returns a summary dict with keys:
           reconstituted_count, archive_path, char_id, session_id.
         """
-        char_id = character_id.lower()
+        char_id = safe_char_id(character_id)
         table_name = f"csa_memory_{char_id}"
 
         async with self.db_pool.acquire() as conn:
@@ -287,7 +288,7 @@ class MemoryTierManager:
         Return hot (volatile / recent), warm (core memory), and cold (archive)
         record counts for the given character and session.
         """
-        char_id = character_id.lower()
+        char_id = safe_char_id(character_id)
         table_name = f"csa_memory_{char_id}"
         # Build WHERE clause: always starts with "WHERE", session filter is optional.
         where_session = ""
