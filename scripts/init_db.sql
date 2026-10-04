@@ -40,8 +40,9 @@ BEGIN
             access_count INT DEFAULT 1,
             last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
-        EXECUTE format(''ALTER TABLE %I ADD COLUMN IF NOT EXISTS public_response TEXT;'', table_name);
     ', table_name);
+    -- Upgrade tables created before public_response existed.
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS public_response TEXT', table_name);
 
     -- NOTE: pgvector index operators (HNSW/IVFFlat) are capped at 2000 dimensions.
     -- For 3584-dim embeddings we use brute-force cosine search via the <=> operator.

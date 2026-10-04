@@ -4,6 +4,7 @@ Tests real PostgreSQL/pgvector with the litellm_postgres container.
 """
 import numpy as np
 import asyncpg
+from tests._testdb import TEST_DB_NAME
 
 
 DB_CONFIG = {
@@ -11,7 +12,7 @@ DB_CONFIG = {
     "port": 5432,
     "user": "spm_user",
     "password": "spm_secure_password",
-    "database": "litellm_postgres",
+    "database": TEST_DB_NAME,
 }
 
 

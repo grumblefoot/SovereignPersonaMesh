@@ -12,6 +12,7 @@ import pytest
 
 from scripts.sleep_cycle import MemoryConsolidationWorker
 from core.resource_manager import strings
+from tests._testdb import TEST_DB_NAME
 
 
 DB_CONFIG = {
@@ -19,7 +20,7 @@ DB_CONFIG = {
     "port": 5432,
     "user": "spm_user",
     "password": "spm_secure_password",
-    "database": "litellm_postgres",
+    "database": TEST_DB_NAME,
 }
 
 
