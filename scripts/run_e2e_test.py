@@ -30,12 +30,8 @@ import urllib.error
 # ── Constants ────────────────────────────────────────────────────────────────
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PYTHON = os.path.join(
-    PROJECT_ROOT, "..", "spm-demo-mvp", "venv", "bin", "python"
-)
-PYTEST = os.path.join(
-    PROJECT_ROOT, "..", "spm-demo-mvp", "venv", "bin", "pytest"
-)
+PYTHON = os.path.join(PROJECT_ROOT, ".venv", "bin", "python")
+PYTEST = os.path.join(PROJECT_ROOT, ".venv", "bin", "pytest")
 
 EVENNIA_APP = os.path.join(PROJECT_ROOT, "evennia_world", "app.py")
 PROXY_APP = os.path.join(PROJECT_ROOT, "proxy", "main.py")

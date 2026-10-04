@@ -36,8 +36,9 @@ def test_prompt_template_contains_required_sections():
     assert "walked into room" in rendered
     assert "Memory Consolidation Engine" in rendered
     assert "first-person perspective" in rendered
-    assert "<boss>" in rendered
-    assert "<idle>" in rendered
+    # Old control markers made Gemma 4 copy them (and sometimes the instructions) into its answer
+    assert "<boss>" not in rendered
+    assert "<idle>" not in rendered
 
 
 # ── MemoryConsolidationWorker Initialization ──────────────────────────────
@@ -402,3 +403,43 @@ def test_default_consolidation_model_exists_in_lemonade_catalogue():
     import inspect
     from scripts import sleep_cycle
     assert "google/gemma" not in inspect.getsource(sleep_cycle)
+
+
+@pytest.mark.asyncio
+async def test_consolidation_request_disables_reasoning():
+    """Without this, Gemma 4 spends max_tokens on reasoning_content and returns empty content."""
+    worker = MemoryConsolidationWorker(DB_CONFIG, "http://localhost:13305/v1")
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = Mock()
+    mock_response.json = Mock(return_value={"choices": [{"message": {"content": "<memory_node>I saw rain.</memory_node>"}}]})
+
+    with patch("httpx.AsyncClient") as MockClient:
+        instance = Mock()
+        instance.post = AsyncMock(return_value=mock_response)
+        instance.__aenter__ = AsyncMock(return_value=instance)
+        instance.__aexit__ = AsyncMock(return_value=False)
+        MockClient.return_value = instance
+
+        result = await worker._call_consolidation_model("test")
+
+    payload = instance.post.await_args.kwargs["json"]
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert result == "I saw rain."
+
+
+@pytest.mark.asyncio
+async def test_echoed_instructions_are_rejected_and_logs_kept():
+    """Seen live: the model sometimes answers with the prompt's first line. That is not a memory."""
+    worker = MemoryConsolidationWorker(DB_CONFIG, "http://localhost:13305/v1")
+    conn = await asyncpg.connect(**DB_CONFIG)
+    try:
+        table = "csa_memory_test_sc_echo"
+        await _seed(conn, table, [("s1", "Old log", 30)])
+        with patch.object(worker, "_call_consolidation_model", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = "You are the Memory Consolidation Engine for the character test_sc_echo."
+            await worker.process_character_sleep_cycle(conn, table)
+
+        assert await conn.fetchval(f"SELECT COUNT(*) FROM {table} WHERE is_core_memory = TRUE") == 0
+        assert await conn.fetchval(f"SELECT COUNT(*) FROM {table} WHERE is_core_memory = FALSE") == 1
+    finally:
+        await conn.close()
