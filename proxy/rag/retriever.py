@@ -32,6 +32,9 @@ class EpisodicRAGRetriever:
         Filters out query_text exact matches to prevent regenerated turn bleedthrough.
         Calculates RAG Score = (1 - cosine_dist) * exp(-lambda * delta_t) * (1 + importance/10) * access_count.
         """
+        if query_embedding is None:
+            logger.info(f"[RAGRetriever] No query embedding available (stub embedder); skipping vector recall for {character_id}.")
+            return []
         table_name = f"csa_memory_{safe_char_id(character_id)}"
         async with self.db_pool.acquire() as conn:
             # Ensure table exists

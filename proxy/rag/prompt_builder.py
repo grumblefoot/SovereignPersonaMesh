@@ -4,6 +4,8 @@ Formats custom prompts for Character Subagents (CSAs) strictly adhering to token
 """
 
 from typing import List, Dict, Any, Optional
+import logging
+import os
 import re
 from config.hardware_tiers import HardwareConfig, HARDWARE_TIERS, HardwareTierEnum
 from proxy.rag.gm_actions import default_gm_registry
@@ -14,7 +16,18 @@ CLOSE_THINK_TAG = "</think>"
 
 
 class CognitivePromptBuilder:
-    def __init__(self, hw_config: HardwareConfig = HARDWARE_TIERS[HardwareTierEnum.SOVEREIGN]):
+    def __init__(self, hw_config: Optional[HardwareConfig] = None):
+        # Resolved at call time: the old default argument froze SOVEREIGN at import,
+        # ignoring SPM_HARDWARE_TIER entirely.
+        if hw_config is None:
+            tier_name = os.getenv("SPM_HARDWARE_TIER", "SOVEREIGN").upper()
+            try:
+                tier = HardwareTierEnum(tier_name)
+            except ValueError:
+                logging.getLogger(__name__).warning(
+                    f"[PromptBuilder] Unknown SPM_HARDWARE_TIER '{tier_name}', using SOVEREIGN.")
+                tier = HardwareTierEnum.SOVEREIGN
+            hw_config = HARDWARE_TIERS[tier]
         self.config = hw_config
 
     def build_csa_prompt(

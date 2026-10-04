@@ -99,7 +99,7 @@ class LoreExtractionWorker:
                 
             try:
                 emb = await self.embedding_engine.generate_embedding(rule_text)
-                emb_str = "[" + ",".join(map(str, emb)) + "]"
+                emb_str = None if emb is None else "[" + ",".join(map(str, emb)) + "]"
                 
                 table_name = f"csa_lore_rules_{safe_char_id(character_id)}"
                 
