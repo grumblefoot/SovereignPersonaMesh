@@ -227,6 +227,7 @@ async def health_check():
         "tick": _session_tick("default_session"),
         "template": list(app_state.current_world.keys()) if app_state.current_world else "none",
         "uptime_seconds": round(time.time() - app.state.start_time, 1),
+        "active_sessions": len(app_state.session_worlds),
     }
 
 
@@ -290,6 +291,8 @@ async def submit_action(payload: ActionPayload, background_tasks: BackgroundTask
         for char_id in room.present_characters:
             if char_id in seen_ids:
                 continue
+            if char_id == payload.character_id:
+                continue  # the actor does not perceive their own action as a consequence
             seen_ids.add(char_id)
             is_target = (char_id == payload.target_id)
 
@@ -612,6 +615,11 @@ async def move_character(payload: CharacterMovePayload, background_tasks: Backgr
             room_id=payload.room_id,
         )
     
+    # A2: the session world is authoritative — destination must exist there.
+    world = _ensure_world(payload.template_key, session_id)
+    if payload.room_id not in world:
+        raise HTTPException(status_code=404, detail=f"Room '{payload.room_id}' not found in session '{session_id}'")
+
     # Track which rooms were modified to persist them
     modified_rooms = set()
     # Remove from all rooms first, then add to destination
@@ -632,17 +640,13 @@ async def move_character(payload: CharacterMovePayload, background_tasks: Backgr
                 r.present_characters.remove(payload.character_id)
                 modified_rooms.add((payload.template_key, r_id))
 
-    world_builder.add_character_to_room(
-        payload.template_key, payload.room_id, payload.character_id,
-    )
-    
+    # A2: write the SESSION world (authoritative); never the builder templates —
+    # template writes leaked placements across sessions (B6's sibling).
+    if payload.character_id not in world[payload.room_id].present_characters:
+        world[payload.room_id].present_characters.append(payload.character_id)
     if app_state.current_world and payload.room_id in app_state.current_world:  # NOTE: global read alias (legacy mirror).
         if payload.character_id not in app_state.current_world[payload.room_id].present_characters:  # NOTE: global read alias (legacy mirror).
             app_state.current_world[payload.room_id].present_characters.append(payload.character_id)  # NOTE: global read alias (legacy mirror).
-    elif session_id in app_state.session_worlds and payload.template_key in app_state.session_worlds[session_id]:
-        room_obj = app_state.session_worlds[session_id][payload.template_key].get(payload.room_id)
-        if room_obj and payload.character_id not in room_obj.present_characters:
-            room_obj.present_characters.append(payload.character_id)
             
     modified_rooms.add((payload.template_key, payload.room_id))
     

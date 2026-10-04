@@ -814,7 +814,8 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
                     character_id=action.get("entity", target_char),
                     room_id=action.get("room_id", ""),
                     session_id=session_id,
-                    idempotency_key=_gm_action_key(session_id, turn_index, idx, action)
+                    idempotency_key=_gm_action_key(session_id, turn_index, idx, action),
+                    origin="gm"
                 )
             elif action_type == "CREATE_ROOM":
                 await evennia_client.create_room(
@@ -822,7 +823,8 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
                     name=action.get("name", "New Room"),
                     desc=action.get("desc", ""),
                     session_id=session_id,
-                    idempotency_key=_gm_action_key(session_id, turn_index, idx, action)
+                    idempotency_key=_gm_action_key(session_id, turn_index, idx, action),
+                    origin="gm"
                 )
             else:
                 logger.warning(f"[GMAction] Unrecognized GM action type: {action_type}")

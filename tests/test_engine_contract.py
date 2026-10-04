@@ -38,9 +38,25 @@ from proxy.engine.in_process import InProcessWorldEngine
 
 # ── Engine parameterization ─────────────────────────────────────────────
 
+def _http_engine_factory():
+    """HttpWorldEngine against the real evennia_world app over an in-process ASGI
+    transport: full HTTP semantics, no sockets, no live services."""
+    import httpx as _httpx
+    import evennia_world.app as world_app
+    from proxy.backend_client.evennia_client import EvenniaWorldClient
+    from proxy.engine.http_adapter import HttpWorldEngine
+
+    if not hasattr(world_app.app.state, "start_time"):
+        world_app.app.state.start_time = 0.0  # ASGITransport runs no lifespan; /health reads this
+    client = EvenniaWorldClient(base_url="http://world.test/api/v1")
+    client._client = _httpx.AsyncClient(
+        transport=_httpx.ASGITransport(app=world_app.app), base_url="http://world.test")
+    return HttpWorldEngine(client)
+
+
 ENGINE_FACTORIES = {
     "in_process": InProcessWorldEngine,
-    # "http": lambda: HttpWorldEngine(EvenniaWorldClient(...)),  # Sprint 1 Track A
+    "http": _http_engine_factory,  # Sprint 1 Track A: gaps closed
 }
 
 _session_counter = itertools.count()
