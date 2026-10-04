@@ -130,5 +130,10 @@ if __name__ == "__main__":
     import uvicorn
     host = os.getenv("SPM_HOST", "0.0.0.0")
     port = int(os.getenv("SPM_PORT", 5050))
-    logger.info(f"Starting SPM Proxy Server on http://{host}:{port}")
-    uvicorn.run("proxy.main:app", host=host, port=port, reload=True)
+    from proxy.core.logger import attach_rotating_file_handler
+    attach_rotating_file_handler()
+    # Auto-reload is for development only: on a code edit it restarts the server, and the restart hangs while the
+    # admin dashboard holds its SSE stream open. Opt in with SPM_RELOAD=1.
+    reload = os.getenv("SPM_RELOAD", "0") == "1"
+    logger.info(f"Starting SPM Proxy Server on http://{host}:{port} (reload={reload})")
+    uvicorn.run("proxy.main:app", host=host, port=port, reload=reload)

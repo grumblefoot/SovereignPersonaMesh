@@ -79,3 +79,20 @@ def test_setup_rotating_logger_creates_directory(temp_log_dir):
     
     assert os.path.exists(log_file)
     assert os.path.isdir(nested_dir)
+
+
+def test_attach_rotating_file_handler_is_idempotent(tmp_path):
+    import logging
+    from proxy.core.logger import attach_rotating_file_handler
+
+    log = logging.getLogger("spm-test-attach")
+    log.propagate = False
+    path = str(tmp_path / "x.log")
+    h1 = attach_rotating_file_handler(log, log_file=path)
+    h2 = attach_rotating_file_handler(log, log_file=path)
+    assert h1 is h2
+    log.warning("hello file")
+    h1.flush()
+    assert "hello file" in open(path).read()
+    log.removeHandler(h1)
+    h1.close()

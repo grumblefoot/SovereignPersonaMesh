@@ -80,3 +80,25 @@ def setup_rotating_logger(
 
 
 setup_spm_logging = setup_rotating_logger
+
+
+def attach_rotating_file_handler(
+    logger: logging.Logger = None,
+    log_file: str = LOG_FILE,
+    level: int = logging.INFO,
+) -> RotatingFileHandler:
+    """Add only a rotating file handler (default: root logger, so every module's records reach logs/).
+
+    The console handler already comes from logging.basicConfig in proxy/main.py. Idempotent.
+    """
+    logger = logger or logging.getLogger()
+    target = os.path.abspath(log_file)
+    for h in logger.handlers:
+        if isinstance(h, RotatingFileHandler) and os.path.abspath(h.baseFilename) == target:
+            return h
+    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(log_file, maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT, encoding="utf-8")
+    handler.setLevel(level)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logger.addHandler(handler)
+    return handler
