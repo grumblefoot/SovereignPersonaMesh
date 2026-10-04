@@ -29,6 +29,7 @@ from proxy.rag.import_worker import (
 from proxy.main import app as proxy_app
 from proxy.api.routes import _check_bulk_import, _extract_target_char, _extract_session_id, set_db_pool
 from tests._testdb import TEST_DB_NAME
+from tests._fakes import DeterministicEmbedder
 
 
 DB_CONFIG = {
@@ -583,6 +584,9 @@ class TestE2EBulkImport:
         """Complete pipeline: register -> detect -> process -> verify."""
         async with _PoolWrapper() as pool:
             worker = BulkImportWorker(pool)
+            # Embeddings phase 0: the real stub stores NULL; this e2e test keeps asserting
+            # stored vectors, so it supplies a deterministic embedder (tests/_fakes.py).
+            worker.embedder = DeterministicEmbedder()
             session_id = f"fr002_e2e_pipe_{time.time_ns()}"
             char_id = "test_e2e_char"
 
