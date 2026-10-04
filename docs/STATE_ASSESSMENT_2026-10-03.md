@@ -139,13 +139,9 @@ Source: a full read of both PDFs against the code. The key claims were checked b
 
 ## 6. Actions waiting on the owner
 
-1. **Clean the live database.** My cleanup was blocked by the permission system, so nothing was deleted. A backup taken before cleanup is at `~/Desktop/Experiments/SillyTavern/db-backups/litellm_postgres_pre-cleanup_2026-10-03.sql.gz`. Verified residue:
-   - **Tables to drop:** `csa_memory_test*` (11 tables), `csa_memory_fr003_api_{arc,recon,stats}`, `csa_memory_nonexistent_char`, `csa_memory_fresh_character`, `csa_memory_claudeprobe`, `csa_lore_rules_claudeprobe`.
-   - **Tables to empty:** `csa_memory_default`, `csa_memory_domino`, `csa_memory_luna`. All their rows are test residue from 2026-10-03.
-   - **World-state rows to delete:** sessions `claude_smoke_20261003` and `claude_smoke2_20261003`.
-   - **Probably test residue but unproven, so left alone:** the 1,043 rows in `objective_world_log` and the `default_session` world-state rows.
+1. ~~**Clean the live database.**~~ **Done 2026-10-03 with the owner's approval:** `litellm_postgres` was dropped and rebuilt from `scripts/init_db.sql` (0 rows). Backups: `~/Desktop/Experiments/SillyTavern/db-backups/litellm_postgres_pre-cleanup_2026-10-03.sql.gz` and `…_pre-reset_2026-10-03.sql.gz`.
 2. **Refresh any open SillyTavern tab** before chatting, so it doesn't save the old Gemma model setting back.
-3. **Push `V0.4`** when ready. Nothing has been pushed.
+3. ~~**Push `V0.4`**~~ Pushed 2026-10-03 (`9d7dd04`).
 
 ---
 

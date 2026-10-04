@@ -6,6 +6,7 @@
 > - **Tests:** `.venv/bin/python -m pytest tests/` → **431 passed, 1 skipped** (as of `f6b6a44`). The suite rebuilds a throwaway `spm_test` database each run and never touches `litellm_postgres`, the live Evennia, Lemonade or `config/config.json`. `RUN_LIVE_LLM_TESTS=1` enables the one live-LLM test.
 > - **Sleep cycle:** `spm-sleep-cycle.timer` (03:00) runs `.venv/bin/python -m scripts.sleep_cycle`; working again since 2026-10-03.
 > - **Corrections to this playbook** (details in the assessment §4): the embedder is a **stub** (RAG recall is not functional); the FIFO queue is **not wired**; the ambient-log bypass filter is **not called**; the Phase 7 SLA/TTFT figures measured a fabricated fallback reply and are **retracted**; the world engine is a **FastAPI stand-in**, not Evennia/Django; monologue tags are `<think>`/`<thinking>`, not `<ctrl94>`. Strikethroughs below mark the claims that were wrong.
+> - **Next sprints:** [docs/plans/SPRINT_PLAN.md](docs/plans/SPRINT_PLAN.md) (embeddings and gating are P0; auth deferred while dev-only on the homelab). The live database was reset 2026-10-03.
 > - Lemonade operations: `~/Desktop/lemonade_playbook.md`.
 
 
