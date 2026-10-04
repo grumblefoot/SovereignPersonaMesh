@@ -50,12 +50,23 @@ class LoreExtractionWorker:
         # Stream=False generates a full response via process_token_stream conceptually,
         # but LemonadeLLMClient only has generate_stream.
         # We can collect tokens from the generator.
-        generator = self.llm_client.generate_stream(prompt=prompt, model=model, temperature=0.2, max_tokens=8192)
-        
+        # JSON extraction needs no reasoning: with it on, Qwen3.8-27B took ~36 s per call instead of ~7 s.
+        generator = self.llm_client.generate_stream(
+            prompt=prompt, model=model, temperature=0.2, max_tokens=8192,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+
         raw_response = ""
+        in_reasoning = False
         try:
             async for chunk in generator:
-                if chunk not in ("<thinking>", "</thinking>"):
+                # The client wraps reasoning_content in <thinking> markers. Skip the reasoning itself, not just
+                # the markers; otherwise the prose lands in front of the JSON and parsing fails at char 0.
+                if chunk == "<thinking>":
+                    in_reasoning = True
+                elif chunk == "</thinking>":
+                    in_reasoning = False
+                elif not in_reasoning:
                     raw_response += chunk
         except Exception as e:
             self.logger.error(f"Error during LLM generation: {e}")

@@ -204,3 +204,14 @@ async def test_model_list_is_cached(client):
         await client._resolve_model("Qwen3.8-27B-GGUF")
         await client._resolve_model("Gemma-4-E4B-it-GGUF")
         assert mock_get.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_extra_body_is_merged_into_payload(client):
+    with patch.object(client.client, "get", new_callable=AsyncMock) as mock_get, \
+         patch.object(client.client, "stream") as mock_stream:
+        mock_get.return_value = MockResponse(200, {"data": []})
+        mock_stream.return_value = MockStreamContext(MockResponse(200, lines=["data: [DONE]"]))
+        async for _ in client.generate_stream(prompt="x", extra_body={"chat_template_kwargs": {"enable_thinking": False}}):
+            pass
+        assert mock_stream.call_args.kwargs["json"]["chat_template_kwargs"] == {"enable_thinking": False}

@@ -114,6 +114,7 @@ class LemonadeLLMClient:
         max_tokens: int = 128000,
         stop: Optional[list] = None,
         messages: Optional[List[Dict[str, str]]] = None,
+        extra_body: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Streams completion tokens asynchronously from Lemonade server over SSE.
@@ -132,6 +133,8 @@ class LemonadeLLMClient:
             "stop": stop,
             "stream": True
         }
+        if extra_body:
+            payload.update(extra_body)  # backend-specific options, e.g. chat_template_kwargs
 
         endpoint = f"{self.base_url}/chat/completions"
         logger.info(f"[LemonadeClient] Dispatching completion request (model={target_model}) to {endpoint}...")
