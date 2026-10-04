@@ -22,8 +22,17 @@ from .spatial_matrix import SpatialConstraintsMatrix
 from .session_lock import SessionLockManager, LockError
 from .hybrid_builder import HybridWorldBuilder
 from core.resource_manager import strings
+from contextlib import asynccontextmanager
 
-app = FastAPI(title="Evennia World State Engine Liaison API", version="0.2.0")
+@asynccontextmanager
+async def _lifespan(_app):
+    # startup_event / shutdown_event are defined below; looked up when the app starts.
+    await startup_event()
+    yield
+    await shutdown_event()
+
+
+app = FastAPI(title="Evennia World State Engine Liaison API", version="0.2.0", lifespan=_lifespan)
 
 # ── Internal state ──────────────────────────────────────────────────────
 lock_manager = SessionLockManager()
@@ -644,7 +653,6 @@ def _remove_character_from_all_rooms(character_id: str, session_id: str = "defau
 
 # ── Startup ─────────────────────────────────────────────────────────────
 
-@app.on_event("startup")
 async def startup_event():
     """Load the default world template on startup and init db pool."""
     app.state.start_time = time.time()
@@ -663,7 +671,6 @@ async def startup_event():
         
     _ensure_world("dynamic")
 
-@app.on_event("shutdown")
 async def shutdown_event():
     
     if app_state._db_pool:

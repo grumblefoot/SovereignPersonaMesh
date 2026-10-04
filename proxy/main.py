@@ -18,6 +18,7 @@ from proxy.core.telemetry import TelemetryCollector
 from proxy.api.routes import router as api_router
 from proxy.api.admin_routes import router as admin_router, AdminState
 from config.hardware_tiers import get_hardware_config
+from contextlib import asynccontextmanager
 
 load_dotenv()
 
@@ -27,7 +28,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("SPMProxyMain")
 
+@asynccontextmanager
+async def _lifespan(_app):
+    # startup_event / shutdown_event are defined below; looked up when the app starts.
+    await startup_event()
+    yield
+    await shutdown_event()
+
+
 app = FastAPI(
+    lifespan=_lifespan,
     title="Sovereign Persona Mesh (SPM) Proxy",
     description="High-performance, model-agnostic multi-agent OpenAI emulation proxy with sensory gating and private memory isolation.",
     version="0.2.0"
@@ -76,7 +86,6 @@ async def health_check():
     return {"status": "healthy"}
 
 
-@app.on_event("startup")
 async def startup_event():
     import asyncpg
     from proxy.api.routes import set_db_pool, _db_pool, _db_pool_explicitly_set
@@ -109,7 +118,6 @@ async def startup_event():
 
 
 
-@app.on_event("shutdown")
 async def shutdown_event():
     import proxy.api.routes
     import proxy.api.admin_routes
