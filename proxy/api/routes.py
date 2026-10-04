@@ -680,6 +680,33 @@ def _log_task_done(task):
     except Exception as e:
         logger.error(f"[LoreExtraction] Background task failed: {e}")
 
+_MAIN_PROMPT_NAMES = re.compile(r"\bbetween\s+(.+?)\s+and\s+(.+?)\s*[.\n]", re.IGNORECASE)
+
+
+def _strip_user_persona(messages: List[ChatCompletionMessage], target_char: str) -> List[ChatCompletionMessage]:
+    """Drop SillyTavern's user-persona system message so lore extraction only sees NPC/world context (BUG-008).
+
+    In chat-completion mode ST sends the persona as its own system message ("[Vardus is a tall human...]").
+    The user's name comes from ST's main prompt ("...a fictional chat between Arvenia and Vardus.").
+    If the names can't be determined, the messages are returned unchanged.
+    """
+    user_name = None
+    for m in messages:
+        if m.role == "system" and m.content:
+            match = _MAIN_PROMPT_NAMES.search(m.content)
+            if match:
+                a, b = match.group(1).strip(), match.group(2).strip()
+                if safe_char_id(a) == target_char:
+                    user_name = b
+                elif safe_char_id(b) == target_char:
+                    user_name = a
+                break
+    if not user_name:
+        return messages
+    opener = re.compile(r"^\s*\[?\s*" + re.escape(user_name) + r"(?:'s)?\b", re.IGNORECASE)
+    return [m for m in messages if not (m.role == "system" and m.content and opener.match(m.content))]
+
+
 def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_monologue: str, public_resp: str):
     if not _db_pool:
         return
@@ -691,6 +718,7 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
     
     extractor = LoreExtractionWorker(_db_pool)
     actual_messages = [m for m in request.messages if m.content and m.content.strip() not in ("<think>", "</think>")]
+    actual_messages = _strip_user_persona(actual_messages, target_char)
     user_messages = [m for m in actual_messages if getattr(m, 'role', '') == 'user']
     user_msg_count = len(user_messages)
     
