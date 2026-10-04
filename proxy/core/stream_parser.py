@@ -103,6 +103,15 @@ MONOLOGUE_HEADER_REGEX = re.compile(
 
 GM_ACTION_REGEX = re.compile(r'\[GM_ACTION:\s*(\{.*?\})\]', re.DOTALL | re.IGNORECASE)
 
+# A whole public line that is a GM_ACTION tag (models sometimes emit these after closing the monologue).
+GM_ACTION_LINE_REGEX = re.compile(r'^\s*\[GM_ACTION:.*\]\s*$', re.IGNORECASE)
+
+# Leftover planning lines seen after the monologue closes: stray code fences, "Then the narrative.", "Done."
+PUBLIC_META_LINE_REGEX = re.compile(
+    r'^\s*(?:`+|(?:then|now)\s+(?:the\s+)?(?:narrative|narration|response|scene)\.?|done\.?)\s*$',
+    re.IGNORECASE
+)
+
 
 class MonologueStreamParser:
     def __init__(self, max_public_tokens: Optional[int] = None, initial_state: int = 1):
@@ -120,6 +129,7 @@ class MonologueStreamParser:
         self._chunk_carryover: str = ""
         self._line_buffer: str = ""
         self._stream_buffer: str = ""
+        self._public_gm_actions: List[str] = []
 
     def _check_public_limit(self, chunk: str) -> bool:
         """Helper to increment public token count and check if limit exceeded. Returns True if truncated."""
@@ -132,13 +142,21 @@ class MonologueStreamParser:
         return False
 
     def extract_gm_actions(self) -> List[Dict]:
-        """Extracts and parses all JSON [GM_ACTION: {...}] blocks from the inner monologue."""
+        """Extracts and parses all JSON [GM_ACTION: {...}] blocks from the inner monologue and public text.
+
+        Duplicates (the same action written in both places) are dispatched once.
+        """
         actions = []
+        seen = set()
         all_text = "\n\n".join([s for s in self._monologue_sections if s]) + "\n" + self.inner_monologue_buffer
+        all_text += "\n" + "\n".join(self._public_gm_actions)
         for match in GM_ACTION_REGEX.finditer(all_text):
             try:
                 action_data = json.loads(match.group(1))
-                actions.append(action_data)
+                key = json.dumps(action_data, sort_keys=True)
+                if key not in seen:
+                    seen.add(key)
+                    actions.append(action_data)
             except json.JSONDecodeError as e:
                 logger.error(f"[StreamParser] Failed to parse GM Action JSON: {e} | Payload: {match.group(1)}")
         return actions
@@ -159,7 +177,15 @@ class MonologueStreamParser:
         """
         if not line.strip():
             return line
-            
+
+        # GM actions are world-engine commands, never narration: keep them for dispatch, hide them from the client.
+        if GM_ACTION_LINE_REGEX.match(line):
+            self._public_gm_actions.append(line.strip())
+            return None
+
+        if PUBLIC_META_LINE_REGEX.match(line):
+            return None
+
         cleaned = OPEN_TAG_REGEX.sub("", line)
         cleaned = CLOSE_TAG_REGEX.sub("", cleaned)
         for tag in OPEN_TAGS + CLOSE_TAGS:
