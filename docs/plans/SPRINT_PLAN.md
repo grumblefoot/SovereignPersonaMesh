@@ -148,3 +148,24 @@ Each plan lists its full set. These are the ones that block the start of a sprin
 - The assessment fixes are on `V0.4` and pushed (`9d7dd04`).
 - The live database was reset, with owner approval. Backups are in `~/Desktop/Experiments/SillyTavern/db-backups/`.
 - The existing random vectors are gone with the reset, which settles embeddings decision 6 (discard and re-embed).
+
+---
+
+## 5. Verification pass (2026-10-03, Fable)
+
+**Verdict: GO, with two conditions** (§5.2). Every Sprint 0 bug claim was re-verified against the code before this verdict; none failed.
+
+### 5.1 What was checked
+- **All 10 Sprint 0 bug claims confirmed in code:** system messages after the first dropped (`prompt_builder.py:147-153` appends only user/assistant roles); body `session_id` unreachable (`ChatCompletionRequest` declares no such field, so `model_dump()` can't contain it); `CharacterMovePayload` in `app.py:332` shadows the session-aware one in `models.py:86`; `configure_world` uses the template key as session id (`app.py:516`); `uuid.uuid4()` idempotency keys (`routes.py:757,765`); demo characters seeded in `evennia_world/res/strings.json` `present_characters` (the gating plan cited hybrid_builder.py; the data actually lives in the strings file — same fix, different file); upstairs/tavern hack (`app.py:189-203`); SOVEREIGN tier frozen as a default argument (`prompt_builder.py:17`); `max_tokens: Optional[int] = 128000` (`routes.py:71`); `periodic_review_cadence: 1` in config.json.
+- **External claims spot-checked:** SillyTavern really does persist `chat_metadata.integrity = uuidv4()` per chat (`script.js:7665`) and branches get a fresh one that records the parent (`bookmarks.js:201,284`), so the chat-identity design rests on something real. Lemonade's live config says `max_loaded_models: 2` (playbook says 1) — discrepancy confirmed, keep the manual check. The lore extractor does build its own LLM client (`lore_extractor.py:25`), so the FIFO plan's client-level wrapping is the right choice.
+- **Cross-plan consistency:** the §1 reconciliations hold; no plan contradicts another after them. The queue-bypass rules (gating, tokenize calls, local CPU embeddings) agree across the FIFO, gating, embeddings and token-budget plans.
+
+### 5.2 Conditions on the GO
+1. **Answer decisions 1–7 (§3) before starting Sprint 0.** Decision 3 (ST extension) gates Sprint 0's chat-identity work directly.
+2. **Re-baseline Sprint 0.** 3–4 days is optimistic for: ten bug fixes with regression tests + chat identity with an ST extension + the engine interface contract with two adapters and a contract suite + embeddings phase 0. Either call it ~6–9 days, or move the engine interface contract into Sprint 1 Track A (it is natural there and nothing else in Sprint 0 depends on it).
+
+### 5.3 Notes (non-blocking)
+- The headline "50–60 dev-days" doesn't match the sprint sums (42–53 as written; ~45–58 with the re-baselined Sprint 0). Treat the per-sprint numbers as the estimate.
+- "Two parallel tracks" in Sprints 1–2 assumes two workers. Solo, wall-clock is the sum.
+- In Sprint 1, backend embedding calls exist before the scheduler does (Sprint 2). Acceptable interim; the provider layer should make its call sites queue-ready so wiring in Sprint 2 is mechanical.
+- FR-001 session-isolation tests assume the `st_user_<char>` key shape; the chat-identity fix must update them deliberately, not incidentally.
