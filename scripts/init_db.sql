@@ -18,12 +18,29 @@ CREATE TABLE IF NOT EXISTS objective_world_log (
 
 CREATE INDEX IF NOT EXISTS idx_world_log_session_tick ON objective_world_log(session_id, action_tick);
 
+-- ======================================================================
+-- Embedding space registry (embeddings plan phase 2 / migration 001).
+-- Which (provider, model, dim) produced a vector; vectors from different
+-- spaces are never compared. csa_* tables reference id by value only
+-- (dynamic tables: FK enforced by convention, not constraint).
+-- ======================================================================
+CREATE TABLE IF NOT EXISTS spm_embedding_spaces (
+    id SMALLSERIAL PRIMARY KEY,
+    provider VARCHAR(50) NOT NULL,
+    model VARCHAR(255) NOT NULL,
+    dim INT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (provider, model, dim)
+);
+
 -- Dynamic Schema Helper Function for Character Subagent Episodic Memory
 -- Usage: SELECT create_csa_memory_table('luna');
+-- Keep in sync with scripts/migrations/001_embedding_spaces_and_lore_scope.sql.
 CREATE OR REPLACE FUNCTION create_csa_memory_table(char_id TEXT)
 RETURNS VOID AS $$
 DECLARE
     table_name TEXT := 'csa_memory_' || lower(char_id);
+    emb_typmod INT;
 BEGIN
     EXECUTE format('
         CREATE TABLE IF NOT EXISTS %I (
@@ -33,22 +50,49 @@ BEGIN
             sensory_input TEXT NOT NULL,
             inner_monologue TEXT,
             public_response TEXT,
-            episodic_embedding VECTOR(3584),
+            episodic_embedding vector,
+            embedding_space_id SMALLINT,
             importance_score INT DEFAULT 5,
             is_core_memory BOOLEAN DEFAULT FALSE,
             is_subjective BOOLEAN DEFAULT TRUE,
             access_count INT DEFAULT 1,
-            last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            fts tsvector GENERATED ALWAYS AS (to_tsvector(''simple'',
+                coalesce(sensory_input, '''') || '' '' || coalesce(public_response, ''''))) STORED
         );
     ', table_name);
-    -- Upgrade tables created before public_response existed.
-    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS public_response TEXT', table_name);
 
-    -- NOTE: pgvector index operators (HNSW/IVFFlat) are capped at 2000 dimensions.
-    -- For 3584-dim embeddings we use brute-force cosine search via the <=> operator.
-    -- A partial B-tree index on (is_core_memory, timestamp) speeds up sleep-cycle queries.
+    -- Lazy upgrades for tables created in older shapes (all idempotent).
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS public_response TEXT', table_name);
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS embedding_space_id SMALLINT', table_name);
+
+    -- VECTOR(3584) -> dimension-free vector (the active embedding space
+    -- decides the dimension; stored vectors were reset to NULL on 2026-10-03).
+    SELECT atttypmod INTO emb_typmod
+      FROM pg_attribute
+     WHERE attrelid = to_regclass(table_name)
+       AND attname = 'episodic_embedding'
+       AND NOT attisdropped;
+    IF emb_typmod IS NOT NULL AND emb_typmod <> -1 THEN
+        EXECUTE format(
+            'ALTER TABLE %I ALTER COLUMN episodic_embedding TYPE vector USING episodic_embedding::vector',
+            table_name);
+    END IF;
+
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS fts tsvector
+        GENERATED ALWAYS AS (to_tsvector(''simple'',
+            coalesce(sensory_input, '''') || '' '' || coalesce(public_response, ''''))) STORED',
+        table_name);
+
+    -- NOTE: no HNSW/IVFFlat index: exact scan is deterministic (SRD) and the
+    -- tables hold thousands of rows per character. HNSW above HNSW_MIN_ROWS
+    -- is embeddings plan phase 6. The GIN index serves the full-text fallback.
     EXECUTE format(
         'CREATE INDEX IF NOT EXISTS idx_%I_core_time ON %I (is_core_memory, timestamp)',
+        table_name, table_name
+    );
+    EXECUTE format(
+        'CREATE INDEX IF NOT EXISTS idx_%I_fts ON %I USING GIN (fts)',
         table_name, table_name
     );
 END;
@@ -97,22 +141,59 @@ CREATE INDEX IF NOT EXISTS idx_cold_archives_character ON spm_cold_archives(char
 -- Dynamic Schema Helper Function for Character Lore Rules
 -- Usage: SELECT create_csa_lore_rules_table('luna');
 -- ======================================================================
+-- Keep in sync with scripts/migrations/001_embedding_spaces_and_lore_scope.sql.
+-- session_id/scope are schema-only for now; lore retrieval filtering by
+-- session lands in Sprint 4 (OPEN-007).
 CREATE OR REPLACE FUNCTION create_csa_lore_rules_table(char_id TEXT)
 RETURNS VOID AS $$
 DECLARE
     table_name TEXT := 'csa_lore_rules_' || lower(char_id);
+    emb_typmod INT;
 BEGIN
     EXECUTE format('
         CREATE TABLE IF NOT EXISTS %I (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             rule_text TEXT NOT NULL,
             rule_type VARCHAR(50) NOT NULL, -- invariant, conditional_trigger, game_over
-            rule_embedding VECTOR(3584),
+            rule_embedding vector,
+            embedding_space_id SMALLINT,
             status VARCHAR(20) DEFAULT ''active'',
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            session_id VARCHAR(255) NOT NULL DEFAULT ''legacy_global'',
+            scope VARCHAR(10) NOT NULL DEFAULT ''chat'', -- chat | global
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            fts tsvector GENERATED ALWAYS AS (to_tsvector(''simple'', coalesce(rule_text, ''''))) STORED
         );
-        ALTER TABLE %I ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT ''active'';
-    ', table_name, table_name);
+    ', table_name);
+
+    -- Lazy upgrades for tables created in older shapes (all idempotent).
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT ''active''', table_name);
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS embedding_space_id SMALLINT', table_name);
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS session_id VARCHAR(255) NOT NULL DEFAULT ''legacy_global''', table_name);
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS scope VARCHAR(10) NOT NULL DEFAULT ''chat''', table_name);
+
+    SELECT atttypmod INTO emb_typmod
+      FROM pg_attribute
+     WHERE attrelid = to_regclass(table_name)
+       AND attname = 'rule_embedding'
+       AND NOT attisdropped;
+    IF emb_typmod IS NOT NULL AND emb_typmod <> -1 THEN
+        EXECUTE format(
+            'ALTER TABLE %I ALTER COLUMN rule_embedding TYPE vector USING rule_embedding::vector',
+            table_name);
+    END IF;
+
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS fts tsvector
+        GENERATED ALWAYS AS (to_tsvector(''simple'', coalesce(rule_text, ''''))) STORED',
+        table_name);
+
+    EXECUTE format(
+        'CREATE INDEX IF NOT EXISTS idx_%I_session ON %I (session_id, status, rule_type)',
+        table_name, table_name
+    );
+    EXECUTE format(
+        'CREATE INDEX IF NOT EXISTS idx_%I_fts ON %I USING GIN (fts)',
+        table_name, table_name
+    );
 END;
 $$ LANGUAGE plpgsql;
 

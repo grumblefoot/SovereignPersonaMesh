@@ -7,6 +7,7 @@ import asyncpg
 
 from proxy.backend_client.lemonade_client import LemonadeLLMClient, DEFAULT_CHAT_MODEL
 from scripts.onnx_embedder import CPUEmbeddingEngine
+from proxy.embeddings import space_id_for as _space_id_for
 
 logger = logging.getLogger(__name__)
 
@@ -109,12 +110,13 @@ class LoreExtractionWorker:
                     # Check if rule exists
                     existing = await conn.fetchval(strings.get("sql.check_lore_rule_exists").format(table_name=table_name), rule_text)
                     if not existing:
+                        space_id = await _space_id_for(self.embedding_engine, conn) if emb_str is not None else None
                         await conn.execute(
                             f"""
-                            INSERT INTO {table_name} (rule_text, rule_type, rule_embedding, status)
-                            VALUES ($1, $2, $3::vector, 'pending');
+                            INSERT INTO {table_name} (rule_text, rule_type, rule_embedding, embedding_space_id, status)
+                            VALUES ($1, $2, $3::vector, $4, 'pending');
                             """,
-                            rule_text, rule_type, emb_str
+                            rule_text, rule_type, emb_str, space_id
                         )
             except Exception as e:
                 self.logger.error(f"Error persisting rule '{rule_text}': {e}")

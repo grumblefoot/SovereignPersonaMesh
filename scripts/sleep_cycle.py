@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 from core.resource_manager import strings
 from scripts.onnx_embedder import CPUEmbeddingEngine
+from proxy.embeddings import space_id_for
 
 
 class MemoryConsolidationWorker:
@@ -132,15 +133,18 @@ class MemoryConsolidationWorker:
         if embedding is None:
             logger.warning(f"[Sleep Cycle] No embedder available: core node for {char_id} stored without a vector (re-embed job will fill it in).")
         embedding_str = None if embedding is None else "[" + ",".join(map(str, embedding)) + "]"
+        space_id = None
+        if embedding is not None:
+            space_id = await space_id_for(self.embedder, conn)
 
         # 4. Commit the core memory node and delete exactly the logs it summarises
         async with conn.transaction():
             await conn.execute(f"""
                 INSERT INTO {table_name} (session_id, timestamp, sensory_input, inner_monologue, episodic_embedding,
-                                          is_core_memory, is_subjective, importance_score)
-                VALUES ($1, $2, $3, $4, $5::vector, TRUE, TRUE, 8);
+                                          embedding_space_id, is_core_memory, is_subjective, importance_score)
+                VALUES ($1, $2, $3, $4, $5::vector, $6, TRUE, TRUE, 8);
             """, session_id, batch[-1]['timestamp'], summary_node,
-                f"Nightly consolidation summary for {char_id} ({day})", embedding_str)
+                f"Nightly consolidation summary for {char_id} ({day})", embedding_str, space_id)
 
             pruned = await conn.execute(
                 f"DELETE FROM {table_name} WHERE id = ANY($1::uuid[]) AND is_core_memory = FALSE;",
