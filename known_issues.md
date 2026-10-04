@@ -190,3 +190,18 @@ The SPM codebase currently relies on a massive amount of hardcoded strings scatt
 - **Status:** 🟡 UNRESOLVED (Investigating)
 - **Description:** The spatial gating matrix initializes 4 locations and places the user in 'The Cellar' by default, ignoring the actual context of the first interaction.
 - **Proposed Fix:** Modify `_ensure_world` in `evennia_world/app.py` to dynamically resolve the initial template based on the first interaction's context, rather than hardcoding `template_key="dungeon_cellar"`.
+
+---
+
+### [OPS-001] SPM depends on the spm-demo-mvp demo (make SPM standalone)
+- **Status:** 🟡 UNRESOLVED (logged 2026-09-26 during the workspace cleanup)
+- **Description:** `spm-demo-mvp` was the proof-of-concept demo built before the SRD. It isn't meant to be part of SPM, but SPM still runs on it in two places:
+  - `~/.local/bin/start_spm.sh` (also symlinked as `../start_spm.sh`) sets `VENV_PYTHON=.../spm-demo-mvp/venv/bin/python` to start the proxy and the Evennia world engine.
+  - `scripts/run_e2e_test.py` (lines 34 and 37) runs `../spm-demo-mvp/venv/bin/python` and `pytest`.
+  - Related: `spm-sleep-cycle.service` (user timer, daily 03:00) runs system `python3`, which has no `asyncpg`, so every run fails (last failure 2026-09-25 10:45, `ModuleNotFoundError`).
+- **Proposed Fix:**
+  1. Use SPM's own `.venv` (Python 3.14.5). It already has every package in `requirements.txt` (checked 2026-09-26).
+  2. Repoint `start_spm.sh`, `scripts/run_e2e_test.py` and the `spm-sleep-cycle.service` `ExecStart` to `.venv/bin/python`.
+  3. Get SPM working again against Lemonade 11.9. The Gemma models it requests (`LLM_MODEL_NAME` / `CONSOLIDATION_MODEL_NAME`) failed with `slots_pinned_error` on 2026-09-25 while Flash-Next was pinned (since fixed: nothing is pinned any more), and the old `google/gemma-4-*` ids no longer exist. Repoint them to Lemonade's GGUF Gemma ids (e.g. `Gemma-4-26B-A4B-it-GGUF` for chat, `Gemma-4-E4B-it-GGUF` for consolidation), not `hermes-coder`. The old `google/gemma-4-*` vLLM checkpoints are being deleted (owner decision 2026-09-26). Since 2026-09-26 nothing is pinned: Lemonade swaps LLMs on demand, so a request for a Gemma model simply evicts Flash-Next and loads Gemma (~6 s for E4B), and Hermes' next `hermes-coder` request swaps back (~15 s). No manual unload needed. See the status banner in `playbook.md`.
+  4. Run the proxy, the Evennia engine and the e2e test with `spm-demo-mvp` moved out of the way, then commit.
+  5. Only then retire `spm-demo-mvp` (5.1 GB venv) and the demo docs `~/Desktop/Experiments/Hermes/PLAYBOOK_SPM.md` and `SPM_DEMO_SUMMARY.md`.
