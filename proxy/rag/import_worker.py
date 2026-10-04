@@ -20,6 +20,7 @@ from datetime import datetime
 from config.hardware_tiers import get_hardware_config, HardwareTierEnum
 from scripts.onnx_embedder import CPUEmbeddingEngine
 from core.resource_manager import strings
+from core.identifiers import safe_char_id
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +198,7 @@ class BulkImportWorker:
             # Step 2: Ensure the character memory table exists
             async with self.db_pool.acquire() as conn:
                 await conn.execute(
-                    strings.get("sql.create_csa_memory_table"), character_id.lower()
+                    strings.get("sql.create_csa_memory_table"), safe_char_id(character_id)
                 )
 
             # Step 3: Process in dynamic batches
@@ -223,11 +224,11 @@ class BulkImportWorker:
                     # Insert into character memory table
                     async with self.db_pool.acquire() as conn:
                         await conn.execute(
-                            strings.get("sql.create_csa_memory_table"), character_id.lower()
+                            strings.get("sql.create_csa_memory_table"), safe_char_id(character_id)
                         )
                         for i, msg in enumerate(batch):
                             await conn.execute(
-                                strings.get("sql.insert_csa_memory", table_suffix=character_id.lower()),
+                                strings.get("sql.insert_csa_memory", table_suffix=safe_char_id(character_id)),
                                 session_id,
                                 msg.get("content", ""),
                                 "[" + ",".join(map(str, embeddings[i])) + "]",
