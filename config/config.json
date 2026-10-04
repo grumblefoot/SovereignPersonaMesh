@@ -1,11 +1,10 @@
 {
-  "BACKEND_LLM_URL": "http://127.0.0.1:9999/v1",
+  "BACKEND_LLM_URL": "http://127.0.0.1:13305/v1",
   "BACKEND_API_KEY": "",
   "SPM_PROXY_PORT": 5050,
   "SPM_HARDWARE_TIER": "SOVEREIGN",
   "EVENNIA_LIAISON_URL": "http://localhost:4005",
   "backend_max_tokens": 128000,
-  "setting_1": "new",
   "periodic_review_cadence": 1,
   "use_alternate_extraction_model": false,
   "alternate_extraction_model_name": "google/gemma-4-26B-A4B-it"
