@@ -291,3 +291,32 @@ class TestLoreTypeNormalization:
                 
                 insert_calls = [c for c in conn_mock.execute.call_args_list if "INSERT INTO" in c[0][0]]
                 assert len(insert_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_reasoning_text_is_skipped_and_reasoning_disabled():
+    """Live 2026-10-03 (Qwen3.8-27B): reasoning prose landed before the JSON, so no rules were ever extracted."""
+    db_pool_mock = MagicMock()
+    conn_mock = AsyncMock()
+    acquire_cm = AsyncMock()
+    acquire_cm.__aenter__.return_value = conn_mock
+    acquire_cm.__aexit__.return_value = False
+    db_pool_mock.acquire = MagicMock(return_value=acquire_cm)
+    conn_mock.fetchval = AsyncMock(return_value=None)
+
+    extractor = LoreExtractionWorker(db_pool_mock)
+
+    async def mock_gen():
+        yield "<thinking>"
+        yield "The user wants rules. Mira is a tavern keeper, so [maybe] an invariant."
+        yield "</thinking>"
+        yield '[{"rule_text": "Mira Vale is the tavern keeper.", "rule_type": "invariant"}]'
+
+    with patch.object(extractor.embedding_engine, "generate_embedding", new_callable=AsyncMock, return_value=[0.1]), \
+         patch.object(extractor.llm_client, "generate_stream", return_value=mock_gen()) as gen:
+        await extractor.extract_initial_rules("s", "mira_vale", "context")
+
+    assert gen.call_args.kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    inserts = [c for c in conn_mock.execute.call_args_list if "INSERT INTO csa_lore_rules_mira_vale" in c[0][0]]
+    assert len(inserts) == 1
+    assert inserts[0][0][1] == "Mira Vale is the tavern keeper."
