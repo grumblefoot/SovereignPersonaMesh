@@ -155,3 +155,40 @@ async def test_streamed_usage_calibrates_the_model_ratio():
     assert client.last_usage["prompt_tokens"] == 100
     budget._calibrated_ratio.pop(model, None)
     await client.close()
+
+
+# ── Decision 15: sleep cycle rides the scheduler's P3 lane ─────────────────
+
+@pytest.mark.asyncio
+async def test_sleep_cycle_llm_call_goes_through_the_scheduler(monkeypatch):
+    import proxy.core.sleep_runner as runner
+    from proxy.core import llm_scheduler
+
+    seen = {}
+
+    class FakeScheduledClient:
+        async def generate_stream(self, *a, **kw):
+            seen.update(kw)
+            yield "A tidy consolidated memory."
+
+    class FakeWorker:
+        def __init__(self, db_config, url, llm_call=None):
+            self.llm_call = llm_call
+
+        async def run(self):
+            seen["summary"] = await self.llm_call("consolidate these")
+
+    monkeypatch.setattr(llm_scheduler, "_scheduled_client", FakeScheduledClient())
+    import scripts.sleep_cycle as sc
+    monkeypatch.setattr(sc, "MemoryConsolidationWorker", FakeWorker)
+    await runner.run_sleep_cycle_once()
+    assert seen["job_kind"] == "sleep"               # P3 lane, preemptible by chat
+    assert seen["coalesce_key"] == "sleep-cycle"
+    assert seen["summary"].startswith("A tidy consolidated memory")
+
+
+def test_seconds_until_is_always_positive_and_under_a_day():
+    from proxy.core.sleep_runner import _seconds_until
+    for h in range(24):
+        s = _seconds_until(h)
+        assert 0 < s <= 86400

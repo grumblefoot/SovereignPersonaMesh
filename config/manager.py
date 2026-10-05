@@ -67,6 +67,9 @@ _DEFAULT_VALUES: Dict[str, Any] = {
     "public_output_default": 400,
     # Empty/0 = use the hardware tier's window; set to pin the context window.
     "context_window_override": 0,
+    # ── Sleep cycle (decision 15: runs inside the proxy scheduler, P3 lane) ──
+    "sleep_cycle_enabled": True,
+    "sleep_cycle_hour": 4,
     "gm_actions_max_per_turn": 4,
     "gm_actions_max_rooms_per_session": 40,
 }
@@ -80,6 +83,7 @@ _INT_KEYS = frozenset({
     "gm_actions_max_per_turn",
     "public_output_default",
     "context_window_override",
+    "sleep_cycle_hour",
     "gm_actions_max_rooms_per_session",
 })
 
@@ -116,6 +120,8 @@ _ENV_VAR_MAP: Dict[str, str] = {
     "gm_actions_mode": "SPM_GM_ACTIONS_MODE",
     "public_output_default": "SPM_PUBLIC_OUTPUT_DEFAULT",
     "context_window_override": "SPM_CONTEXT_WINDOW_OVERRIDE",
+    "sleep_cycle_enabled": "SPM_SLEEP_CYCLE_ENABLED",
+    "sleep_cycle_hour": "SPM_SLEEP_CYCLE_HOUR",
     "gm_actions_max_per_turn": "SPM_GM_ACTIONS_MAX_PER_TURN",
     "gm_actions_max_rooms_per_session": "SPM_GM_ACTIONS_MAX_ROOMS",
 }
