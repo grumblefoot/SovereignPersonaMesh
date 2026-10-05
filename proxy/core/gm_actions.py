@@ -115,6 +115,7 @@ def validate_batch(
     known_rooms: Set[str] = frozenset(),
     known_entities: Set[str] = frozenset(),
     target_char: str = "",
+    user_aliases: Set[str] = frozenset(),
     max_per_turn: int = 4,
     rooms_in_session: int = 0,
     max_rooms_per_session: int = 40,
@@ -183,6 +184,10 @@ def validate_batch(
             out.creates.append(action)
             accepted_count += 1
         else:
+            if action.entity.lower() in {a.lower() for a in user_aliases}:
+                # The LLM names the player's persona ("Tom"); the engine id is
+                # "user" (plan A.3: the persona name maps to user).
+                action = action.model_copy(update={"entity": "user"})
             if action.entity.lower() not in allowed_entities:
                 out.rejections.append(Rejection(raw, REASON_UNKNOWN_ENTITY, action.entity))
                 continue

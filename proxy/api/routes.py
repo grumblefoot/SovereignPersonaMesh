@@ -119,16 +119,39 @@ def _extract_target_char(messages: List[ChatCompletionMessage]) -> str:
             match = re.search(r"(?:\[Character:\s*|Character:\s*)([A-Za-z0-9_\-\s]+)(?:\]|\n|$)", content, re.IGNORECASE)
             if match:
                 return safe_char_id(match.group(1))
-            # Pattern 3: [<CharName>:] or [<CharName>'s ...]
+            # Pattern 3: "Write X's next reply" — SillyTavern's standard chat
+            # instruction. Checked BEFORE the generic bracket pattern: brackets in
+            # the same message are often control tags, not names.
+            match = re.search(r"Write\s+([A-Za-z0-9_\-\s]+?)'s\s+next\s+reply", content, re.IGNORECASE)
+            if match:
+                return safe_char_id(match.group(1))
+            # Pattern 4: [<CharName>:] or [<CharName>'s ...] — last resort, with SPM's
+            # own control tags excluded (a bare "[scene:KEY]" prompt once made every
+            # row land under a character literally named 'scene').
             match = re.search(r"\[([A-Za-z0-9_\-\s]+)(?:'s|:)", content)
             if match:
                 char_name = safe_char_id(match.group(1))
-                if char_name not in ("scenario", "system", "user", "assistant", "context"):
+                if char_name not in ("scenario", "system", "user", "assistant", "context",
+                                     "scene", "move", "whisper", "shout", "gm_action",
+                                     "character", "charactername"):
                     return char_name
         elif msg.name:
             return safe_char_id(msg.name)
     return "default"
 
+
+
+def _extract_persona_name(messages: List[ChatCompletionMessage]) -> str:
+    """The USER-side name from ST's "chat between <char> and <persona>" line.
+    GM MOVE proposals name the persona ("Tom"), never the engine id "user";
+    the validator maps this alias onto "user" (gm plan A.3)."""
+    for msg in messages:
+        if msg.role == "system" and msg.content:
+            m = re.search(r"chat\s+between\s+[A-Za-z0-9_\-\s]+?\s+and\s+([A-Za-z0-9_\-]+)",
+                          msg.content, re.IGNORECASE)
+            if m:
+                return m.group(1).strip().lower()
+    return ""
 
 
 async def _gather_public_response(prompt: str, model: str, temperature: float,
@@ -644,7 +667,8 @@ The text after </think> must ONLY be narrative and dialogue.
         if not ephemeral:
             # Dispatch any GM actions found in the monologue sequentially in background
             task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
-                                                    turn_index=user_msg_count))
+                                                    turn_index=user_msg_count,
+                                                    persona=_extract_persona_name(request.messages)))
             reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id,
                                                              tainted=parser.is_failsafe_triggered))
             _background_tasks.add(reply_task)
@@ -759,7 +783,8 @@ The text after </think> must ONLY be narrative and dialogue.
         if not ephemeral:
             # Dispatch any GM actions found in the monologue sequentially in background
             task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
-                                                    turn_index=user_msg_count))
+                                                    turn_index=user_msg_count,
+                                                    persona=_extract_persona_name(request.messages)))
             reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id,
                                                              tainted=parser.is_failsafe_triggered))
             _background_tasks.add(reply_task)
@@ -1053,7 +1078,7 @@ async def _record_reply_action(session_id: str, target_char: str, public_resp: s
 
 
 async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str,
-                               turn_index: int = 0):
+                               turn_index: int = 0, persona: str = ""):
     """LLM-proposed world actions, gated and validated before anything hits the engine
     (OPEN-005 / SD-01). Mode off: nothing is dispatched (the stream parser already
     strips stray [GM_ACTION...] text either way). Otherwise the deterministic validator
@@ -1085,6 +1110,7 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
         known_rooms=known_rooms,
         known_entities=known_entities,
         target_char=target_char,
+        user_aliases=frozenset({persona} if persona else ()),
         max_per_turn=int(settings.get("gm_actions_max_per_turn", 4)),
         rooms_in_session=room_count,
         max_rooms_per_session=int(settings.get("gm_actions_max_rooms_per_session", 40)),

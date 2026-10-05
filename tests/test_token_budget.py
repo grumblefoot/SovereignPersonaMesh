@@ -192,3 +192,20 @@ def test_seconds_until_is_always_positive_and_under_a_day():
     for h in range(24):
         s = _seconds_until(h)
         assert 0 < s <= 86400
+
+
+# ── target/persona extraction regressions (QA assessment 2026-10-05) ────────
+
+def test_target_char_never_matches_the_scene_tag():
+    from proxy.api.routes import _extract_target_char, ChatCompletionMessage
+    msgs = [ChatCompletionMessage(role="system",
+            content="Write Mira's next reply in a fictional chat between Mira and Tom. [scene:dungeon_cellar]"),
+            ChatCompletionMessage(role="user", content="hello")]
+    assert _extract_target_char(msgs) == "mira"       # was: 'scene'
+
+
+def test_persona_name_extracted_from_the_chat_line():
+    from proxy.api.routes import _extract_persona_name, ChatCompletionMessage
+    msgs = [ChatCompletionMessage(role="system",
+            content="Write Mira's next reply in a fictional chat between Mira and Tom. [scene:x]")]
+    assert _extract_persona_name(msgs) == "tom"
