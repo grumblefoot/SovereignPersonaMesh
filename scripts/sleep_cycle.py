@@ -21,13 +21,22 @@ from proxy.embeddings import space_id_for
 
 
 class MemoryConsolidationWorker:
-    def __init__(self, db_config: Dict[str, Any], consolidation_model_url: str, embedder=None):
+    def __init__(self, db_config: Dict[str, Any], consolidation_model_url: str, embedder=None,
+                 llm_call=None):
         self.db_config = db_config
         self.consolidation_model_url = consolidation_model_url
         self.embedder = embedder or CPUEmbeddingEngine()
+        # Decision 15: when run inside the proxy, the LLM call goes through the
+        # scheduler (P3 'sleep' lane) instead of this module's own HTTP client.
+        self._llm_call = llm_call
 
     async def _call_consolidation_model(self, prompt: str) -> str:
         """Call Consolidation Model via OpenAI-compatible chat completions endpoint."""
+        if self._llm_call is not None:
+            generated = await self._llm_call(prompt)
+            import re
+            cleaned = re.sub(r"<[^>]+>", "", generated).strip()
+            return cleaned.split(".")[0] + "." if "." in cleaned else cleaned
         base = self.consolidation_model_url.rstrip("/")
         if not base.endswith("/v1"):
             base = f"{base}/v1"

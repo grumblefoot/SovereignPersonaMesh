@@ -32,7 +32,16 @@ logger = logging.getLogger("SPMProxyMain")
 async def _lifespan(_app):
     # startup_event / shutdown_event are defined below; looked up when the app starts.
     await startup_event()
+    # Decision 15: the nightly sleep cycle runs inside the proxy, through the
+    # scheduler's P3 lane (chat preempts it). SPM_SLEEP_IN_PROXY=0 keeps the old
+    # systemd-timer-only setup.
+    sleep_task = None
+    if os.getenv("SPM_SLEEP_IN_PROXY", "1") != "0":
+        from proxy.core.sleep_runner import sleep_cycle_loop
+        sleep_task = asyncio.create_task(sleep_cycle_loop())
     yield
+    if sleep_task is not None:
+        sleep_task.cancel()
     await shutdown_event()
 
 
