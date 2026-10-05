@@ -364,3 +364,27 @@ def test_s16_bulk_import_rows_never_carry_private_thoughts(rig, monkeypatch):
     joined = json.dumps(captured["messages"])
     assert PH(16) not in joined                  # imported memories carry no thoughts
     assert "line 3" in joined                    # the spoken words still import
+
+
+# ── A2 acceptance: the GM directive is assembled by mode ───────────────────
+
+def _set_gm_mode(mode):
+    # Saved settings (config.json) outrank env by design; write the temp config the
+    # way the admin UI would. conftest's isolated_settings points this at tmp_path.
+    from config.manager import get_settings_manager
+    mgr = get_settings_manager()
+    mgr.write_settings({**mgr.get_settings(), "gm_actions_mode": mode})
+
+
+def test_gm_directive_absent_when_mode_off(rig):
+    _set_gm_mode("off")
+    rig.turn(sysmsgs() + [{"role": "user", "content": '"Hello."'}])
+    assert "GM_ACTION" not in rig.prompt_text(0)   # ~90 prompt tokens saved per turn
+
+
+def test_gm_directive_move_only_hides_create_room(rig):
+    _set_gm_mode("move_only")
+    rig.turn(sysmsgs() + [{"role": "user", "content": '"Hello."'}])
+    text = rig.prompt_text(0)
+    assert "CREATE_ROOM" not in text
+    assert '"type": "MOVE"' in text
