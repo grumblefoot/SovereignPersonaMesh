@@ -294,7 +294,9 @@ async def submit_action(payload: ActionPayload, background_tasks: BackgroundTask
             if char_id == payload.character_id:
                 continue  # the actor does not perceive their own action as a consequence
             seen_ids.add(char_id)
-            is_target = (char_id == payload.target_id)
+            # Case-insensitive: clients send display names ("Mira"), rooms hold ids ("mira").
+            is_target = (payload.target_id is not None
+                         and char_id.lower() == payload.target_id.lower())
 
             # Determine if recipient is in the same room as the actor
             same_room = (actor_room is not None and
@@ -698,28 +700,37 @@ async def configure_world(payload: WorldConfigPayload):
         )
     # B4: key the world by the real session id, not the template key.
     session_id_for_config = payload.session_id
-    # Same per-session deep copy as _ensure_world: instantiate_world's copies share
-    # present_characters lists with the template (shallow model_copy).
-    world_inst = {rid: RoomMetadata(**r.model_dump())
-                  for rid, r in world_builder.instantiate_world(payload.template_key).items()}
-    if payload.flavor_text:
-        for rm in world_inst.values():
-            rm.flavor_text = payload.flavor_text
-    app_state.session_worlds.setdefault(session_id_for_config, {})[payload.template_key] = world_inst
-    
-    # Try to load existing rooms for this session from database
-    if app_state._db_pool:
-        try:
-            async with app_state._db_pool.acquire() as conn:
-                rows = await conn.fetch("SELECT room_id, room_data FROM world_state_sessions WHERE session_id = $1 AND template_key = $2", session_id_for_config, payload.template_key)
-                for row in rows:
-                    room_id = row['room_id']
-                    room_data = json.loads(row['room_data'])
-                    app_state.session_worlds[session_id_for_config][payload.template_key][room_id] = RoomMetadata(**room_data)
-        except Exception as e:
-            logging.error(f"Failed to load existing world state: {e}")
+    already_configured = payload.template_key in app_state.session_worlds.get(
+        session_id_for_config, {})
+    if already_configured:
+        # Re-configure of a live session world is NON-destructive: keep every room,
+        # occupant and runtime edge exactly as they are. (The proxy re-sends configure
+        # on what it thinks is turn 1 — after a proxy restart, or when a world was
+        # seeded directly on the engine — and rebuilding here silently un-placed every
+        # character the proxy didn't know about: leak suite s3/s6/s7/s10.)
+        world_inst = app_state.session_worlds[session_id_for_config][payload.template_key]
+    else:
+        # Same per-session deep copy as _ensure_world: instantiate_world's copies share
+        # present_characters lists with the template (shallow model_copy).
+        world_inst = {rid: RoomMetadata(**r.model_dump())
+                      for rid, r in world_builder.instantiate_world(payload.template_key).items()}
+        if payload.flavor_text:
+            for rm in world_inst.values():
+                rm.flavor_text = payload.flavor_text
+        app_state.session_worlds.setdefault(session_id_for_config, {})[payload.template_key] = world_inst
 
-    
+        # Try to load existing rooms for this session from database
+        if app_state._db_pool:
+            try:
+                async with app_state._db_pool.acquire() as conn:
+                    rows = await conn.fetch("SELECT room_id, room_data FROM world_state_sessions WHERE session_id = $1 AND template_key = $2", session_id_for_config, payload.template_key)
+                    for row in rows:
+                        room_id = row['room_id']
+                        room_data = json.loads(row['room_data'])
+                        app_state.session_worlds[session_id_for_config][payload.template_key][room_id] = RoomMetadata(**room_data)
+            except Exception as e:
+                logging.error(f"Failed to load existing world state: {e}")
+
     app_state.current_world = app_state.session_worlds[session_id_for_config][payload.template_key]
 
     # A2: optional seed placements — validate every room first, apply only if all valid.
@@ -727,9 +738,14 @@ async def configure_world(payload: WorldConfigPayload):
     bad = [pl.room_id for pl in payload.placements if pl.room_id not in world_now]
     if bad:
         raise HTTPException(status_code=400, detail=f"Unknown room(s) in placements: {bad}; nothing was placed")
+    placed_anywhere = {c for rm in world_now.values() for c in rm.present_characters}
     for pl in payload.placements:
-        if pl.character_id not in world_now[pl.room_id].present_characters:
-            world_now[pl.room_id].present_characters.append(pl.character_id)
+        if pl.character_id in placed_anywhere:
+            # Already in the world (possibly another room): a configure placement is a
+            # spawn point, never a teleport — moving is /world/move's job.
+            continue
+        world_now[pl.room_id].present_characters.append(pl.character_id)
+        placed_anywhere.add(pl.character_id)
         _log_mutation(session_id_for_config, "PLACE", payload.origin, {"character_id": pl.character_id, "room_id": pl.room_id})
 
     return CharacterResponse(
@@ -967,8 +983,16 @@ def _remove_character_from_all_rooms(character_id: str, session_id: str = "defau
 async def startup_event():
     """Load the default world template on startup and init db pool."""
     app.state.start_time = time.time()
-    
-    
+
+    # SPM_WORLD_DB=0 runs the engine memory-only: no pool, so every persistence helper
+    # no-ops. The leak-suite rig needs this — it drives this app from TWO event loops
+    # (its own TestClient and the proxy's ASGITransport), and an asyncpg pool created on
+    # one loop breaks when acquired from the other.
+    if os.getenv("SPM_WORLD_DB", "1") == "0":
+        app_state._db_pool = None
+        logging.info("Evennia World State Engine running memory-only (SPM_WORLD_DB=0)")
+        return
+
     try:
         app_state._db_pool = await asyncpg.create_pool(
             **DB_CONFIG,

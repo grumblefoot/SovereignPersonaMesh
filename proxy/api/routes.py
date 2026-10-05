@@ -344,7 +344,8 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             character_id="user",
             action_type=primary_action,
             raw_text=observable_text,
-            target_id=(whispers[0].target if whispers and whispers[0].target else target_char),
+            target_id=(whispers[0].target.lower() if whispers and whispers[0].target
+                       else target_char),
             session_id=session_id,
             turn_id=turn_id,
         )
@@ -370,7 +371,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                 await record_turn_perceptions(
                     conn, session_id=session_id,
                     tick=int(world_res.get("action_tick", 0)),
-                    turn_id=turn_id, actor_id="user", action_type="speak",
+                    turn_id=turn_id, actor_id="user", action_type=primary_action,
                     consequences=world_res["consequences"],
                 )
         except Exception as e:
@@ -455,10 +456,13 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             logger.warning(f"[SPMProxy] Lore retrieval skipped: {e}")
 
     # Sprint 2 chunk 4: the character's history is what THEY perceived (spm_perception),
-    # never the raw transcript — the omniscience fix. Falls back to the raw messages when
-    # perception rows don't exist yet (fresh chat, engine down) or the setting is off.
-    # Raw-transcript fallback still redacts the user's private thoughts (decision 11):
-    # without this, turn 1 of every chat leaked 'quoted thoughts' through the fallback.
+    # never the raw transcript — the omniscience fix. Falls back to the raw messages ONLY
+    # when the SESSION has no perception rows at all (fresh chat, engine down) or the
+    # setting is off. The character's own row count must never drive the fallback: a
+    # character behind a closed door has few rows BECAUSE they heard nothing, and handing
+    # them the raw transcript at that moment is the exact leak this layer exists to stop
+    # (leak suite s2/s8/s11). Raw-transcript fallback still redacts the user's private
+    # thoughts (decision 11): without this, turn 1 leaked 'quoted thoughts' through it.
     chat_history = [{"role": m.role, "content": _redact_private_spans(m.content) if m.role == "user" else m.content}
                     for m in request.messages]
     if _db_pool and settings.get("gated_history_enabled", True):
@@ -466,7 +470,10 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             async with _db_pool.acquire() as conn:
                 percep_rows = await gated_history(conn, session_id=session_id,
                                                   recipient_id=target_char, limit=30)
-            if len(percep_rows) >= 2:
+                session_has_rows = bool(percep_rows) or bool(await conn.fetchval(
+                    "SELECT 1 FROM spm_perception WHERE session_id = $1 LIMIT 1",
+                    session_id))
+            if session_has_rows:
                 chat_history = render_history_rows(percep_rows, target_char)
                 logger.info(f"[SPMProxy] Gated history in use for {target_char}: "
                             f"{len(chat_history)} perceived turns (raw transcript withheld).")
