@@ -137,6 +137,12 @@ def validate_batch(
     allowed_entities = {e.lower() for e in known_entities} | {"user"}
     if target_char:
         allowed_entities.add(target_char.lower())
+    # lower-case -> the id exactly as the world stores it (target_char is already a
+    # safe lower-case id; known entities come from the world snapshot verbatim).
+    canonical_ids = {"user": "user"}
+    if target_char:
+        canonical_ids[target_char.lower()] = target_char.lower()
+    canonical_ids.update({e.lower(): e for e in known_entities})
     rooms = {slugify(r) for r in known_rooms}
     created_now: Set[str] = set()
     room_count = rooms_in_session
@@ -191,6 +197,12 @@ def validate_batch(
             if action.entity.lower() not in allowed_entities:
                 out.rejections.append(Rejection(raw, REASON_UNKNOWN_ENTITY, action.entity))
                 continue
+            # Rewrite to the CANONICAL stored id. Matching is case-insensitive, but
+            # the engine is not: passing the LLM's "Mira" through created a second
+            # occupant beside the real "mira" instead of moving her (QA 2026-10-05).
+            canonical = canonical_ids.get(action.entity.lower(), action.entity.lower())
+            if canonical != action.entity:
+                action = action.model_copy(update={"entity": canonical})
             if action.room_id not in rooms and action.room_id not in created_now:
                 out.rejections.append(Rejection(raw, REASON_UNKNOWN_ROOM, action.room_id))
                 continue
