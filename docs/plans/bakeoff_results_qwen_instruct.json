@@ -1,0 +1,23 @@
+{
+  "ran_at": "2026-10-05T09:54:45",
+  "url": "http://127.0.0.1:13305/v1/embeddings",
+  "corpus": "tests/fixtures/embed_bakeoff_corpus.json",
+  "results": [
+    {
+      "model": "Qwen3-Embedding-0.6B-GGUF-Q8_0",
+      "dim": 1024,
+      "recall_at_5": 0.9531,
+      "mrr": 0.917,
+      "latency_ms_p50": 31.8,
+      "latency_ms_p95": 37.3,
+      "pos_distance_mean": 0.4065,
+      "neg_distance_mean": 0.6769,
+      "calibrated_max_cosine_distance": 0.447,
+      "calibrated_f1": 0.8,
+      "current_default_threshold": 0.35,
+      "query_prefix": "Instruct: Given a roleplay chat query, retrieve the memory that answers it\\nQuery: ",
+      "doc_prefix": "",
+      "corpus_embed_ms_total": 703.1
+    }
+  ]
+}

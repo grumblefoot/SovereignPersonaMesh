@@ -1,0 +1,21 @@
+{
+  "ran_at": "2026-10-05T09:51:13",
+  "url": "http://127.0.0.1:13305/v1/embeddings",
+  "corpus": "tests/fixtures/embed_bakeoff_corpus.json",
+  "results": [
+    {
+      "model": "embed-gemma-300m-FLM",
+      "dim": 768,
+      "recall_at_5": 0.125,
+      "mrr": 0.1236,
+      "latency_ms_p50": 201.9,
+      "latency_ms_p95": 209.9,
+      "pos_distance_mean": 0.2021,
+      "neg_distance_mean": 0.2283,
+      "calibrated_max_cosine_distance": 0.127,
+      "calibrated_f1": 0.0901,
+      "current_default_threshold": 0.35,
+      "corpus_embed_ms_total": 10791.5
+    }
+  ]
+}

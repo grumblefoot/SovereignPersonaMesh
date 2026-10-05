@@ -39,14 +39,21 @@ _DEFAULT_VALUES: Dict[str, Any] = {
     "EMBEDDING_URL": "",
     # Empty string means "use BACKEND_API_KEY".
     "EMBEDDING_API_KEY": "",
-    # Provisional default per decision 4 (bake-off pending): Lemonade serves
-    # embed-gemma-300m-FLM at 768 dims in its own 'embedding' slot.
-    "EMBEDDING_MODEL": "embed-gemma-300m-FLM",
+    # Decision 4 RESOLVED by the 2026-10-05 bake-off (docs/plans/BAKEOFF_2026-10-05.md):
+    # the FLM/NPU embed-gemma build scored recall@5 0.125 (near-random; paraphrase and
+    # unrelated text land 0.02 apart), while Qwen3-Embedding-0.6B-GGUF Q8 scored 0.953
+    # at 6x lower latency and coexists with the chat LLM (embedding slot, GPU).
+    # Pull it with: lemonade pull Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
+    "EMBEDDING_MODEL": "Qwen3-Embedding-0.6B-GGUF-Q8_0",
     # 0 = the model's native dimension (locked on first successful embed).
     "EMBEDDING_DIM": 0,
     "EMBEDDING_TIMEOUT_S": 3,
     # Explicit SLA-2 opt-in: lets `auto` pick a non-local EMBEDDING_URL.
     "EMBEDDING_ALLOW_REMOTE": False,
+    # Decision 6: the similarity cut is per-model, not the spec's fixed 0.35.
+    # Calibrated per bake-off (scripts/embed_bakeoff.py); 0.45 fits
+    # Qwen3-Embedding-0.6B (F1-optimal 0.43-0.447 on the decision-4 corpus).
+    "EMBEDDING_MAX_COSINE_DISTANCE": 0.35,
     # ── GM_ACTION extraction (GM actions plan, task A1) ──
     # auto | off | move_only | full. "auto" is decision 14's per-backend preset:
     # it resolves to "full" for a loopback/LAN BACKEND_LLM_URL and to "off" for a
@@ -98,6 +105,7 @@ _ENV_VAR_MAP: Dict[str, str] = {
     "EMBEDDING_DIM": "EMBEDDING_DIM",
     "EMBEDDING_TIMEOUT_S": "EMBEDDING_TIMEOUT_S",
     "EMBEDDING_ALLOW_REMOTE": "EMBEDDING_ALLOW_REMOTE",
+    "EMBEDDING_MAX_COSINE_DISTANCE": "EMBEDDING_MAX_COSINE_DISTANCE",
     "gm_actions_mode": "SPM_GM_ACTIONS_MODE",
     "gm_actions_max_per_turn": "SPM_GM_ACTIONS_MAX_PER_TURN",
     "gm_actions_max_rooms_per_session": "SPM_GM_ACTIONS_MAX_ROOMS",

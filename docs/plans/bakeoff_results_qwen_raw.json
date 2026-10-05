@@ -1,0 +1,23 @@
+{
+  "ran_at": "2026-10-05T09:55:07",
+  "url": "http://127.0.0.1:13305/v1/embeddings",
+  "corpus": "tests/fixtures/embed_bakeoff_corpus.json",
+  "results": [
+    {
+      "model": "Qwen3-Embedding-0.6B-GGUF-Q8_0",
+      "dim": 1024,
+      "recall_at_5": 0.9531,
+      "mrr": 0.918,
+      "latency_ms_p50": 32.5,
+      "latency_ms_p95": 36.5,
+      "pos_distance_mean": 0.3935,
+      "neg_distance_mean": 0.6461,
+      "calibrated_max_cosine_distance": 0.422,
+      "calibrated_f1": 0.8136,
+      "current_default_threshold": 0.35,
+      "query_prefix": "",
+      "doc_prefix": "",
+      "corpus_embed_ms_total": 729.3
+    }
+  ]
+}
