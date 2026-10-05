@@ -124,12 +124,10 @@ async def test_public_text_after_close_in_same_chunk():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_max_monologue_tokens_triggers_passthrough():
-    """
-    When monologue token count exceeds MAX_MONOLOGUE_TOKENS without closing tag,
-    the parser switches to passthrough mode and yields the buffered monologue
-    prefixed with '> ...'.
-    """
+async def test_max_monologue_tokens_withholds_everything_private():
+    """Sprint 3 bleed hardening: a runaway scratchpad (no closing tag past the token
+    cap) must NEVER reach the user — not the buffer, not the continuation. The user
+    gets one notice; the taint flag keeps the turn out of world state."""
     async def mock_chunks():
         yield "<thinking>"
         for i in range(MAX_MONOLOGUE_TOKENS):
@@ -142,14 +140,16 @@ async def test_max_monologue_tokens_triggers_passthrough():
         public_chunks.append(chunk)
 
     assert parser.is_failsafe_triggered is True
-    # The overflow token and everything after should be passthrough
     combined = "".join(public_chunks)
-    assert "overflow" in combined
+    assert "overflow" not in combined            # the continuation stays private
+    assert "word1 " not in combined              # the buffer stays private
+    assert "scratchpad" in combined              # the user sees the notice
 
 
 @pytest.mark.asyncio
-async def test_max_monologue_yields_prefixed_monologue():
-    """The buffered monologue is emitted prefixed with '> ...' before passthrough."""
+async def test_max_monologue_kept_for_admin_thoughts_tab():
+    """The withheld scratchpad is retained in the monologue sections (admin dev
+    window), never emitted as the old '> ...' public blockquote."""
     async def mock_chunks():
         yield "<thinking>"
         for i in range(MAX_MONOLOGUE_TOKENS + 1):
@@ -161,8 +161,9 @@ async def test_max_monologue_yields_prefixed_monologue():
         public_chunks.append(chunk)
 
     combined = "".join(public_chunks)
-    # First yield from fail-safe is the prefixed monologue
-    assert "\n> " in combined
+    assert "\n> " not in combined
+    monologue, _ = parser.get_final_buffers()
+    assert "word" in monologue                   # preserved privately
 
 
 # ---------------------------------------------------------------------------
@@ -253,13 +254,14 @@ async def test_normal_close_tag_is_not_malformed():
 
 
 @pytest.mark.asyncio
-async def test_passthrough_mode_ignores_future_tags():
-    """Once in passthrough mode, subsequent tags are passed through as-is."""
+async def test_overflow_discard_swallows_future_tags_privately():
+    """After the overflow failsafe, later tags and text are swallowed into the
+    private monologue — the model is still planning; none of it is public."""
     async def mock_chunks():
         yield "<thinking>"
         for i in range(MAX_MONOLOGUE_TOKENS + 1):
             yield "word "
-        yield "<thinking>fake monologue</thinking>should appear"
+        yield "<thinking>fake monologue</thinking>would have leaked"
 
     parser = MonologueStreamParser()
     public_chunks = []
@@ -267,7 +269,8 @@ async def test_passthrough_mode_ignores_future_tags():
         public_chunks.append(chunk)
 
     combined = "".join(public_chunks)
-    assert "<thinking>fake monologue</thinking>" in combined
+    assert "fake monologue" not in combined
+    assert "would have leaked" not in combined
 
 
 # ---------------------------------------------------------------------------

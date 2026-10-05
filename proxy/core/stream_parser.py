@@ -124,6 +124,8 @@ class MonologueStreamParser:
         self.is_public_truncated: bool = False
         self.is_failsafe_triggered: bool = False
         self.passthrough: bool = False
+        self._discard_rest: bool = False   # overflow failsafe: swallow the rest of the
+                                           # stream into the (private) monologue sections
         self._monologue_sections: List[str] = []
         self._in_monologue: bool = (initial_state == 0)
         self._chunk_carryover: str = ""
@@ -345,6 +347,13 @@ class MonologueStreamParser:
                 self._stream_buffer += self._chunk_carryover + raw_chunk
                 self._chunk_carryover = ""
 
+                if self._discard_rest:
+                    # Still inside the runaway scratchpad: everything that follows is
+                    # private planning. Keep it for the admin thoughts tab, never the user.
+                    self.inner_monologue_buffer += self._stream_buffer
+                    self._stream_buffer = ""
+                    continue
+
                 if self.passthrough:
                     out = self._stream_buffer
                     self._stream_buffer = ""
@@ -413,15 +422,24 @@ class MonologueStreamParser:
                             self._stream_buffer = ""
                             self._in_monologue = True
                             if self.monologue_token_count > MAX_MONOLOGUE_TOKENS:
-                                logger.warning(f"[StreamParser] Max monologue tokens reached (>8192 tokens). Passthrough.")
+                                # Sprint 3 bleed hardening: the monologue is PRIVATE.
+                                # The old failsafe dumped the whole scratchpad to the
+                                # user as a blockquote — thousands of tokens of GM
+                                # planning, lore checks and GM_ACTION JSON. Now it is
+                                # kept for the admin thoughts tab, the user gets one
+                                # notice, and the taint flag keeps the turn out of
+                                # world state and memory (same as the EOF failsafe).
+                                logger.warning("[StreamParser] Max monologue tokens reached "
+                                               f"(>{MAX_MONOLOGUE_TOKENS}); monologue withheld from the stream.")
                                 self.is_failsafe_triggered = True
-                                self.passthrough = True
+                                self._discard_rest = True
                                 m_txt = self._clean_monologue(self.inner_monologue_buffer)
                                 if m_txt:
                                     self._monologue_sections.append(m_txt)
-                                    prefixed = f"\n> {m_txt}\n"
-                                    self.public_response_buffer += prefixed
-                                    yield prefixed
+                                notice = ("\n*[SPM: the model never left its private scratchpad; "
+                                          "this turn was withheld and not saved. Regenerate to retry.]*\n")
+                                self.public_response_buffer += notice
+                                yield notice
                                 self.state = 1
                                 self.inner_monologue_buffer = ""
                             break
@@ -449,6 +467,12 @@ class MonologueStreamParser:
                         break
 
         finally:
+            if self._discard_rest and self.inner_monologue_buffer:
+                # Overflow failsafe: the swallowed tail is monologue, never public.
+                m_txt = self._clean_monologue(self.inner_monologue_buffer)
+                if m_txt:
+                    self._monologue_sections.append(m_txt)
+                self.inner_monologue_buffer = ""
             if self.state == 0 and self.inner_monologue_buffer:
                 mono_text = self._clean_monologue(self.inner_monologue_buffer)
                 if mono_text:

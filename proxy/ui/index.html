@@ -206,6 +206,27 @@
           <span id="test-connection-status" style="font-weight: bold;"></span>
         </div>
       </div>
+      <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0;">
+      <h3 style="font-size: 1rem; margin-bottom: 12px;">World Actions (GM_ACTION)</h3>
+      <div class="form-group">
+        <label>World actions (LLM-assisted)</label>
+        <select id="cfg-gm-actions-mode">
+          <option value="off">Off</option>
+          <option value="move_only">Move only</option>
+          <option value="full">Full</option>
+        </select>
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
+          Off saves about 90 prompt tokens per turn plus the action output; no LLM requests are saved.
+        </p>
+      </div>
+      <div class="form-group">
+        <label>Max Actions Per Turn</label>
+        <input type="number" id="cfg-gm-actions-max-per-turn" value="4">
+      </div>
+      <div class="form-group">
+        <label>Max New Rooms Per Session</label>
+        <input type="number" id="cfg-gm-actions-max-rooms" value="40">
+      </div>
       <button class="btn" onclick="saveConfig()">Save Configuration</button>
     </div>
   </div>
@@ -469,6 +490,9 @@
         document.getElementById('cfg-cadence').value = data.periodic_review_cadence || 15;
         document.getElementById('cfg-use-alt').checked = data.use_alternate_extraction_model === 'true' || data.use_alternate_extraction_model === true;
         document.getElementById('cfg-alternate-model').value = data.alternate_extraction_model_name || 'google/gemma-4-26B-A4B-it';
+        document.getElementById('cfg-gm-actions-mode').value = data.gm_actions_mode || 'full';
+        document.getElementById('cfg-gm-actions-max-per-turn').value = data.gm_actions_max_per_turn ?? 4;
+        document.getElementById('cfg-gm-actions-max-rooms').value = data.gm_actions_max_rooms_per_session ?? 40;
       } catch (e) {}
     }
 
@@ -479,7 +503,10 @@
         SPM_PROXY_PORT: parseInt(document.getElementById('cfg-port').value),
         periodic_review_cadence: parseInt(document.getElementById('cfg-cadence').value),
         use_alternate_extraction_model: document.getElementById('cfg-use-alt').checked,
-        alternate_extraction_model_name: document.getElementById('cfg-alternate-model').value
+        alternate_extraction_model_name: document.getElementById('cfg-alternate-model').value,
+        gm_actions_mode: document.getElementById('cfg-gm-actions-mode').value,
+        gm_actions_max_per_turn: parseInt(document.getElementById('cfg-gm-actions-max-per-turn').value),
+        gm_actions_max_rooms_per_session: parseInt(document.getElementById('cfg-gm-actions-max-rooms').value)
       };
       const res = await fetch('/admin/api/v1/config', {
         method: 'POST',
