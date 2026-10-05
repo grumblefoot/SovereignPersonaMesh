@@ -124,3 +124,19 @@ def test_idempotency_key_stable_across_regenerates():
     assert idempotency_key("s2", "anchor", a) != idempotency_key("s1", "anchor", a)
     c = CreateRoomAction(type="CREATE_ROOM", room_id="garden")
     assert idempotency_key("s1", "anchor", a) != idempotency_key("s1", "anchor", c)
+
+
+def test_persona_alias_maps_to_user():
+    """Plan A.3: the LLM names the player's persona; the engine id is 'user'."""
+    out = validate_batch([
+        {"type": "MOVE", "entity": "Tom", "room_id": "garden"},
+    ], user_aliases={"tom"}, **WORLD)
+    assert not out.rejections
+    assert out.moves[0].entity == "user"
+
+
+def test_unknown_name_still_rejected_despite_aliases():
+    out = validate_batch([
+        {"type": "MOVE", "entity": "Stranger", "room_id": "garden"},
+    ], user_aliases={"tom"}, **WORLD)
+    assert [r.reason for r in out.rejections] == [REASON_UNKNOWN_ENTITY]
