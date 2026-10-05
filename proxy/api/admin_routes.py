@@ -249,11 +249,14 @@ async def factory_reset():
         telemetry = get_telemetry_collector()
         telemetry.reset()
 
-        # Clear Evennia in-memory cache
-        import httpx
+        # Clear the world engine's in-memory state through the SHARED, configured
+        # client. This used its own client with a hardcoded http://localhost:4005, which
+        # bypassed the test suite's redirect: every test run that exercised factory
+        # reset wiped all chat worlds on the LIVE engine (QA 2026-10-05).
+        from proxy.api.routes import evennia_client
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                await client.delete("http://localhost:4005/api/v1/world/admin/reset")
+            resp = await evennia_client.client.delete(f"{evennia_client.base_url}/world/admin/reset")
+            resp.raise_for_status()
         except Exception as e:
             logger.warning(f"[AdminAPI] Failed to reset Evennia cache: {e}")
 
@@ -448,3 +451,17 @@ async def scheduler_snapshot():
     wait percentiles, dispatch/preempt/supersede counters, loaded model."""
     from proxy.core.llm_scheduler import get_scheduler
     return JSONResponse(content=get_scheduler().snapshot())
+
+
+@router.get("/sessions/{session_id}/world")
+async def session_world(session_id: str):
+    """The REAL world for a chat (rooms, occupants, edges, tick) for the admin
+    spatial map. That panel used to invent its contents from log strings and a
+    hardcoded 'Arvenia' (QA 2026-10-05). Served through the proxy so the browser
+    never calls the engine port directly."""
+    from proxy.api.routes import evennia_client
+    try:
+        snap = await evennia_client.get_snapshot(session_id=session_id, template_key="")
+    except Exception as e:
+        return JSONResponse(status_code=503, content={"error": f"world engine unavailable: {e}"})
+    return JSONResponse(content=snap)
