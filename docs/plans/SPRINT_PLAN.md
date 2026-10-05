@@ -201,3 +201,37 @@ Landed on `V0.4` (`..57c39f5`), suite **687 passed, 2 skipped**. Gating core: de
 **Exit gate:** the 14-scenario leak suite (`tests/test_gating_leaks.py`) passes with 0 leaks of planted phrases, including the captured Vardus fixture. It runs the real proxy against the real engine (ASGI, LLM faked and prompt-captured) and resends full history each turn like SillyTavern. Building it caught three real leaks, all fixed in `5d1bf18`: (1) the raw-transcript fallback triggered on the character's own row count, handing the full history to exactly the characters who had perceived nothing — it now triggers only when the whole session has no perception rows; (2) `/world/configure` was destructive on re-configure, so the proxy's first-turn seeding silently un-placed every character it didn't know about — re-configure now keeps rooms/occupants/edges and placements are spawn points, never teleports; (3) whisper target matching was case-sensitive (`[whisper:Mira]` vs room id `mira`), so the addressee heard nothing.
 
 Still queued from decision 11: malformed-marker fixtures join the suite (Sprint 3, with the bleed-hardening work). Sprint 3 starts with the blackout side channels: lore extraction and bulk import still see the raw transcript.
+
+## 10. Sprint 3: complete except ONNX fallback (2026-10-05)
+
+Landed on `V0.4` (`..02a7caa`), suite **730 passed, 2 skipped**.
+
+- **Side channels closed (gating phase 5):** lore extraction and bulk import no longer
+  see the user's private 'quoted thoughts'; leak suite grew to s15/s16 to prove it.
+  Admin perception view: `GET /admin/api/v1/sessions/{id}/perception`.
+- **Bleed hardening:** the >8192-token runaway-scratchpad failsafe no longer dumps the
+  monologue to the user (notice + discard + taint instead). Malformed-marker fixtures
+  (decision 11) added: markers degrade to speak, never grant whisper/shout/move.
+- **GM_ACTION Part A complete (OPEN-005 closed, SD-01):** config keys + admin UI (A1,
+  Hermes), mode-gated directive through the prompt builder (A2), mode-gated dispatch
+  (A3), deterministic validator with caps/reason codes/stable idempotency keys (A4,
+  `proxy/core/gm_actions.py`), SPEC_DEVIATIONS.md (A5). New `auto` mode is decision
+  14's per-backend preset (full local / off cloud).
+- **Embedding bake-off (decision 4 RESOLVED):** the NPU/FLM embed-gemma build is
+  semantically collapsed (recall@5 0.125; production recall was top-k noise).
+  **Qwen3-Embedding-0.6B-GGUF Q8** wins decisively (recall@5 0.953, MRR 0.918, 32 ms
+  p50, coexists with the chat LLM). Default + live config switched; per-model
+  threshold setting added (decision 6), calibrated 0.45. Report:
+  `docs/plans/BAKEOFF_2026-10-05.md`; harness `scripts/embed_bakeoff.py` reusable on
+  real-chat corpora.
+- **Hermes cross-review of Sprint 2** produced 9 findings; 7 accepted and fixed
+  (case-insensitive placements, flavor_text on re-configure, memory-only startup,
+  perception transaction, supersede-vs-cap ordering, typed TurnSuperseded, eviction
+  counters), 2 rejected with documented reasoning.
+
+Deferred from Sprint 3: the `onnx_local` CPU provider (embeddings phase 4; serves
+backend-less users — `none`+FTS remains their fallback) and NPU re-measurement, since
+the NPU embedding path itself is what the bake-off disqualified.
+
+Live verification: services restarted on this code; end-to-end turn through :5050 with
+gated history, validated GM actions and Qwen3 embeddings confirmed in the logs.
