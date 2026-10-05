@@ -27,6 +27,7 @@ from proxy.rag.tier_manager import MemoryTierManager
 from proxy.rag.lore_extractor import LoreExtractionWorker
 from proxy.backend_client.lemonade_client import LemonadeLLMClient, LLMBackendError, DEFAULT_CHAT_MODEL, SPM_VIRTUAL_MODEL_ID
 from proxy.core.llm_scheduler import get_scheduled_client, QueueFull, QueueWaitTimeout, TurnSuperseded
+from proxy.core import gm_actions as gm_validation
 from proxy.gating.action_parser import parse_user_message
 from proxy.gating.world_seed import propose_world_seed
 from proxy.gating.perception import gated_history, record_turn_perceptions, render_history_rows
@@ -514,13 +515,24 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
 
     # --- Inject Assistant Prefill (Only if Monologue is enabled) ---
     if prompt_builder.config.inner_monologue_enabled:
+        # A2 (gm_actions_and_lore_scope.md): the GM_ACTION bullets are assembled by
+        # mode, so 'off' spends zero prompt tokens on them and 'move_only' never
+        # advertises CREATE_ROOM. The lore/anti-puppeting parts are mode-independent.
+        gm_mode = str(settings.get("gm_actions_mode", "full")).lower()
+        if gm_mode not in ("off", "move_only", "full"):
+            gm_mode = "full"
+        gm_move = ('\n- If ANY character (including the user) moves to a new location, you MUST '
+                   'output [GM_ACTION: {"type": "MOVE", "entity": "...", "room_id": "..."}] '
+                   'inside your <think> block.')
+        gm_create = ('\n- If a described location doesn\'t exist, output [GM_ACTION: '
+                     '{"type": "CREATE_ROOM", "room_id": "...", "name": "...", "desc": "..."}] '
+                     'inside your <think> block.')
+        gm_action_parts = {"off": "", "move_only": gm_move, "full": gm_move + gm_create}[gm_mode]
         directive = f"""{active_lore_str}
 
 SYSTEM DIRECTIVE: You are the GAME MASTER. You MUST write your internal thoughts strictly inside <think>...</think> tags. Cross-reference the user's input against the ACTIVE LORE.
 - If the user violates an Invariant (e.g. hallucinating), note it in your scratchpad.
-- If the user violates a Trigger/Game Over rule, note the [RULE VIOLATION] in your scratchpad and issue a [GM WARNING: ...]
-- If ANY character (including the user) moves to a new location, you MUST output [GM_ACTION: {{"type": "MOVE", "entity": "...", "room_id": "..."}}] inside your <think> block.
-- If a described location doesn't exist, output [GM_ACTION: {{"type": "CREATE_ROOM", "room_id": "...", "name": "...", "desc": "..."}}] inside your <think> block.
+- If the user violates a Trigger/Game Over rule, note the [RULE VIOLATION] in your scratchpad and issue a [GM WARNING: ...]{gm_action_parts}
 - Evaluate if your planned response puppets the user. You MUST NOT describe the user's actions, feelings, or dialogue.
 
 CRITICAL FORMATTING RULE:
@@ -980,34 +992,63 @@ async def _record_reply_action(session_id: str, target_char: str, public_resp: s
 
 async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str,
                                turn_index: int = 0):
-    """Extracts GM actions from the parser and dispatches them sequentially in the background."""
+    """LLM-proposed world actions, gated and validated before anything hits the engine
+    (OPEN-005 / SD-01). Mode off: nothing is dispatched (the stream parser already
+    strips stray [GM_ACTION...] text either way). Otherwise the deterministic validator
+    in proxy/core/gm_actions.py decides: schema, semantics against a single world
+    snapshot, CREATE-then-MOVE ordering, caps, reason-coded rejections."""
     actions = parser.extract_gm_actions()
+    if not actions:
+        return
 
-    for idx, action in enumerate(actions):
-        action_type = action.get("type")
-        logger.info(f"[GMAction] Dispatching GM Action: {action}")
+    settings = get_settings_manager().get_settings()
+    mode = str(settings.get("gm_actions_mode", "full")).lower()
+    if mode not in ("off", "move_only", "full"):
+        logger.warning(f"[GMAction] invalid gm_actions_mode {mode!r}; using 'full'")
+        mode = "full"
+    if mode == "off":
+        logger.debug(f"[GMAction] ignored {len(actions)} action(s): gm_actions_mode=off")
+        return
+
+    known_rooms, known_entities, room_count = set(), set(), 0
+    try:
+        snap = await evennia_client.get_snapshot(session_id=session_id, template_key="")
+        known_rooms = {r["room_id"] for r in snap.get("rooms", [])}
+        known_entities = {o["entity_id"] for o in snap.get("occupants", [])}
+        room_count = len(known_rooms)
+    except Exception as e:
+        logger.error(f"[GMAction] world snapshot unavailable; dropping {len(actions)} action(s): {e}")
+        return
+
+    batch = gm_validation.validate_batch(
+        actions,
+        mode=mode,
+        known_rooms=known_rooms,
+        known_entities=known_entities,
+        target_char=target_char,
+        max_per_turn=int(settings.get("gm_actions_max_per_turn", 4)),
+        rooms_in_session=room_count,
+        max_rooms_per_session=int(settings.get("gm_actions_max_rooms_per_session", 40)),
+    )
+    for rej in batch.rejections:
+        logger.warning(f"[GMAction] rejected ({rej.reason}): {rej.detail} — {rej.action}")
+
+    turn_anchor = str(turn_index)
+    for action in batch.accepted:          # CREATE first, then MOVE (validator order)
+        key = gm_validation.idempotency_key(session_id, turn_anchor, action)
+        logger.info(f"[GMAction] Dispatching validated GM Action: {action.model_dump()}")
         try:
-            if action_type == "MOVE":
+            if isinstance(action, gm_validation.MoveAction):
                 await evennia_client.move_character(
-                    character_id=action.get("entity", target_char),
-                    room_id=action.get("room_id", ""),
-                    session_id=session_id,
-                    idempotency_key=_gm_action_key(session_id, turn_index, idx, action),
-                    origin="gm"
-                )
-            elif action_type == "CREATE_ROOM":
-                await evennia_client.create_room(
-                    room_id=action.get("room_id", ""),
-                    name=action.get("name", "New Room"),
-                    desc=action.get("desc", ""),
-                    session_id=session_id,
-                    idempotency_key=_gm_action_key(session_id, turn_index, idx, action),
-                    origin="gm"
-                )
+                    character_id=action.entity, room_id=action.room_id,
+                    session_id=session_id, idempotency_key=key, origin="gm")
             else:
-                logger.warning(f"[GMAction] Unrecognized GM action type: {action_type}")
+                await evennia_client.create_room(
+                    room_id=action.room_id, name=action.name or "New Room",
+                    desc=action.desc, session_id=session_id,
+                    idempotency_key=key, origin="gm")
         except Exception as e:
-            logger.error(f"[GMAction] Task '{action_type}' failed for session {session_id}: {e}")
+            logger.error(f"[GMAction] Task '{action.type}' failed for session {session_id}: {e}")
 
 
 @router.get("/v1/imports/status/{session_id}")

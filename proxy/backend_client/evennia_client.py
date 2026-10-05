@@ -50,6 +50,16 @@ class EvenniaWorldClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_snapshot(self, session_id: str = "default_session",
+                           template_key: str = "") -> Dict[str, Any]:
+        """Full world graph. template_key="" asks the engine for whatever template the
+        session is actually running (never creates a parallel 'dynamic' world)."""
+        resp = await self.client.get(
+            f"{self.base_url}/world/snapshot",
+            params={"session_id": session_id, "template_key": template_key})
+        resp.raise_for_status()
+        return resp.json()
+
     async def get_character_state(self, character_id: str, session_id: str = "default_session") -> Dict[str, Any]:
         """Queries current spatial state for a character (GET /api/v1/world/state)."""
         endpoint = f"{self.base_url}/world/state?character_id={character_id}&session_id={session_id}"
