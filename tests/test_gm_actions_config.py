@@ -24,7 +24,14 @@ class TestGmActionsDefaults:
                     "SPM_GM_ACTIONS_MAX_ROOMS"):
             monkeypatch.delenv(var, raising=False)
         settings = get_default_settings()
-        assert settings["gm_actions_mode"] == "full"
+        # decision 14: the shipped default is "auto" (per-backend preset); the
+        # EFFECTIVE mode resolves to full for local backends, off for cloud.
+        assert settings["gm_actions_mode"] == "auto"
+        from config.manager import resolve_gm_actions_mode
+        assert resolve_gm_actions_mode({**settings,
+            "BACKEND_LLM_URL": "http://localhost:8000/v1"}) == "full"
+        assert resolve_gm_actions_mode({**settings,
+            "BACKEND_LLM_URL": "https://api.openai.com/v1"}) == "off"
         assert settings["gm_actions_max_per_turn"] == 4
         assert isinstance(settings["gm_actions_max_per_turn"], int)
         assert settings["gm_actions_max_rooms_per_session"] == 40
@@ -38,7 +45,7 @@ class TestGmActionsDefaults:
         cfg.write_text("{}")
         mgr = SettingsManager(config_path=str(cfg))
         settings = mgr.get_settings()
-        assert settings["gm_actions_mode"] == "full"
+        assert settings["gm_actions_mode"] == "auto"
         assert settings["gm_actions_max_per_turn"] == 4
         assert settings["gm_actions_max_rooms_per_session"] == 40
 

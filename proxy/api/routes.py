@@ -17,7 +17,7 @@ from typing import List, Dict, Any, Optional
 
 from config.hardware_tiers import get_hardware_config, HardwareTierEnum
 from proxy.core.st_parser import parse_sillytavern_context
-from config.manager import get_settings_manager
+from config.manager import get_settings_manager, resolve_gm_actions_mode
 from proxy.core.stream_parser import MonologueStreamParser, CLOSE_TAGS
 from proxy.core.sensory_filter import ObserverInferenceGatingFilter
 from proxy.rag.prompt_builder import CognitivePromptBuilder
@@ -486,9 +486,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         except Exception as e:
             logger.warning(f"[SPMProxy] Gated history unavailable, using raw transcript: {e}")
 
-    gm_mode = str(settings.get("gm_actions_mode", "full")).lower()
-    if gm_mode not in ("off", "move_only", "full"):
-        gm_mode = "full"
+    gm_mode = resolve_gm_actions_mode(settings)   # resolves "auto" by backend locality
     csa_messages = prompt_builder.build_csa_messages(
         system_prompt=system_prompt,
         sensory_feed=sensory_feed,
@@ -1003,10 +1001,7 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
         return
 
     settings = get_settings_manager().get_settings()
-    mode = str(settings.get("gm_actions_mode", "full")).lower()
-    if mode not in ("off", "move_only", "full"):
-        logger.warning(f"[GMAction] invalid gm_actions_mode {mode!r}; using 'full'")
-        mode = "full"
+    mode = resolve_gm_actions_mode(settings)      # resolves "auto" by backend locality
     if mode == "off":
         logger.debug(f"[GMAction] ignored {len(actions)} action(s): gm_actions_mode=off")
         return
