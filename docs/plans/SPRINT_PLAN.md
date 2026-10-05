@@ -262,3 +262,38 @@ Landed on `V0.4` (`..c61393b`), suite **753 passed, 2 skipped**.
 ONNX CPU embedding fallback, B4 fingerprint fallback, cost accounting, rolling
 summaries, model-affinity batching, circuit breaker, OPEN-001 auth (deferred by
 decision until SPM leaves the homelab).
+
+## 12. Path to the v0.4 release (decided 2026-10-05)
+
+The release proceeds in this order, owner-approved:
+
+1. **QA verification** — the owner runs the 28-step plan in the
+   [SPM v0.4 QA Test Plan](https://claude.ai/code/artifact/c5632042-b000-4741-9017-2269471ceec1)
+   (Claude Doc; results and comments recorded there). The live DB was backed up
+   (`db-backups/litellm_postgres_pre_qa_wipe_2026-10-05.sql.gz`) and wiped of all
+   dev/test data first, so everything in it during QA comes from the QA session.
+   The re-embed job was exercised before the wipe: 84 rows moved to the Qwen3 space
+   in under 3 s, a re-run was a no-op, and a paraphrase probe recalled a migrated
+   memory (distance 0.384) while unrelated text did not (0.822).
+2. **Bugfixes** — each QA failure fixed with a regression test, then re-run.
+3. **Packaging (final v0.4 task)** — make SPM buildable and runnable on another
+   machine. Full analysis in `docs/ASSESSMENT_2026-10-05.md` §4. Work list:
+   - [ ] Safe network defaults: bind `127.0.0.1`; make the world engine's host and
+         port configurable (both currently `0.0.0.0`, and the admin UI has no auth).
+   - [ ] One config source: regenerate `.env.example` from `config/manager.py`
+         (it names variables the code never reads); make
+         `config/docker-compose.yml` agree with the code and run SPM itself.
+   - [ ] Cross-platform `spm` launcher replacing the Linux-only, out-of-repo
+         `start_spm.sh`: `spm init` (create DB, apply `init_db.sql` + migrations),
+         `start`, `stop`, `status`.
+   - [ ] First-run setup: backend URL, chat model, embedding model (or `none`),
+         plus the SillyTavern connection and extension-install steps.
+   - [ ] Remove the dead `current_world` alias from the world engine.
+   - [ ] Windows smoke test (nothing has run there yet).
+   - [ ] Route A: Docker Compose bundle (recommended first, ≈1–2 days after the
+         items above). Route B (pip + embedded Postgres) and route C (native
+         installer) are follow-ups, not v0.4 blockers.
+4. **Tag `v0.4`.**
+
+Already done toward packaging: runtime dependencies cut to six packages, dev
+dependencies split out, Python 3.13+ verified (`d761b82`).
