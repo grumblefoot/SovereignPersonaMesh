@@ -135,9 +135,13 @@ async def test_streamed_usage_calibrates_the_model_ratio():
         'data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5}}\n\n'
         "data: [DONE]\n\n")
 
+    sent = {}
+
     def handler(request):
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [{"id": model}]})
+        import json as _json
+        sent.update(_json.loads(request.content))
         return httpx.Response(200, text=body,
                               headers={"content-type": "text/event-stream"})
 
@@ -153,6 +157,9 @@ async def test_streamed_usage_calibrates_the_model_ratio():
     assert "hi" in "".join(out)
     assert model in budget._calibrated_ratio            # EMA updated from usage
     assert client.last_usage["prompt_tokens"] == 100
+    # The REQUEST must ask for usage: Lemonade omits it from streams otherwise
+    # (the original mock always sent usage, so this gap was invisible).
+    assert sent.get("stream_options") == {"include_usage": True}
     budget._calibrated_ratio.pop(model, None)
     await client.close()
 
