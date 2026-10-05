@@ -28,6 +28,7 @@ from proxy.rag.lore_extractor import LoreExtractionWorker
 from proxy.backend_client.lemonade_client import LemonadeLLMClient, LLMBackendError, DEFAULT_CHAT_MODEL, SPM_VIRTUAL_MODEL_ID
 from proxy.core.llm_scheduler import get_scheduled_client, QueueFull, QueueWaitTimeout
 from proxy.gating.action_parser import parse_user_message
+from proxy.gating.world_seed import propose_world_seed
 from proxy.gating.perception import gated_history, record_turn_perceptions, render_history_rows
 from proxy.backend_client.evennia_client import EvenniaWorldClient
 from proxy.embeddings import get_embedding_service, space_id_for
@@ -319,6 +320,23 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                       else "shout" if any(a.action_type == "shout" for a in observable_actions)
                       else "speak")
     move_requests = [a for a in observable_actions if a.action_type == "move" and a.target]
+
+    # Sprint 2 chunk 2 wiring: on a session's FIRST turn, seed the world deterministically
+    # ([scene:KEY] tag > keyword template match > generic_void) and place the player and
+    # the target character together, so consequences and perception rows flow from turn 1.
+    if user_msg_count <= 1:
+        try:
+            seed = propose_world_seed(
+                "\n".join(m.content for m in request.messages if m.role == "system" and m.content),
+                user_text, characters=["user", target_char])
+            await evennia_client.configure_world(
+                template_key=seed.template_key, session_id=session_id,
+                placements=[{"character_id": pl.character_id, "room_id": pl.room_id}
+                            for pl in seed.placements],
+                origin="system")
+            logger.info(f"[SPMProxy] Seeded world '{seed.template_key}' ({seed.source}) for {session_id}.")
+        except Exception as e:
+            logger.warning(f"[SPMProxy] World seeding skipped: {e}")
     # OPEN-010: if the world engine is down, degrade to an ungated turn instead of a raw 500.
     # Roleplay must survive an engine outage; the turn simply has no spatial consequences.
     try:
@@ -439,7 +457,10 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # Sprint 2 chunk 4: the character's history is what THEY perceived (spm_perception),
     # never the raw transcript — the omniscience fix. Falls back to the raw messages when
     # perception rows don't exist yet (fresh chat, engine down) or the setting is off.
-    chat_history = [{"role": m.role, "content": m.content} for m in request.messages]
+    # Raw-transcript fallback still redacts the user's private thoughts (decision 11):
+    # without this, turn 1 of every chat leaked 'quoted thoughts' through the fallback.
+    chat_history = [{"role": m.role, "content": _redact_private_spans(m.content) if m.role == "user" else m.content}
+                    for m in request.messages]
     if _db_pool and settings.get("gated_history_enabled", True):
         try:
             async with _db_pool.acquire() as conn:
@@ -868,6 +889,18 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
         task.add_done_callback(_log_task_done)
+
+def _redact_private_spans(text: str) -> str:
+    """Strip thought spans from a user message (fallback-history redaction)."""
+    if not text:
+        return text
+    try:
+        actions = parse_user_message(text)
+    except Exception:
+        return text
+    observable = [a.content for a in actions if a.action_type != "thought"]
+    return " ".join(x for x in observable if x).strip() or "..."
+
 
 def _gm_action_key(session_id: str, turn_index: int, idx: int, action: dict) -> str:
     """Deterministic per (session, turn, action): a regenerate re-derives the same key, so the

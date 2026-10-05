@@ -110,3 +110,41 @@ def test_chat_route_records_perceptions_and_sends_turn_id():
         _t.sleep(0.05)
     assert any(c.get("turn_id") == "wire_s1:2#reply" and c["character_id"] == "mira"
                for c in calls[1:])
+
+
+def test_first_turn_seeds_world_and_fallback_redacts_thoughts():
+    """Chunk 2 wiring: turn 1 configures a seeded world; the raw-history fallback
+    never contains the user's 'quoted thoughts'."""
+    from unittest.mock import AsyncMock, patch
+    from fastapi.testclient import TestClient
+    from proxy.main import app
+
+    seen = {}
+
+    async def fake_stream(*a, **kw):
+        seen["messages"] = kw.get("messages", [])
+        yield "Noted."
+
+    configured = {}
+
+    async def fake_configure(**kw):
+        configured.update(kw)
+        return {"success": True}
+
+    with patch("proxy.api.routes.lemonade_client.generate_stream", fake_stream), \
+         patch("proxy.api.routes.evennia_client.configure_world", fake_configure), \
+         patch("proxy.api.routes.evennia_client.submit_action", new_callable=AsyncMock,
+               return_value={"success": True, "action_tick": 1, "consequences": []}), \
+         patch("proxy.api.routes._dispatch_lore_extraction"), \
+         TestClient(app) as client:
+        r = client.post("/v1/chat/completions", json={
+            "model": "spm-sovereign-mesh", "stream": True, "session_id": "seedwire_s1",
+            "messages": [
+                {"role": "system", "content": "[scene:dungeon_cellar] [Character: Mira]"},
+                {"role": "user", "content": "\"Hello.\" 'They must never find the amulet.'"}]})
+    assert r.status_code == 200
+    assert configured["template_key"] == "dungeon_cellar"
+    assert {p["character_id"] for p in configured["placements"]} == {"user", "mira"}
+    joined = " ".join(m["content"] for m in seen["messages"])
+    assert "amulet" not in joined          # thought redacted from feed AND fallback history
+    assert "Hello." in joined
