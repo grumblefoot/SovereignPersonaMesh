@@ -442,6 +442,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                 character_id=target_char,
                 query_embedding=query_emb,
                 top_k=3,
+                max_cosine_distance=_embed_threshold(settings),
                 session_id=session_id,
                 query_text=user_text,
                 embedding_space_id=query_space_id,
@@ -456,6 +457,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             retrieved_lore = await retriever.retrieve_lore_rules(
                 character_id=target_char,
                 query_embedding=query_emb,
+                max_cosine_distance=_embed_threshold(settings),
                 embedding_space_id=query_space_id,
             )
         except Exception as e:
@@ -932,6 +934,14 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
         task.add_done_callback(_log_task_done)
+
+def _embed_threshold(settings) -> float:
+    """Decision 6: per-model cosine-distance cut, calibrated via the bake-off."""
+    try:
+        return float(settings.get("EMBEDDING_MAX_COSINE_DISTANCE", 0.35))
+    except (TypeError, ValueError):
+        return 0.35
+
 
 def _redact_private_spans(text: str) -> str:
     """Strip thought spans from a user message (fallback-history redaction)."""
