@@ -426,3 +426,14 @@ def test_quiet_generation_persists_nothing(rig):
     assert tick == 0                                    # no world tick
     assert rig._rows_for_turn(f"{rig.session_id}:1") == 0          # no perception rows
     assert rig._rows_for_turn(f"{rig.session_id}:1#reply") == 0    # no reply action
+
+
+# ── QA A2: the tick counts USER turns; replies don't advance it (decision 10) ──
+
+def test_tick_counts_user_turns_not_replies(rig):
+    rig.turn(sysmsgs() + [{"role": "user", "content": '"First."'}])
+    rig.turn(sysmsgs() + [{"role": "user", "content": '"Second."'}])
+    tick = dict(world_app.app_state.session_ticks).get(rig.session_id, 0)
+    assert tick == 2          # was 3: each reply advanced the clock too
+    # replies still land, at their own turn's tick
+    assert rig._rows_for_turn(f"{rig.session_id}:2#reply") >= 1
