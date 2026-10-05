@@ -68,7 +68,7 @@ def test_chat_route_records_perceptions_and_sends_turn_id():
     from proxy.main import app
 
     async def fake_stream(*a, **kw):
-        yield "A reply."
+        yield "<think>plan</think>A reply."
 
     calls = []
 
@@ -148,3 +148,16 @@ def test_first_turn_seeds_world_and_fallback_redacts_thoughts():
     joined = " ".join(m["content"] for m in seen["messages"])
     assert "amulet" not in joined          # thought redacted from feed AND fallback history
     assert "Hello." in joined
+
+
+@pytest.mark.asyncio
+async def test_tainted_reply_is_not_recorded_as_world_state():
+    from unittest.mock import AsyncMock, patch
+    import proxy.api.routes as routes
+
+    with patch.object(routes, "_db_pool", object()), \
+         patch("proxy.api.routes.evennia_client.submit_action", new_callable=AsyncMock) as sub, \
+         patch("proxy.api.routes.record_turn_perceptions", new_callable=AsyncMock) as rec:
+        await routes._record_reply_action("s1", "mira", "leaked planning text", "s1:3", tainted=True)
+    sub.assert_not_called()
+    rec.assert_not_called()
