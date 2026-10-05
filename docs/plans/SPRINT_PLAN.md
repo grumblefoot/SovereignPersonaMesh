@@ -235,3 +235,30 @@ the NPU embedding path itself is what the bake-off disqualified.
 
 Live verification: services restarted on this code; end-to-end turn through :5050 with
 gated history, validated GM actions and Qwen3 embeddings confirmed in the logs.
+
+## 11. Sprint 4: complete (2026-10-05)
+
+Landed on `V0.4` (`..c61393b`), suite **753 passed, 2 skipped**.
+
+- **Chat-scoped lore (OPEN-007 closed):** extraction stamps `session_id`/`scope`,
+  retrieval filters to (this chat OR canon), promote-to-canon endpoint, session
+  delete clears the chat's rules and keeps canon, per-chat dedupe. `test_lore_scope.py`.
+- **Token budget (OPEN-008 closed, P0-P2+UI):** max_tokens clamped to the window;
+  PRD-split allocator (card + latest user turn untrimmable, oversized card refuses
+  visibly per SD-03; memories/lore/history trim in plan order, monologue stripped
+  before turns drop); per-model chars/token EMA calibrated from streamed usage;
+  admin UI fields (Hermes). Deferred: cost caps for paid APIs, rolling summaries.
+- **Scheduler (OPEN-004 closed):** sleep cycle moved inside the proxy through the
+  P3 lane (decision 15) — chat preempts it, coalescing re-queues it; snapshot
+  telemetry at `GET /admin/api/v1/scheduler`. Deferred: model-affinity batching,
+  circuit breaker.
+- **B5:** `X-SPM-Gen-Type` honoured — quiet/impersonate generations answer with
+  gated context but persist nothing (no tick, rows, memories, lore, GM actions).
+- Spec deviations recorded: SD-02 (per-model threshold, native dims), SD-03
+  (budget split + refusal). Division of labor: Hermes built A1 and both admin UI
+  sections; elephant side did the allocator, scoping, scheduler and reviews.
+
+**All five planned sprints (0-4) are complete.** Remaining backlog, all optional:
+ONNX CPU embedding fallback, B4 fingerprint fallback, cost accounting, rolling
+summaries, model-affinity batching, circuit breaker, OPEN-001 auth (deferred by
+decision until SPM leaves the homelab).
