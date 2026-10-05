@@ -408,3 +408,21 @@ def test_backend_max_tokens_is_clamped_to_window(rig, monkeypatch):
     assert captured["max_tokens"] is not None
     assert captured["max_tokens"] <= window          # old code sent a flat 128000
     assert captured["max_tokens"] >= 256
+
+
+# ── B5: quiet/impersonate generations write nothing ────────────────────────
+
+def test_quiet_generation_persists_nothing(rig):
+    msgs = sysmsgs() + [{"role": "user", "content": '"Summarize so far."'}]
+    sys_part = [m for m in msgs if m["role"] == "system"]
+    r = rig.client.post("/v1/chat/completions",
+                        headers={"X-SPM-Chat-ID": rig.chat_id,
+                                 "X-SPM-Gen-Type": "quiet"},
+                        json={"model": "spm-sovereign-mesh", "stream": True,
+                              "messages": msgs})
+    assert r.status_code == 200
+    assert len(rig.prompts) == 1                        # the LLM still answered
+    tick = dict(world_app.app_state.session_ticks).get(rig.session_id, 0)
+    assert tick == 0                                    # no world tick
+    assert rig._rows_for_turn(f"{rig.session_id}:1") == 0          # no perception rows
+    assert rig._rows_for_turn(f"{rig.session_id}:1#reply") == 0    # no reply action
