@@ -397,3 +397,37 @@ def test_deterministic_repeat_parse():
 def test_parsed_message_defaults():
     res = ParsedMessage()
     assert res.actions == [] and res.ooc is False
+
+
+# ── Decision 11: malformed markers are hints that degrade to plain speak ────
+# (missing closer, unknown tag, swapped/mixed delimiters — never a crash, never
+# a privileged action, the words stay audible as ordinary speech)
+
+@pytest.mark.parametrize("raw", [
+    '[whisper:Mira "no closing bracket',
+    '[shout "no closing bracket either',
+    "'an unclosed thought quote",
+    '[whisp:Mira] "typoed tag name"',
+    '[move:] "empty move target"',
+    '\'a\' then "b" then [shout unclosed at the end',
+])
+def test_malformed_markers_degrade_to_speak(raw):
+    actions = parse_user_message(raw)            # must never raise
+    assert actions, "fail-open means SOMETHING is emitted"
+    for a in actions:
+        # A malformed marker may never grant a privileged channel by accident:
+        # whispers/shouts/moves require their tag to be well-formed and closed.
+        if a.action_type in ("whisper", "shout", "move"):
+            raise AssertionError(f"malformed input produced {a.action_type}: {raw!r}")
+
+
+def test_malformed_marker_words_stay_audible():
+    acts = parse_user_message('[whisper:Mira "secret plan without closer')
+    spoken = " ".join(a.content for a in acts if a.action_type == "speak")
+    assert "secret plan without closer" in spoken
+
+
+def test_well_formed_thought_still_private_next_to_malformed_tag():
+    acts = parse_user_message("'keep this private' [whisp:X] \"say this\"")
+    assert [a.action_type for a in acts if a.content == "keep this private"] == ["thought"]
+    assert any(a.action_type == "speak" and a.content == "say this" for a in acts)
