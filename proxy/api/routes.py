@@ -27,6 +27,7 @@ from proxy.rag.tier_manager import MemoryTierManager
 from proxy.rag.lore_extractor import LoreExtractionWorker
 from proxy.backend_client.lemonade_client import LemonadeLLMClient, LLMBackendError, DEFAULT_CHAT_MODEL, SPM_VIRTUAL_MODEL_ID
 from proxy.core.llm_scheduler import get_scheduled_client, QueueFull, QueueWaitTimeout
+from proxy.gating.perception import record_turn_perceptions
 from proxy.backend_client.evennia_client import EvenniaWorldClient
 from proxy.embeddings import get_embedding_service, space_id_for
 from core.resource_manager import strings
@@ -299,6 +300,10 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     is_bulk = await _check_bulk_import(request, session_id, _db_pool)
 
     # --- Step 1: spatial routing via Evennia ---
+    # Decision 10 on the live path: the turn id is the user-message count, so a regenerate
+    # re-sends the same turn_id and the engine's per-session tick does not advance.
+    user_msg_count = sum(1 for m in request.messages if m.role == "user")
+    turn_id = f"{session_id}:{user_msg_count}"
     # OPEN-010: if the world engine is down, degrade to an ungated turn instead of a raw 500.
     # Roleplay must survive an engine outage; the turn simply has no spatial consequences.
     try:
@@ -307,11 +312,26 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             action_type="speak",
             raw_text=user_text,
             target_id=target_char,
-            session_id=session_id
+            session_id=session_id,
+            turn_id=turn_id,
         )
     except Exception as e:
         logger.error(f"[SPMProxy] World engine unavailable; continuing ungated for session {session_id}: {e}")
         world_res = {"consequences": [], "engine_unavailable": True}
+
+    # Sprint 2 chunk 3: record what every recipient perceived (post-gating) — the
+    # per-character gated history is rebuilt from these rows, not the raw transcript.
+    if _db_pool and world_res.get("consequences"):
+        try:
+            async with _db_pool.acquire() as conn:
+                await record_turn_perceptions(
+                    conn, session_id=session_id,
+                    tick=int(world_res.get("action_tick", 0)),
+                    turn_id=turn_id, actor_id="user", action_type="speak",
+                    consequences=world_res["consequences"],
+                )
+        except Exception as e:
+            logger.warning(f"[SPMProxy] Perception recording skipped: {e}")
 
     # Find sensory consequence for target character
     sensory_feed = user_text
@@ -480,7 +500,7 @@ The text after </think> must ONLY be narrative and dialogue.
 
         # Dispatch any GM actions found in the monologue sequentially in background
         task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
-                                                turn_index=sum(1 for m in request.messages if m.role == 'user')))
+                                                turn_index=user_msg_count))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
@@ -584,7 +604,7 @@ The text after </think> must ONLY be narrative and dialogue.
 
         # Dispatch any GM actions found in the monologue sequentially in background
         task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
-                                                turn_index=sum(1 for m in request.messages if m.role == 'user')))
+                                                turn_index=user_msg_count))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
