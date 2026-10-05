@@ -104,10 +104,53 @@ async def list_models():
 import re
 
 
+_NAME = r"[^\[\]\n:'’]"          # a name: any script, no brackets/newline/colon/apostrophe
+_CONTROL_TAGS = ("scenario", "system", "user", "assistant", "context", "scene", "move",
+                 "whisper", "shout", "gm_action", "character", "charactername")
+
+
+def _looks_like_name(text: str) -> bool:
+    """Names are short. A bracketed persona/card DESCRIPTION ("[Vardus is a tall and fit
+    human male in his late 20's ...") is not a name (QA 2026-10-05)."""
+    return 0 < len(text.split()) <= 3
+
+
 def _extract_target_char(messages: List[ChatCompletionMessage]) -> str:
-    """Extract the target character identifier from system prompts or message metadata."""
+    """Extract the target character identifier from system prompts or message metadata.
+
+    SillyTavern's own instruction ("Write <char>'s next reply ...") is authoritative and
+    is searched in EVERY system message first: the old reversed scan hit the persona
+    block before it and named the character after the user's persona description.
+    Names may be in any script ("美 Mei")."""
     if not messages:
         return "default"
+    for msg in messages:
+        if msg.role == "system" and msg.content:
+            match = re.search(r"Write\s+(.+?)['’]s\s+next\s+reply", msg.content, re.IGNORECASE)
+            if match and _looks_like_name(match.group(1)):
+                return safe_char_id(match.group(1))
+    for msg in reversed(messages):
+        if msg.role == "system" and msg.content:
+            content = msg.content
+            # Pattern 1: [CharName's Personality=...]
+            match = re.search(rf"\[({_NAME}+?)['’]s\s+Personality=", content, re.IGNORECASE)
+            if match and _looks_like_name(match.group(1)):
+                return safe_char_id(match.group(1))
+            # Pattern 2: [Character: CharName] or Character: CharName
+            match = re.search(rf"(?:\[Character:\s*|Character:\s*)({_NAME}+?)(?:\]|\n|$)", content, re.IGNORECASE)
+            if match and _looks_like_name(match.group(1)):
+                return safe_char_id(match.group(1))
+            # Pattern 3: [<CharName>:] or [<CharName>'s ...] — last resort. SPM's own
+            # control tags are excluded ("[scene:KEY]" once named a character 'scene'),
+            # and so is anything longer than a name.
+            match = re.search(rf"\[({_NAME}+?)(?:['’]s|:)", content)
+            if match and _looks_like_name(match.group(1)):
+                char_name = safe_char_id(match.group(1))
+                if char_name not in _CONTROL_TAGS:
+                    return char_name
+        elif msg.name:
+            return safe_char_id(msg.name)
+    return "default"
     for msg in reversed(messages):
         if msg.role == "system" and msg.content:
             content = msg.content
@@ -147,9 +190,10 @@ def _extract_persona_name(messages: List[ChatCompletionMessage]) -> str:
     the validator maps this alias onto "user" (gm plan A.3)."""
     for msg in messages:
         if msg.role == "system" and msg.content:
-            m = re.search(r"chat\s+between\s+[A-Za-z0-9_\-\s]+?\s+and\s+([A-Za-z0-9_\-]+)",
-                          msg.content, re.IGNORECASE)
-            if m:
+            # Any script on either side ("between 美 Mei and Vardus"); the persona is
+            # the last name, up to the sentence end.
+            m = re.search(r"chat\s+between\s+.+?\s+and\s+([^\n.,]+)", msg.content, re.IGNORECASE)
+            if m and _looks_like_name(m.group(1)):
                 return m.group(1).strip().lower()
     return ""
 
