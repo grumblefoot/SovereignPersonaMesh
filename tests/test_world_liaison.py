@@ -297,8 +297,11 @@ class TestHealthEndpoint:
 
 class TestActionEndpoint:
     def test_submit_speak_action(self, client):
-        place(client, "rowan", "cellar")
-        place(client, "domino", "cellar")
+        # Placed in the SAME session the action runs in. This used to place them in
+        # default_session and pass only via the engine's cross-session fallback to
+        # the global current_world (QA 2026-10-05) — i.e. the test encoded the leak.
+        place(client, "rowan", "cellar", session_id="test-session")
+        place(client, "domino", "cellar", session_id="test-session")
         r = client.post("/api/v1/world/action", json={
             "character_id": "rowan",
             "action_type": "speak",
