@@ -490,6 +490,31 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         except Exception as e:
             logger.warning(f"[SPMProxy] Gated history unavailable, using raw transcript: {e}")
 
+    # Token budget P1 (OPEN-008): fit memories, lore and history into the window.
+    # The card and the latest user turn are never trimmed; if even they don't fit,
+    # refuse visibly rather than silently truncating the card (decision 16).
+    retrieved_memories, retrieved_lore, chat_history, budget_report = budget.allocate(
+        settings=settings, hw_config=prompt_builder.config, model=str(request.model),
+        system_text=system_prompt, memories=retrieved_memories, lore=retrieved_lore,
+        history=chat_history)
+    if budget_report.trimmed.get("history") or budget_report.trimmed.get("memories") \
+            or budget_report.trimmed.get("lore"):
+        logger.info(f"[TokenBudget] {budget_report.trimmed} trimmed; used={budget_report.used}")
+    if budget_report.refused:
+        logger.error(f"[TokenBudget] turn refused: {budget_report.refusal_reason}")
+        notice = f"*[SPM: {budget_report.refusal_reason} This turn was not sent.]*"
+        if request.stream is False:
+            return JSONResponse(status_code=413, content={
+                "error": {"message": budget_report.refusal_reason, "type": "context_overflow"}})
+
+        async def overflow_stream():
+            yield "data: " + json.dumps({"id": "chatcmpl-spm-overflow",
+                "object": "chat.completion.chunk", "created": int(time.time()),
+                "model": request.model, "choices": [{"index": 0,
+                "delta": {"content": notice}, "finish_reason": "stop"}]}) + "\n\n"
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(overflow_stream(), media_type="text/event-stream")
+
     gm_mode = resolve_gm_actions_mode(settings)   # resolves "auto" by backend locality
     csa_messages = prompt_builder.build_csa_messages(
         system_prompt=system_prompt,
@@ -499,6 +524,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         spatial_context=f"Location: {location_name}",
         frontend_max_tokens=frontend_max_tokens,
         gm_mode=gm_mode,
+        max_history=None,     # the allocator above already budgeted the history
     )
 
     # Ensure closing tags are NOT in LLM stop sequence list

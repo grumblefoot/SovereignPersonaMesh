@@ -54,3 +54,69 @@ def test_bad_inputs_are_ignored():
     budget.calibrate("m", 0, 10)
     budget.calibrate("m", 10, 0)
     assert "m" not in budget._calibrated_ratio
+
+
+# ── P1: allocator ───────────────────────────────────────────────────────────
+
+def _alloc(history=None, memories=None, lore=None, system="You are Mira.", window=None):
+    settings = {"context_window_override": window} if window else {}
+    return budget.allocate(
+        settings=settings, hw_config=TIER, model="m", system_text=system,
+        memories=memories or [], lore=lore or {"invariants": [], "triggers": []},
+        history=history if history is not None else [])
+
+
+def test_200_turn_history_fits_the_window():
+    history = []
+    for i in range(200):
+        history.append({"role": "user", "content": f"user turn {i} " + "words " * 60})
+        history.append({"role": "assistant", "content": f"reply {i} " + "words " * 60})
+    history.append({"role": "user", "content": "the latest question"})
+    mem, lore, kept, report = _alloc(history=history)
+    assert not report.refused
+    assert budget.estimate_messages(kept) + report.used["system_card"] <= report.window
+    assert kept[-1]["content"] == "the latest question"      # never trimmed
+    assert report.trimmed["history"] > 0
+
+
+def test_latest_user_turn_survives_even_a_tiny_window():
+    history = [{"role": "user", "content": "old " * 500},
+               {"role": "assistant", "content": "older reply " * 500},
+               {"role": "user", "content": "the latest question"}]
+    mem, lore, kept, report = _alloc(history=history, window=4096)
+    assert not report.refused
+    assert any(m.get("content") == "the latest question" for m in kept)
+
+
+def test_oversized_card_refuses_instead_of_truncating():
+    mem, lore, kept, report = _alloc(system="card " * 40000, window=8192)
+    assert report.refused
+    assert "card" in report.refusal_reason or "system prompt" in report.refusal_reason
+
+
+def test_monologue_stripped_from_old_turns_before_dropping():
+    long_think = "<think>" + "secret plan " * 400 + "</think>visible reply"
+    history = ([{"role": "user", "content": "q0"},
+                {"role": "assistant", "content": long_think}]
+               + [{"role": "user", "content": f"q{i} " + "w " * 40} for i in range(1, 40)]
+               + [{"role": "user", "content": "latest"}])
+    mem, lore, kept, report = _alloc(history=history, window=4096)
+    assert budget.estimate_messages(kept) > 0
+    old_assistant = [m for m in kept if m.get("role") == "assistant"]
+    assert old_assistant, "the assistant turn should be stripped, not dropped"
+    for m in old_assistant:
+        assert "secret plan" not in m["content"]              # stripped, not kept verbatim
+        assert "visible reply" in m["content"]                # the public part survives
+    assert report.trimmed["history"] == 0                     # stripping sufficed
+
+
+def test_memories_and_lore_trim_worst_first():
+    memories = [{"sensory_input": f"memory {i} " + "detail " * 200} for i in range(20)]
+    lore = {"invariants": [{"rule_text": "inv " + "r " * 100}],
+            "triggers": [{"rule_text": f"trig {i} " + "r " * 200} for i in range(10)]}
+    mem, kept_lore, hist, report = _alloc(memories=memories, lore=lore, window=8192)
+    assert 0 < len(mem) < 20                                  # best-first kept
+    assert mem[0]["sensory_input"].startswith("memory 0")
+    assert kept_lore["invariants"]                            # invariants survive longest
+    assert report.trimmed["memories"] > 0
+    assert report.trimmed["lore"] > 0

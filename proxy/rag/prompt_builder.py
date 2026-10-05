@@ -121,6 +121,7 @@ class CognitivePromptBuilder:
         frontend_max_tokens: int = 300,
         style_card: Optional[Any] = None,
         gm_mode: str = "full",
+        max_history: Optional[int] = 15,
     ) -> List[Dict[str, str]]:
         """
         Assembles OpenAI-native structured messages array for Character Subagent execution.
@@ -169,7 +170,9 @@ class CognitivePromptBuilder:
             )
 
         messages = [{"role": "system", "content": system_content}]
-        for msg in chat_history[-15:]:
+        # None = the caller already budgeted the history (token budget P1); the
+        # legacy fixed cap only applies when no allocator ran.
+        for msg in (chat_history if max_history is None else chat_history[-max_history:]):
             r = msg.get("role", "user")
             c = msg.get("content", "")
             if r == "assistant" and self.config.inner_monologue_enabled:
