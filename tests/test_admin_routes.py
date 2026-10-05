@@ -126,7 +126,9 @@ def test_delete_session():
             pass
             
     mock_pool.acquire.return_value = PoolMock()
-    mock_conn.fetch.return_value = [{"table_name": "csa_memory_char1"}]
+    # First fetch: memory tables; second: lore tables (session delete now also
+    # clears that chat's lore rows, keeping canon).
+    mock_conn.fetch.side_effect = [[{"table_name": "csa_memory_char1"}], []]
     mock_conn.execute.return_value = "DELETE 5"
     
     set_admin_db_pool(mock_pool)

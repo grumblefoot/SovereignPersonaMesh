@@ -459,6 +459,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                 query_embedding=query_emb,
                 max_cosine_distance=_embed_threshold(settings),
                 embedding_space_id=query_space_id,
+                session_id=session_id,
             )
         except Exception as e:
             logger.warning(f"[SPMProxy] Lore retrieval skipped: {e}")

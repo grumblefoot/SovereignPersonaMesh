@@ -92,7 +92,8 @@ def test_defaults_resolve_openai_compat_on_local_backend():
     settings["EMBEDDING_PROVIDER"] = "auto"
     settings["BACKEND_LLM_URL"] = LEMONADE
     assert resolve_provider_name(settings) == "openai_compat"
-    assert settings["EMBEDDING_MODEL"] == "embed-gemma-300m-FLM"
+    # Default switched after the decision-4 bake-off (docs/plans/BAKEOFF_2026-10-05.md).
+    assert settings["EMBEDDING_MODEL"] == "Qwen3-Embedding-0.6B-GGUF-Q8_0"
     assert settings["EMBEDDING_DIM"] == 0
     assert settings["EMBEDDING_TIMEOUT_S"] == 3
 
@@ -495,13 +496,15 @@ def test_lore_invariants_survive_without_vectors_and_triggers_respect_space():
                 await conn.execute("SELECT create_csa_lore_rules_table('loretest');")
                 space_id = await service.ensure_space(conn)
                 trig_vec = await service.generate_embedding("the cursed sword awakens")
+                # Lore is chat-scoped since B2 (OPEN-007): seed into the session
+                # the retrieval below uses (its default, 'default_session').
                 await conn.execute(
-                    "INSERT INTO csa_lore_rules_loretest (rule_text, rule_type, status) "
-                    "VALUES ('Luna never lies', 'invariant', 'active');")
+                    "INSERT INTO csa_lore_rules_loretest (rule_text, rule_type, status, session_id) "
+                    "VALUES ('Luna never lies', 'invariant', 'active', 'default_session');")
                 await conn.execute(
                     "INSERT INTO csa_lore_rules_loretest (rule_text, rule_type, status, "
-                    "rule_embedding, embedding_space_id) VALUES "
-                    "('Game over if the cursed sword awakens', 'game_over', 'active', $1::vector, $2);",
+                    "rule_embedding, embedding_space_id, session_id) VALUES "
+                    "('Game over if the cursed sword awakens', 'game_over', 'active', $1::vector, $2, 'default_session');",
                     _vec_str(trig_vec), space_id)
 
             # Degraded mode: invariants still apply, trigger matching is skipped.
