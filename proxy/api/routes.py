@@ -170,6 +170,10 @@ def _assemble_system_prompt(messages: List[ChatCompletionMessage], settings: dic
     return "\n\n".join(parts)
 
 
+class _EphemeralTurn(Exception):
+    """Internal: short-circuits world writes for quiet/impersonate generations."""
+
+
 def _extract_session_id(request: Request, body: dict) -> str:
     """
     Extract session_id from request with precedence:
@@ -305,8 +309,18 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     last_msg = request.messages[-1] if request.messages else ChatCompletionMessage(role="user", content="")
     user_text = last_msg.content
 
+    # B5 (gm_actions_and_lore_scope.md): ST background generations must not touch
+    # world state. The extension sends X-SPM-Gen-Type; 'quiet' and 'impersonate'
+    # turns still ANSWER (with gated context) but WRITE nothing — no tick, no
+    # perception rows, no reply action, no memories, no lore, no GM actions.
+    # An unsubstituted "{{spmGenType}}" macro (extension missing) counts as absent.
+    gen_type = (req.headers.get("X-SPM-Gen-Type") or "").strip().lower()
+    ephemeral = gen_type in ("quiet", "impersonate")
+    if ephemeral:
+        logger.info(f"[SPMProxy] Ephemeral generation ({gen_type}): nothing will be persisted.")
+
     # --- FR-002: Bulk Import Detection ---
-    is_bulk = await _check_bulk_import(request, session_id, _db_pool)
+    is_bulk = False if ephemeral else await _check_bulk_import(request, session_id, _db_pool)
 
     # --- Step 1: spatial routing via Evennia ---
     # Decision 10 on the live path: the turn id is the user-message count, so a regenerate
@@ -347,6 +361,8 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # OPEN-010: if the world engine is down, degrade to an ungated turn instead of a raw 500.
     # Roleplay must survive an engine outage; the turn simply has no spatial consequences.
     try:
+        if ephemeral:
+            raise _EphemeralTurn()      # no world action, no tick; handled below
         world_res = await evennia_client.submit_action(
             character_id="user",
             action_type=primary_action,
@@ -366,6 +382,8 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                     idempotency_key=f"user-move:{turn_id}:{i}", origin="user")
             except Exception as mv_exc:
                 logger.info(f"[SPMProxy] User move to '{room_slug}' not applied: {mv_exc}")
+    except _EphemeralTurn:
+        world_res = {"consequences": []}
     except Exception as e:
         logger.error(f"[SPMProxy] World engine unavailable; continuing ungated for session {session_id}: {e}")
         world_res = {"consequences": [], "engine_unavailable": True}
@@ -623,18 +641,19 @@ The text after </think> must ONLY be narrative and dialogue.
 
         logger.info(f"[BackendReturnSPMLog] Monologue: {inner_monologue} | Public: {public_resp}")
 
-        # Dispatch any GM actions found in the monologue sequentially in background
-        task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
-                                                turn_index=user_msg_count))
-        reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id,
-                                                         tainted=parser.is_failsafe_triggered))
-        _background_tasks.add(reply_task)
-        reply_task.add_done_callback(_background_tasks.discard)
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
+        if not ephemeral:
+            # Dispatch any GM actions found in the monologue sequentially in background
+            task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
+                                                    turn_index=user_msg_count))
+            reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id,
+                                                             tainted=parser.is_failsafe_triggered))
+            _background_tasks.add(reply_task)
+            reply_task.add_done_callback(_background_tasks.discard)
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
 
-        # Dispatch Lore Extraction in background
-        _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp)
+            # Dispatch Lore Extraction in background
+            _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp)
 
         if inner_monologue:
             telemetry.push_thought_event(session_id, {
@@ -643,7 +662,7 @@ The text after </think> must ONLY be narrative and dialogue.
                 "thought": inner_monologue,
             })
 
-        if _db_pool and public_resp:
+        if _db_pool and public_resp and not ephemeral:
             try:
                 table_name = f"csa_memory_{safe_char_id(target_char)}"
                 async with _db_pool.acquire() as conn:
@@ -737,18 +756,19 @@ The text after </think> must ONLY be narrative and dialogue.
         logger.info(f"[BackendReturnSPMLog] Monologue: {inner_monologue} | Public: {public_resp}")
         logger.info(f"[SPMReturnSillyLog] Sent streaming chunks to SillyTavern. Final public response: {public_resp}")
 
-        # Dispatch any GM actions found in the monologue sequentially in background
-        task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
-                                                turn_index=user_msg_count))
-        reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id,
-                                                         tainted=parser.is_failsafe_triggered))
-        _background_tasks.add(reply_task)
-        reply_task.add_done_callback(_background_tasks.discard)
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
+        if not ephemeral:
+            # Dispatch any GM actions found in the monologue sequentially in background
+            task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
+                                                    turn_index=user_msg_count))
+            reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id,
+                                                             tainted=parser.is_failsafe_triggered))
+            _background_tasks.add(reply_task)
+            reply_task.add_done_callback(_background_tasks.discard)
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
 
-        # Dispatch Lore Extraction in background
-        _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp)
+            # Dispatch Lore Extraction in background
+            _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp)
 
         # Push inner monologue to Thought Monitor SSE stream
         if inner_monologue:
@@ -766,7 +786,7 @@ The text after </think> must ONLY be narrative and dialogue.
         })
 
         # Persist finalized turn without duplicate bleed on regeneration
-        if _db_pool and public_resp:
+        if _db_pool and public_resp and not ephemeral:
             try:
                 table_name = f"csa_memory_{safe_char_id(target_char)}"
                 async with _db_pool.acquire() as conn:
