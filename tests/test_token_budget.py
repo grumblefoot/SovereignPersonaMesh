@@ -229,3 +229,39 @@ def test_sleep_runner_db_config_matches_the_proxy(monkeypatch):
     assert cfg["database"] == "litellm_postgres"
     monkeypatch.setenv("POSTGRES_PORT", "6543")
     assert db_config_from_env()["port"] == 6543      # honours the shared variable
+
+
+# ── QA 2026-10-05 (step A1, real third-party card): target/persona detection ──
+
+def _real_card_msgs():
+    from proxy.api.routes import ChatCompletionMessage as M
+    return [M(role="system", content="Write 美 Mei's next reply in a fictional chat between 美 Mei and Vardus."),
+            M(role="system", content="[Vardus is a tall and fit human male in his late 20's. "
+                                      "He has a muscular swimmers build, he has dark brown hair]"),
+            M(role="user", content="Hello.")]
+
+
+def test_target_is_the_character_not_the_persona_description():
+    from proxy.api.routes import _extract_target_char
+    assert _extract_target_char(_real_card_msgs()) == "mei"   # was the persona description
+
+
+def test_persona_extracted_when_the_character_name_is_not_ascii():
+    from proxy.api.routes import _extract_persona_name
+    assert _extract_persona_name(_real_card_msgs()) == "vardus"
+
+
+def test_bracket_fallback_rejects_descriptions():
+    from proxy.api.routes import _extract_target_char, ChatCompletionMessage as M
+    msgs = [M(role="system", content="[Vardus is a tall and fit human male in his late 20's]"),
+            M(role="user", content="hi")]
+    assert _extract_target_char(msgs) == "default"
+
+
+def test_non_latin_names_get_distinct_stable_ids():
+    from core.identifiers import safe_char_id
+    a, b = safe_char_id("美美"), safe_char_id("Мира")
+    assert a != b and a != "default" and b != "default"      # used to all be 'default'
+    assert a == safe_char_id("美美")                           # stable
+    assert safe_char_id("美 Mei") == "mei"                     # Latin part still readable
+    assert safe_char_id("") == "default"
