@@ -9,9 +9,16 @@ Replaces the never-wired InferenceFIFOQueue. Phase P1+P2 scope:
 - slot held for the WHOLE stream and always released exactly once,
 - a snapshot for telemetry, and sequence ids (SRD 5.1 "sequence ID tracking").
 
-Deferred to phase P3 (decision 13 approved both): chat preempting running background
-work, and regenerate superseding the in-flight turn for a session. Idle grace,
-model-affinity batching, retries and the circuit breaker are P3 too.
+Phase P3 (decision 13 approved both):
+- chat PREEMPTS running background work: a P0 arrival with no free slot cancels one
+  running P2/P3 job (P3 first). P1 embed is never preempted — an embed may be serving
+  the very chat turn that is asking for the slot. Coalescing makes the loss cheap: the
+  next turn re-enqueues the same background key.
+- regenerate SUPERSEDES the in-flight turn: a new P0 for a session cancels any other
+  P0 for that session, queued or running. SillyTavern has already abandoned the old
+  stream by the time it re-sends the turn.
+
+Still deferred: idle grace, model-affinity batching, retries and the circuit breaker.
 """
 
 import asyncio
@@ -56,6 +63,8 @@ class _Job:
     enqueued_at: float
     deadline_at: Optional[float]
     ready: asyncio.Future = field(repr=False, default=None)
+    task: Optional["asyncio.Task"] = field(repr=False, default=None)  # holder, for preempt/supersede
+    evicted: bool = False               # preempted/superseded while running
 
 
 class LLMScheduler:
@@ -77,7 +86,8 @@ class LLMScheduler:
         self._running: List[_Job] = []
         self.loaded_model: Optional[str] = None
         self.counters = {"dispatched": 0, "completed": 0, "rejected": 0, "timed_out": 0,
-                         "cancelled": 0, "coalesced": 0, "model_swaps": 0}
+                         "cancelled": 0, "coalesced": 0, "model_swaps": 0,
+                         "preempted": 0, "superseded": 0}
         self._wait_times: deque = deque(maxlen=200)
 
     # ── Introspection ────────────────────────────────────────────────
@@ -150,9 +160,45 @@ class LLMScheduler:
     def _release(self, job: _Job) -> None:
         if job in self._running:
             self._running.remove(job)
-            self.counters["completed"] += 1
-            logger.info(f"[LLMScheduler] release seq={job.seq} kind={job.kind}")
+            if not job.evicted:
+                self.counters["completed"] += 1
+            logger.info(f"[LLMScheduler] release seq={job.seq} kind={job.kind}"
+                        + (" (evicted)" if job.evicted else ""))
         self._dispatch()
+
+    def _supersede(self, session_id: str) -> None:
+        """P3: a new interactive turn for a session replaces any other P0 for that
+        session — queued or running. The frontend only re-sends a turn (regenerate,
+        retry after a stall) once it has abandoned the previous stream."""
+        me = asyncio.current_task()
+        for job in list(self._queues[P0_CHAT]):
+            if job.session_id == session_id and not job.ready.done() and job.task is not me:
+                self._queues[P0_CHAT].remove(job)
+                self.counters["superseded"] += 1
+                logger.info(f"[LLMScheduler] supersede queued seq={job.seq} session={session_id}")
+                job.ready.cancel()
+        for job in list(self._running):
+            if (job.priority == P0_CHAT and job.session_id == session_id
+                    and job.task is not None and job.task is not me and not job.task.done()):
+                self.counters["superseded"] += 1
+                job.evicted = True
+                logger.info(f"[LLMScheduler] supersede running seq={job.seq} session={session_id}")
+                job.task.cancel()  # its __aexit__/finally releases the slot
+
+    def _preempt_background(self) -> None:
+        """P3: free a slot for an interactive turn by cancelling one running P2/P3 job
+        (P3 first). P1 embed is exempt: it may be serving the chat turn itself."""
+        me = asyncio.current_task()
+        victims = [j for j in self._running
+                   if j.priority >= P2_LORE and j.task is not None
+                   and j.task is not me and not j.task.done()]
+        if not victims:
+            return
+        victim = max(victims, key=lambda j: (j.priority, -j.seq))  # P3 first, newest first
+        self.counters["preempted"] += 1
+        victim.evicted = True
+        logger.info(f"[LLMScheduler] preempt seq={victim.seq} kind={victim.kind} for chat")
+        victim.task.cancel()  # its __aexit__/finally releases the slot
 
     def _enqueue(self, kind: str, model: str, session_id: str,
                  coalesce_key: Optional[str]) -> _Job:
@@ -160,9 +206,14 @@ class LLMScheduler:
         loop = asyncio.get_running_loop()
         now = self._now()
 
-        if priority == P0_CHAT and len(self._queues[P0_CHAT]) >= self.max_interactive_waiting:
-            self.counters["rejected"] += 1
-            raise QueueFull(f"{len(self._queues[P0_CHAT])} interactive turns already waiting")
+        if priority == P0_CHAT:
+            if session_id:
+                self._supersede(session_id)  # before the cap: a regenerate frees its own seat
+            if len(self._queues[P0_CHAT]) >= self.max_interactive_waiting:
+                self.counters["rejected"] += 1
+                raise QueueFull(f"{len(self._queues[P0_CHAT])} interactive turns already waiting")
+            if len(self._running) >= self.max_concurrency:
+                self._preempt_background()
 
         if priority != P0_CHAT:
             if coalesce_key:
@@ -190,6 +241,7 @@ class LLMScheduler:
             session_id=session_id, coalesce_key=coalesce_key, enqueued_at=now,
             deadline_at=(now + self.p0_wait_deadline_s) if priority == P0_CHAT else None,
             ready=loop.create_future(),
+            task=asyncio.current_task(),
         )
         self._queues[priority].append(job)
         self._dispatch()
