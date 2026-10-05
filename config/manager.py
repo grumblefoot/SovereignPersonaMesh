@@ -48,10 +48,13 @@ _DEFAULT_VALUES: Dict[str, Any] = {
     # Explicit SLA-2 opt-in: lets `auto` pick a non-local EMBEDDING_URL.
     "EMBEDDING_ALLOW_REMOTE": False,
     # ── GM_ACTION extraction (GM actions plan, task A1) ──
-    # off | move_only | full. Invalid values fall back to "full" (see
-    # _validate_gm_actions_mode) — the safest mode is the pre-feature behaviour
-    # boundary, so a typo never silently disables world actions entirely.
-    "gm_actions_mode": "full",
+    # auto | off | move_only | full. "auto" is decision 14's per-backend preset:
+    # it resolves to "full" for a loopback/LAN BACKEND_LLM_URL and to "off" for a
+    # cloud URL (paid APIs don't continue the <think> prefill, and the directive
+    # tokens cost real money there). Invalid values fall back to "full" (see
+    # _validate_gm_actions_mode) — the safest explicit mode is the pre-feature
+    # behaviour boundary, so a typo never silently disables world actions.
+    "gm_actions_mode": "auto",
     "gm_actions_max_per_turn": 4,
     "gm_actions_max_rooms_per_session": 40,
 }
@@ -67,7 +70,17 @@ _INT_KEYS = frozenset({
 })
 
 # Allowed values for gm_actions_mode; anything else falls back to "full".
-_GM_ACTIONS_MODES = frozenset({"off", "move_only", "full"})
+_GM_ACTIONS_MODES = frozenset({"auto", "off", "move_only", "full"})
+
+
+def resolve_gm_actions_mode(settings: Dict[str, Any]) -> str:
+    """The EFFECTIVE mode: resolves "auto" by backend locality (decision 14 —
+    full for local backends, off for paid APIs), mirroring EMBEDDING_PROVIDER."""
+    mode = str(settings.get("gm_actions_mode", "auto")).lower()
+    if mode in ("off", "move_only", "full"):
+        return mode
+    from proxy.embeddings.service import _is_local_url
+    return "full" if _is_local_url(str(settings.get("BACKEND_LLM_URL", ""))) else "off"
 
 # Mapping from config key → env var name (some differ, e.g. backend_max_tokens → BACKEND_MAX_TOKENS).
 _ENV_VAR_MAP: Dict[str, str] = {
