@@ -77,6 +77,15 @@ class EvenniaWorldClient:
         return resp.json()
 
 
+    async def configure_world(self, template_key: str, session_id: str = "default_session",
+                              placements: list = None, origin: str = "system") -> Dict[str, Any]:
+        """Instantiate a template into a session, optionally seeding character placements."""
+        payload = {"template_key": template_key, "session_id": session_id,
+                   "placements": placements or [], "origin": origin}
+        resp = await self.client.post(f"{self.base_url}/world/configure", json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
     async def set_barrier(self, a: str, b: str, barrier: str = "closed_door", state: str = "closed",
                           distance_ft: float = 15.0, session_id: str = "default_session",
                           template_key: str = "dynamic", idempotency_key: Optional[str] = None,
