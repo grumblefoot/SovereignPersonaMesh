@@ -131,7 +131,11 @@ class LemonadeLLMClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stop": stop,
-            "stream": True
+            "stream": True,
+            # Token budget P2: Lemonade (verified 2026-10-05) and OpenAI only put
+            # `usage` in a stream when asked; without this the calibration EMA
+            # never received a single sample live.
+            "stream_options": {"include_usage": True},
         }
         if extra_body:
             payload.update(extra_body)  # backend-specific options, e.g. chat_template_kwargs
