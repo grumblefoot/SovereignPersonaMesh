@@ -21,9 +21,12 @@ class LoreExtractionWorker:
     GM lore rules based on initial context or periodic chat history review.
     """
 
-    def __init__(self, db_pool: asyncpg.Pool):
+    def __init__(self, db_pool: asyncpg.Pool, llm_client=None):
         self.db_pool = db_pool
-        self.llm_client = LemonadeLLMClient()
+        # The SHARED scheduled client (OPEN-004): lore runs at background priority and
+        # can never overlap an interactive turn on a single-slot backend.
+        from proxy.core.llm_scheduler import get_scheduled_client
+        self.llm_client = llm_client or get_scheduled_client()
         self.embedding_engine = CPUEmbeddingEngine()
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
@@ -55,6 +58,8 @@ class LoreExtractionWorker:
         generator = self.llm_client.generate_stream(
             prompt=prompt, model=model, temperature=0.2, max_tokens=8192,
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            job_kind="lore", session_id=session_id,
+            coalesce_key=f"lore:{session_id}:{character_id}",
         )
 
         raw_response = ""
