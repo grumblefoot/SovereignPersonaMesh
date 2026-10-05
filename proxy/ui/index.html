@@ -147,7 +147,8 @@
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
           <h3>Live &lt;think&gt; Thought Stream</h3>
           <select id="session-filter" onchange="filterThoughtStream()" style="width: auto; padding: 4px 8px; font-size: 0.8rem;">
-            <option value="all">All Sessions</option>
+            <option value="current">Current chat</option>
+            <option value="all">All chats</option>
           </select>
         </div>
         <div id="thought-stream-box" style="height: 380px; background: #090d16; border: 1px solid var(--border); border-radius: 6px; padding: 12px; overflow-y: auto; font-family: monospace; font-size: 0.85rem; color: var(--accent);">
@@ -368,99 +369,58 @@
       } catch (e) {}
     }
 
+    // The chat most recently seen by the proxy = "the current chat" for the
+    // Thought viewer. (QA 2026-10-05: these panels used to show invented data.)
+    let currentSessionId = null;
+
+    function escapeHtml(t) {
+      return String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
     async function fetchSpatialMap() {
+      const badge = document.getElementById('map-gating-badge');
+      const grid = document.getElementById('spatial-grid-canvas');
+      const tickEl = document.getElementById('map-tick');
+      const empty = (msg) => {
+        if (badge) { badge.className = 'badge badge-muffled'; badge.innerText = 'UNBOUND'; }
+        if (tickEl) tickEl.innerText = '--';
+        if (grid) grid.innerHTML = `<div style="text-align:center; color:var(--text-muted); font-size:0.85rem; padding:24px 12px; background:#090d16; border:1px dashed var(--border); border-radius:6px; grid-column: 1 / -1;">🗺️ ${msg}</div>`;
+      };
       try {
-        const [healthRes, logsRes] = await Promise.all([
-          fetch('http://localhost:4005/health').catch(() => null),
-          fetch('/admin/api/v1/logs?limit=50').catch(() => null)
-        ]);
+        const logsRes = await fetch('/admin/api/v1/logs?limit=50');
+        const logs = logsRes.ok ? ((await logsRes.json()).logs || []) : [];
+        const latest = logs.length ? logs[logs.length - 1] : null;
+        if (!latest || !latest.session_id) { currentSessionId = null; return empty('No chat yet. The map shows the current chat\'s world.'); }
+        currentSessionId = latest.session_id;
 
-        if (healthRes && healthRes.ok) {
-          const data = await healthRes.json();
-          document.getElementById('map-tick').innerText = data.tick || '--';
-        }
-
-        const badge = document.getElementById('map-gating-badge');
-        const grid = document.getElementById('spatial-grid-canvas');
-
-        let logs = [];
-        if (logsRes && logsRes.ok) {
-          const data = await logsRes.json();
-          logs = data.logs || [];
-        }
-
-        // a) Empty State when SPM is reset / 0 logs exist
-        if (!logs || logs.length === 0) {
-          if (badge) {
-            badge.className = 'badge badge-muffled';
-            badge.innerText = 'UNBOUND';
-          }
-          if (grid) {
-            grid.innerHTML = `
-              <div style="text-align:center; color:var(--text-muted); font-size:0.85rem; padding:24px 12px; background:#090d16; border:1px dashed var(--border); border-radius:6px; grid-column: 1 / -1;">
-                🗺️ No spatial locations discovered yet.<br>
-                <span style="font-size:0.75rem; color:var(--text-dim); margin-top:4px; display:inline-block;">Locations populate dynamically upon initial chat message or import.</span>
-              </div>`;
-          }
-          return;
-        }
-
-        // b) Dynamic Location Discovery & Grid Renderer
-        const latest = logs[logs.length - 1] || logs[0];
-        const latestGating = (latest.gating_level || latest.gating || 'direct').toLowerCase();
-        const activeLoc = latest.location_name || 'Underground Prison';
-        let activeChar = 'Arvenia';
-        if (latest.session_id && latest.session_id.includes('arvenia')) activeChar = 'Arvenia';
-
-        // Update Gate badge
+        const g = String(latest.gating_level || latest.gating || 'direct').toLowerCase();
         if (badge) {
-          if (latestGating === 'blackout') {
-            badge.className = 'badge badge-blackout';
-            badge.innerText = 'BLACKOUT';
-          } else if (latestGating === 'muffled') {
-            badge.className = 'badge badge-muffled';
-            badge.innerText = 'MUFFLED';
-          } else {
-            badge.className = 'badge badge-direct';
-            badge.innerText = 'DIRECT';
-          }
+          badge.className = 'badge ' + (g === 'blackout' ? 'badge-blackout' : (g === 'degraded' || g === 'muffled' ? 'badge-muffled' : 'badge-direct'));
+          badge.innerText = g.toUpperCase();
         }
 
-        // Extract all unique discovered locations from logs only
-        const discovered = new Set();
-        logs.forEach(l => {
-          if (l.location_name) discovered.add(l.location_name);
+        const worldRes = await fetch(`/admin/api/v1/sessions/${encodeURIComponent(currentSessionId)}/world`);
+        if (!worldRes.ok) return empty('World engine unavailable.');
+        const world = await worldRes.json();
+        if (tickEl) tickEl.innerText = world.tick ?? '--';
+
+        const byRoom = {};
+        (world.occupants || []).forEach(o => { (byRoom[o.room_id] = byRoom[o.room_id] || []).push(o.entity_id); });
+        const userRoom = (world.occupants || []).find(o => o.entity_id === 'user')?.room_id;
+        if (!grid) return;
+        if (!(world.rooms || []).length) return empty('This chat has no rooms yet.');
+        grid.innerHTML = `<div style="grid-column:1 / -1; font-size:0.75rem; color:var(--text-muted);">Chat <code>${escapeHtml(currentSessionId.slice(0, 22))}…</code></div>`;
+        world.rooms.forEach(r => {
+          const who = byRoom[r.room_id] || [];
+          const isActive = r.room_id === userRoom;
+          const div = document.createElement('div');
+          div.className = `spatial-room ${isActive ? 'active' : ''}`;
+          div.innerHTML = `
+            <div style="font-weight:bold; color:${isActive ? 'var(--accent)' : 'var(--text-muted)'};">${escapeHtml(r.name || r.room_id)}</div>
+            <div style="color:var(--text-muted); font-size:0.75rem; margin-top:4px;">${who.length ? escapeHtml(who.join(', ')) : 'Empty'}</div>`;
+          grid.appendChild(div);
         });
-        if (discovered.size === 0 && activeLoc) {
-          discovered.add(activeLoc);
-        }
-
-        if (grid) {
-          grid.innerHTML = '';
-          discovered.forEach(loc => {
-            const isActive = loc.toLowerCase() === activeLoc.toLowerCase();
-            const roomDiv = document.createElement('div');
-            roomDiv.className = `spatial-room ${isActive ? 'active' : ''}`;
-            
-            let icon = '🏰';
-            const locLower = loc.toLowerCase();
-            if (locLower.includes('tavern') || locLower.includes('inn')) icon = '🍻';
-            else if (locLower.includes('vault') || locLower.includes('library')) icon = '🏛️';
-            else if (locLower.includes('prison') || locLower.includes('dungeon') || locLower.includes('cell')) icon = '⛓️';
-
-            let charText = 'Characters: None';
-            if (isActive) {
-              charText = latestGating === 'blackout' ? `Characters: ${activeChar}` : `Characters: ${activeChar}, User`;
-            }
-
-            roomDiv.innerHTML = `
-              <div style="font-weight:bold; color:${isActive ? 'var(--accent)' : 'var(--text-muted)'};">${icon} ${loc}</div>
-              <div style="color:var(--text-muted); font-size:0.75rem; margin-top:4px;">${charText}</div>
-            `;
-            grid.appendChild(roomDiv);
-          });
-        }
-      } catch (e) {}
+      } catch (e) { empty('Could not load the world.'); }
     }
 
     async function fetchLogs() {
@@ -488,33 +448,38 @@
           </tr>`;
         }).reverse().join('');
 
-        updateRAGInspector(logs);
+        updateRAGInspector();
       } catch (e) {}
     }
 
-    function updateRAGInspector(logs) {
-      const inspectorBox = document.getElementById('rag-inspector-box');
-      if (!logs || logs.length === 0) return;
-      const recentRagLog = logs.find(l => l.rag_count > 0) || logs[0];
-      if (!recentRagLog) return;
-
-      const cosDist = (Math.random() * 0.15 + 0.12).toFixed(3);
-      const importance = Math.floor(Math.random() * 4 + 7);
-      const score = ((1 - parseFloat(cosDist)) * (1 + importance / 10)).toFixed(3);
-
-      inspectorBox.innerHTML = `
-        <div style="background:#090d16; padding:10px; border-radius:6px; border:1px solid var(--border);">
-          <div style="font-weight:bold; color:var(--accent); margin-bottom:6px;">Target: ${recentRagLog.session_id || 'arvenia'}</div>
-          <div style="font-size:0.8rem; line-height:1.6; color:var(--text-muted);">
-            <div>Cosine Distance (cos): <strong style="color:var(--text);">${cosDist}</strong></div>
-            <div>Importance Score: <strong style="color:var(--success);">${importance}/10</strong></div>
-            <div>Time Decay (e^-λt): <strong style="color:var(--warning);">0.982</strong></div>
-            <div style="margin-top:6px; font-weight:bold; color:var(--accent); border-top:1px solid var(--border); padding-top:4px;">
-              Final RAG Score: ${score}
+    async function updateRAGInspector() {
+      const box = document.getElementById('rag-inspector-box');
+      if (!box) return;
+      if (!currentSessionId) { box.innerHTML = '<p style="color: var(--text-muted);">No chat yet.</p>'; return; }
+      try {
+        const res = await fetch(`/admin/api/v1/sessions/${encodeURIComponent(currentSessionId)}/trace`);
+        if (!res.ok) return;
+        const trace = (await res.json()).trace || [];
+        const last = [...trace].reverse().find(t => t.kind === 'rag');
+        if (!last) { box.innerHTML = '<p style="color: var(--text-muted);">No retrieval recorded for this chat yet.</p>'; return; }
+        const mems = last.memories || [];
+        const rows = mems.length
+          ? mems.map(m => `
+              <div style="border-top:1px solid var(--border); padding:6px 0;">
+                <div style="color:var(--text);">${escapeHtml(m.text)}${m.core ? ' <span class="badge badge-direct">core</span>' : ''}</div>
+                <div style="font-size:0.75rem; color:var(--text-muted);">cos distance <strong style="color:var(--text);">${m.cosine_distance ?? 'n/a (text search)'}</strong> · score <strong style="color:var(--accent);">${m.rag_score ?? '—'}</strong></div>
+              </div>`).join('')
+          : `<p style="color: var(--text-muted);">No memories matched (threshold ${last.threshold}). New chats start with none.</p>`;
+        box.innerHTML = `
+          <div style="background:#090d16; padding:10px; border-radius:6px; border:1px solid var(--border);">
+            <div style="font-weight:bold; color:var(--accent); margin-bottom:6px;">${escapeHtml(last.character)} · ${escapeHtml(last.turn_id || '')}</div>
+            <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:6px;">
+              ${last.vector_search ? 'Vector search' : 'Full-text fallback'} · max distance ${last.threshold} ·
+              lore: ${last.lore_invariants} invariant(s), ${last.lore_triggers} trigger(s)
             </div>
-          </div>
-        </div>
-      `;
+            ${rows}
+          </div>`;
+      } catch (e) {}
     }
 
     function updateVibeProfiler(text) {
@@ -657,7 +622,7 @@
       allThoughtEvents = [];
       knownSessions.clear();
       const select = document.getElementById('session-filter');
-      if (select) select.innerHTML = '<option value="all">ALL SESSIONS</option>';
+      if (select) select.innerHTML = '<option value="current">Current chat</option><option value="all">All chats</option>';
       const box = document.getElementById('thought-stream-box');
       if (box) box.innerHTML = '<em>Listening for live inner monologue thoughts...</em>';
     }
@@ -680,26 +645,31 @@
       }
     }
 
-    function addSessionToFilter(sessionName) {
-      if (!sessionName || knownSessions.has(sessionName)) return;
-      knownSessions.add(sessionName);
-      const select = document.getElementById('session-filter');
+    function addSessionToFilter(sessionId, character) {
+      if (!sessionId || knownSessions.has(sessionId)) return;
+      knownSessions.add(sessionId);
       const opt = document.createElement('option');
-      opt.value = sessionName;
-      opt.innerText = sessionName.toUpperCase();
-      select.appendChild(opt);
+      opt.value = sessionId;
+      opt.innerText = `${(character || 'unknown').toUpperCase()} · ${sessionId.slice(8, 16)}`;
+      document.getElementById('session-filter').appendChild(opt);
+    }
+
+    // Latest chat to produce a thought; the default filter follows it.
+    let latestThoughtSession = null;
+
+    function thoughtMatchesFilter(e) {
+      const f = document.getElementById('session-filter').value;
+      if (f === 'all') return true;
+      if (f === 'current') return (e.session_id || '') === (currentSessionId || latestThoughtSession);
+      return (e.session_id || '') === f;
     }
 
     function filterThoughtStream() {
-      const filterVal = document.getElementById('session-filter').value;
       const box = document.getElementById('thought-stream-box');
       box.innerHTML = '';
-      const filtered = filterVal === 'all' 
-        ? allThoughtEvents 
-        : allThoughtEvents.filter(e => (e.character || e.session_id || '').toLowerCase() === filterVal.toLowerCase());
-      
+      const filtered = allThoughtEvents.filter(thoughtMatchesFilter);
       if (filtered.length === 0) {
-        box.innerHTML = '<em>No thoughts recorded for selected session filter.</em>';
+        box.innerHTML = '<em>No thoughts recorded for this chat yet.</em>';
         return;
       }
       filtered.forEach(renderThoughtItem);
@@ -712,7 +682,8 @@
       }
       const rawText = data.thought || data.chunk || '';
       if (!rawText || !rawText.trim()) return;
-      const char = data.character || data.session_id || 'arvenia';
+      const char = data.character || 'unknown';
+      const sid = (data.session_id || '').slice(0, 22);
       const cleanText = rawText.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
       
       const div = document.createElement('div');
@@ -721,7 +692,7 @@
       div.style.background = '#0f172a';
       div.style.borderRadius = '6px';
       div.style.borderLeft = '4px solid var(--accent)';
-      div.innerHTML = `<div style="font-weight:bold; color:var(--warning); margin-bottom:6px;">💭 INNER MONOLOGUE [${char.toUpperCase()}]</div><div style="color:var(--text); line-height:1.5;">${cleanText}</div>`;
+      div.innerHTML = `<div style="font-weight:bold; color:var(--warning); margin-bottom:6px;">💭 ${escapeHtml(char.toUpperCase())} <span style="color:var(--text-muted); font-weight:normal; font-size:0.75rem;">${escapeHtml(sid)}</span></div><div style="color:var(--text); line-height:1.5;">${cleanText}</div>`;
       box.appendChild(div);
       box.scrollTop = box.scrollHeight;
 
@@ -749,14 +720,10 @@
             );
             if (isDuplicate) return;
 
-            const char = data.character || data.session_id || 'arvenia';
-            addSessionToFilter(char);
+            addSessionToFilter(data.session_id, data.character);
+            latestThoughtSession = data.session_id || latestThoughtSession;
             allThoughtEvents.push(data);
-            
-            const filterVal = document.getElementById('session-filter').value;
-            if (filterVal === 'all' || filterVal.toLowerCase() === char.toLowerCase()) {
-              renderThoughtItem(data);
-            }
+            if (thoughtMatchesFilter(data)) renderThoughtItem(data);
           } catch(err) {}
         };
         evtSource.onerror = () => {

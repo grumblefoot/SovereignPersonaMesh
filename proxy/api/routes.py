@@ -516,6 +516,8 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
 
     # RAG Memory Retrieval (filters out query_text to eliminate regeneration bleed)
     retrieved_memories = []
+    query_emb = None          # defined up front: lore retrieval and the RAG trace read it
+    query_space_id = None     # even when the memory block below bails out early
     if _db_pool and user_text:
         try:
             retriever = EpisodicRAGRetriever(_db_pool)
@@ -549,6 +551,29 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             )
         except Exception as e:
             logger.warning(f"[SPMProxy] Lore retrieval skipped: {e}")
+
+    # Admin RAG inspector: record what retrieval ACTUALLY returned this turn (it used
+    # to display Math.random() numbers). Real distances, scores and the threshold.
+    try:
+        telemetry.record_turn_trace(session_id, {
+            "kind": "rag",
+            "character": target_char,
+            "turn_id": turn_id,
+            "threshold": _embed_threshold(settings),
+            "vector_search": query_emb is not None,
+            "memories": [{
+                "text": str(m.get("sensory_input") or "")[:160],
+                "cosine_distance": (round(float(m["cosine_distance"]), 4)
+                                    if m.get("cosine_distance") is not None else None),
+                "rag_score": (round(float(m["rag_score"]), 4)
+                              if m.get("rag_score") is not None else None),
+                "core": bool(m.get("is_core_memory")),
+            } for m in retrieved_memories],
+            "lore_invariants": len(retrieved_lore.get("invariants", [])),
+            "lore_triggers": len(retrieved_lore.get("triggers", [])),
+        })
+    except Exception as e:
+        logger.debug(f"[SPMProxy] RAG trace skipped: {e}")
 
     # Sprint 2 chunk 4: the character's history is what THEY perceived (spm_perception),
     # never the raw transcript — the omniscience fix. Falls back to the raw messages ONLY

@@ -176,21 +176,18 @@ def test_factory_reset():
     
     set_admin_db_pool(mock_pool)
     
-    # Mock httpx context manager for httpx.AsyncClient delete
-    mock_client = AsyncMock()
-    class HttpxMockContext:
-        async def __aenter__(self):
-            return mock_client
-        async def __aexit__(self, exc_type, exc_val, exc_tb):
-            pass
-
+    # The engine reset goes through the shared, configured evennia_client (a raw
+    # hardcoded-localhost client used to reset the LIVE engine during test runs).
+    from proxy.api.routes import evennia_client
     with patch('proxy.api.admin_routes.get_telemetry_collector') as mock_tel:
-        with patch('httpx.AsyncClient', return_value=HttpxMockContext()):
+        with patch.object(evennia_client, "_client") as http:
+            http.is_closed = False
+            http.delete = AsyncMock(return_value=MagicMock())
             response = client.delete("/admin/api/v1/factory_reset")
             assert response.status_code == 200
             assert "Factory reset complete" in response.json()["message"]
             mock_tel.return_value.reset.assert_called_once()
-            mock_client.delete.assert_called_once()
+            http.delete.assert_awaited_once()
 
 def test_factory_reset_no_db():
     set_admin_db_pool(None)
@@ -272,3 +269,43 @@ def test_scheduler_snapshot_endpoint():
     for key in ("max_concurrency", "depth", "running", "preempted", "superseded",
                 "wait_p50_s", "loaded_model"):
         assert key in data
+
+
+def test_session_world_endpoint_proxies_the_engine_snapshot():
+    from proxy.api.routes import evennia_client
+    snap = {"session_id": "s1", "tick": 3, "rooms": [{"room_id": "hall"}],
+            "edges": [], "occupants": [{"entity_id": "mei", "room_id": "hall"}]}
+    with patch.object(evennia_client, "get_snapshot", new_callable=AsyncMock) as m:
+        m.return_value = snap
+        resp = client.get("/admin/api/v1/sessions/s1/world")
+    assert resp.status_code == 200
+    assert resp.json() == snap
+    m.assert_awaited_once_with(session_id="s1", template_key="")
+
+
+def test_session_world_endpoint_503_when_engine_down():
+    from proxy.api.routes import evennia_client
+    with patch.object(evennia_client, "get_snapshot", new_callable=AsyncMock) as m:
+        m.side_effect = RuntimeError("down")
+        resp = client.get("/admin/api/v1/sessions/s1/world")
+    assert resp.status_code == 503
+
+
+def test_factory_reset_clears_the_engine_through_the_configured_client():
+    """It used a hardcoded http://localhost:4005 client, so test runs reset the LIVE engine."""
+    from proxy.api.routes import evennia_client
+    mock_pool = MagicMock()
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = []
+    class Ctx:
+        async def __aenter__(self): return mock_conn
+        async def __aexit__(self, *a): return False
+    mock_pool.acquire = MagicMock(return_value=Ctx())
+    set_admin_db_pool(mock_pool)
+    fake_resp = MagicMock(); fake_resp.raise_for_status = MagicMock()
+    with patch.object(evennia_client, "_client") as http:
+        http.is_closed = False
+        http.delete = AsyncMock(return_value=fake_resp)
+        resp = client.delete("/admin/api/v1/factory_reset")
+    assert resp.status_code == 200
+    http.delete.assert_awaited_once_with(f"{evennia_client.base_url}/world/admin/reset")
