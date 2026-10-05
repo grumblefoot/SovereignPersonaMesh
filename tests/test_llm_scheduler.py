@@ -4,7 +4,7 @@ import asyncio
 import pytest
 
 from proxy.core.llm_scheduler import (
-    LLMScheduler, ScheduledLLMClient, QueueFull, QueueWaitTimeout,
+    LLMScheduler, ScheduledLLMClient, QueueFull, QueueWaitTimeout, TurnSuperseded,
 )
 from tests.fake_llm_backend import FakeLLMBackend
 
@@ -178,6 +178,8 @@ async def _hold_slot(client, *, kind, session, tag):
         return "finished"
     except asyncio.CancelledError:
         return "cancelled"
+    except TurnSuperseded:
+        return "superseded"      # typed: a queued waiter can tell this from a cancel
 
 
 async def _slot_taken(backend, tag):
@@ -258,7 +260,7 @@ async def test_regenerate_supersedes_queued_turn_same_session():
     for _ in range(20):
         await asyncio.sleep(0)
     assert sched.counters["superseded"] == 1
-    assert await queued == "cancelled"           # evicted from the queue, never started
+    assert await queued == "superseded"          # typed eviction, never started
     assert "v1" not in backend.started
     holder.cancel()
     await asyncio.gather(holder, return_exceptions=True)
