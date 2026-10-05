@@ -1126,9 +1126,14 @@ async def _record_reply_action(session_id: str, target_char: str, public_resp: s
     consequences = []
     tick = 0
     try:
+        # Same engine turn_id as the user's message: the reply happens in the SAME
+        # turn, so it reuses that turn's tick (decision 10: the tick counts user
+        # turns). The '#reply' key below only separates its perception rows. With
+        # '#reply' here, every reply advanced the clock — tick 3 after 2 messages
+        # (QA step A2, 2026-10-05).
         res = await evennia_client.submit_action(
             character_id=target_char, action_type="speak", raw_text=public_resp,
-            target_id=None, session_id=session_id, turn_id=f"{turn_id}#reply")
+            target_id=None, session_id=session_id, turn_id=turn_id)
         consequences = list(res.get("consequences", []))
         tick = int(res.get("action_tick", 0))
     except Exception as e:

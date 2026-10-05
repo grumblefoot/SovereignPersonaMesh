@@ -108,7 +108,9 @@ def test_chat_route_records_perceptions_and_sends_turn_id():
     deadline = _t.time() + 2
     while len(calls) < 2 and _t.time() < deadline:
         _t.sleep(0.05)
-    assert any(c.get("turn_id") == "wire_s1:2#reply" and c["character_id"] == "mira"
+    # The reply rides the USER's turn id at the engine, so it reuses that turn's
+    # tick (decision 10; QA A2). '#reply' only keys its perception rows.
+    assert any(c.get("turn_id") == "wire_s1:2" and c["character_id"] == "mira"
                for c in calls[1:])
 
 
