@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 
 from proxy.main import app
 from proxy.core.stream_parser import MonologueStreamParser
-from proxy.core.fifo_queue import InferenceFIFOQueue
 from proxy.core.sensory_filter import ObserverInferenceGatingFilter
 
 
@@ -79,30 +78,6 @@ class TestStreamParserFailSafe:
 
         assert parser.is_failsafe_triggered is True
         assert len(public_tokens) > 0
-
-
-class TestInferenceFIFOQueue:
-    @pytest.mark.asyncio
-    async def test_fifo_queue_sequential_execution(self):
-        queue = InferenceFIFOQueue()
-        execution_order = []
-
-        async def dummy_turn(name: str):
-            execution_order.append(f"start-{name}")
-            import asyncio
-            await asyncio.sleep(0.01)
-            execution_order.append(f"end-{name}")
-            return name
-
-        import asyncio
-        r1, r2 = await asyncio.gather(
-            queue.enqueue_and_execute(dummy_turn, "turn1"),
-            queue.enqueue_and_execute(dummy_turn, "turn2")
-        )
-
-        assert r1 == "turn1"
-        assert r2 == "turn2"
-        assert execution_order == ["start-turn1", "end-turn1", "start-turn2", "end-turn2"]
 
 
 class TestChatCompletionsEndpoint:
@@ -287,9 +262,11 @@ class TestChatCompletionsEndpoint:
             # Verify the generate_stream was called with stop param
             call_kwargs = mock_llm.call_args
             assert call_kwargs is not None
-            assert "stop" in call_kwargs.kwargs or (
-                len(call_kwargs.args) > 0
-            )
+            # Lore extraction shares the scheduled client now, so the CHAT call is
+            # found by its kwargs rather than assumed to be the last call.
+            chat_calls = [c for c in mock_llm.call_args_list if "stop" in c.kwargs]
+            assert chat_calls, f"no chat call with stop among {len(mock_llm.call_args_list)} calls"
+            assert chat_calls[0].kwargs["stop"] == ["\n\n", "END"]
 
     def test_chat_completions_default_model(self, client):
         """If no model is specified, the default 'spm-sovereign-mesh' is used."""

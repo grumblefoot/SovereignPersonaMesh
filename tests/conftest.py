@@ -94,9 +94,12 @@ def isolated_embeddings(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def reset_clients():
-    """Clear cached clients between tests to avoid 'Event loop is closed' errors."""
+    """Clear cached clients between tests to avoid 'Event loop is closed' errors,
+    and give each test a fresh scheduler (no slot state leaks across event loops)."""
+    from proxy.core.llm_scheduler import LLMScheduler
     evennia_client._client = None
     lemonade_client._client = None
+    lemonade_client.scheduler = LLMScheduler(max_concurrency=1)
     yield
     evennia_client._client = None
     lemonade_client._client = None

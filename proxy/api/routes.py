@@ -18,7 +18,6 @@ from typing import List, Dict, Any, Optional
 from config.hardware_tiers import get_hardware_config, HardwareTierEnum
 from proxy.core.st_parser import parse_sillytavern_context
 from config.manager import get_settings_manager
-from proxy.core.fifo_queue import InferenceFIFOQueue
 from proxy.core.stream_parser import MonologueStreamParser, CLOSE_TAGS
 from proxy.core.sensory_filter import ObserverInferenceGatingFilter
 from proxy.rag.prompt_builder import CognitivePromptBuilder
@@ -27,6 +26,7 @@ from proxy.rag.import_worker import BulkImportWorker, get_import_worker, _comput
 from proxy.rag.tier_manager import MemoryTierManager
 from proxy.rag.lore_extractor import LoreExtractionWorker
 from proxy.backend_client.lemonade_client import LemonadeLLMClient, LLMBackendError, DEFAULT_CHAT_MODEL, SPM_VIRTUAL_MODEL_ID
+from proxy.core.llm_scheduler import get_scheduled_client, QueueFull, QueueWaitTimeout
 from proxy.backend_client.evennia_client import EvenniaWorldClient
 from proxy.embeddings import get_embedding_service, space_id_for
 from core.resource_manager import strings
@@ -50,10 +50,10 @@ def set_db_pool(pool):
     _db_pool = pool
     _db_pool_explicitly_set = True
 
-# Service components
-fifo_queue = InferenceFIFOQueue()
+# Service components. The LLM client is the SHARED scheduled client (OPEN-004):
+# every generation acquires a backend slot; metadata calls pass through.
 prompt_builder = CognitivePromptBuilder()
-lemonade_client = LemonadeLLMClient()
+lemonade_client = get_scheduled_client()
 evennia_client = EvenniaWorldClient()
 embedder = get_embedding_service()
 
@@ -461,13 +461,19 @@ The text after </think> must ONLY be narrative and dialogue.
             temperature=request.temperature or 0.7,
             max_tokens=backend_max_tokens,
             stop=stop,
+            job_kind="chat",
+            session_id=session_id,
         )
         try:
             async for chunk in parser.process_token_stream(raw_stream):
                 pass
-        except LLMBackendError as e:
+        except (LLMBackendError, QueueWaitTimeout) as e:
             logger.error(f"[SPMProxy] Backend failure for {target_char}; turn not saved: {e}")
             return JSONResponse(status_code=502, content={"error": {"message": str(e), "type": "llm_backend_error"}})
+        except QueueFull as e:
+            logger.error(f"[SPMProxy] Backend busy for {target_char}; turn not saved: {e}")
+            return JSONResponse(status_code=503, headers={"Retry-After": "10"},
+                                content={"error": {"message": str(e), "type": "llm_backend_busy"}})
         inner_monologue, public_resp = parser.get_final_buffers()
 
         logger.info(f"[BackendReturnSPMLog] Monologue: {inner_monologue} | Public: {public_resp}")
@@ -533,6 +539,8 @@ The text after </think> must ONLY be narrative and dialogue.
             temperature=request.temperature or 0.7,
             max_tokens=backend_max_tokens,
             stop=stop,
+            job_kind="chat",
+            session_id=session_id,
         )
 
         def _chunk(content):
@@ -547,10 +555,11 @@ The text after </think> must ONLY be narrative and dialogue.
         try:
             async for public_chunk in parser.process_token_stream(raw_stream):
                 yield _chunk(public_chunk)
-        except LLMBackendError as e:
+        except (LLMBackendError, QueueFull, QueueWaitTimeout) as e:
             # Tell the user instead of inventing a reply; skip persistence, GM actions and lore extraction.
-            logger.error(f"[SPMProxy] Backend failure for {target_char}; turn not saved: {e}")
-            yield _chunk(f"*[SPM: the LLM backend is unavailable ({e}). This turn was not saved.]*")
+            logger.error(f"[SPMProxy] Backend failure/busy for {target_char}; turn not saved: {e}")
+            notice = "backend is busy" if isinstance(e, (QueueFull, QueueWaitTimeout)) else f"LLM backend is unavailable ({e})"
+            yield _chunk(f"*[SPM: the {notice}. This turn was not saved.]*")
             yield "data: " + json.dumps({"id": "chatcmpl-spm-turn", "object": "chat.completion.chunk",
                                          "created": int(time.time()), "model": request.model,
                                          "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}) + "\n\n"
