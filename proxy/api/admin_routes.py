@@ -372,3 +372,40 @@ async def test_lore_connection(body: dict):
         return JSONResponse(content={"status": "success", "resolved_model": resolved})
     else:
         return JSONResponse(status_code=400, content={"status": "error", "message": "Model not found or unreachable"})
+
+
+@router.get("/sessions/{session_id}/perception")
+async def session_perception(session_id: str, recipient_id: str = "", turn_id: str = "",
+                             limit: int = 100):
+    """Gating phase 5 observability: what each character actually perceived, straight
+    from spm_perception. Filter by recipient and/or turn. This is the dev window into
+    'what did X see at turn N' — read-only, like the thoughts tab."""
+    pool = AdminState.get_db_pool()
+    if pool is None:
+        return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
+    limit = max(1, min(int(limit), 500))
+    where = ["session_id = $1"]
+    args: list = [session_id]
+    if recipient_id:
+        args.append(recipient_id)
+        where.append(f"recipient_id = ${len(args)}")
+    if turn_id:
+        args.append(turn_id)
+        where.append(f"turn_id = ${len(args)}")
+    args.append(limit)
+    sql = f"""
+        SELECT tick, turn_id, actor_id, action_type, recipient_id, gating_level,
+               perceived_text, distance_ft, barriers, created_at
+        FROM spm_perception WHERE {' AND '.join(where)}
+        ORDER BY tick DESC, id DESC LIMIT ${len(args)}
+    """
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(sql, *args)
+        return JSONResponse(content={"session_id": session_id, "rows": [
+            {**dict(r), "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+             "distance_ft": float(r["distance_ft"]) if r["distance_ft"] is not None else None}
+            for r in rows]})
+    except Exception as e:
+        logger.error(f"[AdminAPI] perception view failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -85,15 +85,31 @@ _ENV_VAR_MAP: Dict[str, str] = {
     "EMBEDDING_DIM": "EMBEDDING_DIM",
     "EMBEDDING_TIMEOUT_S": "EMBEDDING_TIMEOUT_S",
     "EMBEDDING_ALLOW_REMOTE": "EMBEDDING_ALLOW_REMOTE",
+    "gm_actions_mode": "SPM_GM_ACTIONS_MODE",
+    "gm_actions_max_per_turn": "SPM_GM_ACTIONS_MAX_PER_TURN",
+    "gm_actions_max_rooms_per_session": "SPM_GM_ACTIONS_MAX_ROOMS",
 }
 
 
-def get_default_settings() -> Dict[str, Any]:
-    """Return a fresh settings dict with current env-var overrides.
+def _validate_gm_actions_mode(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce an invalid gm_actions_mode back to "full" with ONE warning.
 
-    This is a lazy getter: it reads os.getenv() at call time so that
-    environment changes are always reflected.  It does NOT read config.json.
+    Called from every place that produces a settings dict so a bad value from
+    env or config.json can never reach the request path.
     """
+    mode = settings.get("gm_actions_mode")
+    if mode not in _GM_ACTIONS_MODES:
+        logger.warning(
+            "[Settings] Invalid gm_actions_mode %r; falling back to 'full' "
+            "(allowed: off, move_only, full)",
+            mode,
+        )
+        settings["gm_actions_mode"] = "full"
+    return settings
+
+
+def _build_default_settings(validate: bool = True) -> Dict[str, Any]:
+    """Build the settings dict from defaults + env vars (lazy os.getenv)."""
     settings: Dict[str, Any] = {}
     for key, fallback in _DEFAULT_VALUES.items():
         env_key = _ENV_VAR_MAP[key]
@@ -102,7 +118,18 @@ def get_default_settings() -> Dict[str, Any]:
             settings[key] = int(raw) if raw is not None else fallback
         else:
             settings[key] = raw if raw is not None else fallback
+    if validate:
+        _validate_gm_actions_mode(settings)
     return settings
+
+
+def get_default_settings() -> Dict[str, Any]:
+    """Return a fresh settings dict with current env-var overrides.
+
+    This is a lazy getter: it reads os.getenv() at call time so that
+    environment changes are always reflected.  It does NOT read config.json.
+    """
+    return _build_default_settings()
 
 
 # Deprecated alias for backwards compatibility — prefer get_default_settings().
@@ -138,13 +165,15 @@ class SettingsManager:
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                # Merge: defaults first, then file values override.
-                merged = {**get_default_settings(), **data}
+                # Merge: defaults first, then file values override.  Defaults
+                # are built unvalidated so an invalid gm_actions_mode warns
+                # exactly once — on the final merged dict below.
+                merged = {**_build_default_settings(validate=False), **data}
                 # Re-cast known integer keys in case the file stored them as strings.
                 for k in _INT_KEYS:
                     if k in merged:
                         merged[k] = int(merged[k])
-                return merged
+                return _validate_gm_actions_mode(merged)
             except (json.JSONDecodeError, ValueError, TypeError, OSError) as e:
                 logger.warning(
                     "[SettingsManager] Failed to parse %s, falling back to env defaults: %s",

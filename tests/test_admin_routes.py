@@ -221,3 +221,43 @@ def test_shutdown_system():
             assert response.status_code == 200
             assert response.json()["status"] == "success"
             mock_task.assert_called_once()
+
+
+def test_perception_view_filters_and_serialises():
+    """Gating phase 5: the admin perception view returns spm_perception rows with
+    recipient/turn filters applied in SQL and timestamps serialised."""
+    import datetime
+    mock_conn = AsyncMock()
+    row = {"tick": 3, "turn_id": "s1:3", "actor_id": "user", "action_type": "speak",
+           "recipient_id": "mira", "gating_level": "direct", "perceived_text": 'User: "hi"',
+           "distance_ft": 4.0, "barriers": "[]",
+           "created_at": datetime.datetime(2026, 10, 5, 12, 0, 0)}
+    mock_conn.fetch.return_value = [MagicMock(__getitem__=row.__getitem__, keys=row.keys)]
+    # dict(record) path: make the MagicMock behave like a mapping
+    class Rec(dict):
+        pass
+    mock_conn.fetch.return_value = [Rec(row)]
+
+    class PoolMock:
+        def acquire(self):
+            class Ctx:
+                async def __aenter__(self_inner):
+                    return mock_conn
+                async def __aexit__(self_inner, *a):
+                    return False
+            return Ctx()
+
+    set_admin_db_pool(PoolMock())
+    resp = client.get("/admin/api/v1/sessions/s1/perception?recipient_id=mira&turn_id=s1:3&limit=10")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["rows"][0]["recipient_id"] == "mira"
+    assert data["rows"][0]["created_at"].startswith("2026-10-05T12:00:00")
+    sql, *args = mock_conn.fetch.call_args[0]
+    assert "recipient_id = $2" in sql and "turn_id = $3" in sql
+    assert args == ["s1", "mira", "s1:3", 10]
+
+
+def test_perception_view_503_without_pool():
+    resp = client.get("/admin/api/v1/sessions/s1/perception")
+    assert resp.status_code == 503
