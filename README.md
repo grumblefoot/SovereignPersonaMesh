@@ -13,7 +13,7 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
 
 ## Quick Start
 
-All commands run from this directory with SPM's own virtualenv (`.venv`, Python 3.14; `pip install -r requirements.txt`).
+All commands run from this directory with SPM's own virtualenv (`.venv`; Python 3.13+, tested on 3.13 and 3.14). Runtime: `pip install -r requirements.txt` (six packages). Tests: `pip install -r requirements-dev.txt`.
 
 ### 1. Database
 ```bash
