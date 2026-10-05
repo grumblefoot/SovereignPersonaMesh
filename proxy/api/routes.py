@@ -563,7 +563,8 @@ The text after </think> must ONLY be narrative and dialogue.
         # Dispatch any GM actions found in the monologue sequentially in background
         task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
                                                 turn_index=user_msg_count))
-        reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id))
+        reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id,
+                                                         tainted=parser.is_failsafe_triggered))
         _background_tasks.add(reply_task)
         reply_task.add_done_callback(_background_tasks.discard)
         _background_tasks.add(task)
@@ -670,7 +671,8 @@ The text after </think> must ONLY be narrative and dialogue.
         # Dispatch any GM actions found in the monologue sequentially in background
         task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
                                                 turn_index=user_msg_count))
-        reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id))
+        reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id,
+                                                         tainted=parser.is_failsafe_triggered))
         _background_tasks.add(reply_task)
         reply_task.add_done_callback(_background_tasks.discard)
         _background_tasks.add(task)
@@ -910,10 +912,18 @@ def _gm_action_key(session_id: str, turn_index: int, idx: int, action: dict) -> 
 
 
 async def _record_reply_action(session_id: str, target_char: str, public_resp: str,
-                               turn_id: str) -> None:
+                               turn_id: str, tainted: bool = False) -> None:
     """The character's public reply is a world action too: other characters perceive it
     per gating, and the character remembers saying it (a 'self' perception row)."""
     if not public_resp:
+        return
+    if tainted:
+        # The stream parser's failsafe fired: the text may contain leaked planning
+        # prose. It was already shown to the user (nothing to do there), but it must
+        # NOT become world state or the character's memory of what they said —
+        # gated history would re-inject it into every later prompt.
+        logger.warning(f"[SPMProxy] Reply for {target_char} tainted by monologue bleed; "
+                       f"not recorded as a world action (turn {turn_id}).")
         return
     consequences = []
     tick = 0
