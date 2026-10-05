@@ -209,3 +209,16 @@ def test_persona_name_extracted_from_the_chat_line():
     msgs = [ChatCompletionMessage(role="system",
             content="Write Mira's next reply in a fictional chat between Mira and Tom. [scene:x]")]
     assert _extract_persona_name(msgs) == "tom"
+
+
+def test_sleep_runner_db_config_matches_the_proxy(monkeypatch):
+    """The in-proxy sleep cycle must reach the same database the proxy uses."""
+    from proxy.core.sleep_runner import db_config_from_env
+    for var in ("POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_USER",
+                "POSTGRES_PASSWORD", "POSTGRES_DB"):
+        monkeypatch.delenv(var, raising=False)
+    cfg = db_config_from_env()
+    assert cfg["port"] == 5432                       # was a hardcoded 5435
+    assert cfg["database"] == "litellm_postgres"
+    monkeypatch.setenv("POSTGRES_PORT", "6543")
+    assert db_config_from_env()["port"] == 6543      # honours the shared variable

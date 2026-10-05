@@ -41,16 +41,23 @@ async def run_sleep_cycle_once() -> None:
             chunks.append(c)
         return "".join(chunks)
 
-    db_config = {
-        "host": os.getenv("DB_HOST", "localhost"),
-        "port": int(os.getenv("DB_PORT", "5435")),
-        "user": os.getenv("DB_USER", "spm_user"),
-        "password": os.getenv("DB_PASSWORD", "spm_password"),
-        "database": os.getenv("DB_NAME", "litellm_postgres"),
-    }
-    worker = MemoryConsolidationWorker(db_config, settings.get("BACKEND_LLM_URL", ""),
+    worker = MemoryConsolidationWorker(db_config_from_env(), settings.get("BACKEND_LLM_URL", ""),
                                        llm_call=scheduled_call)
     await worker.run()
+
+
+def db_config_from_env() -> dict:
+    """The SAME POSTGRES_* variables and defaults the proxy (proxy/main.py) and the
+    standalone scripts/sleep_cycle.py use. The first version of this runner read
+    DB_HOST/DB_PORT with a 5435 default, so the nightly pass could never connect
+    (QA 2026-10-05)."""
+    return {
+        "host": os.getenv("POSTGRES_HOST", "localhost"),
+        "port": int(os.getenv("POSTGRES_PORT", "5432")),
+        "user": os.getenv("POSTGRES_USER", "spm_user"),
+        "password": os.getenv("POSTGRES_PASSWORD", "spm_secure_password"),
+        "database": os.getenv("POSTGRES_DB", "litellm_postgres"),
+    }
 
 
 def _seconds_until(hour: int) -> float:
