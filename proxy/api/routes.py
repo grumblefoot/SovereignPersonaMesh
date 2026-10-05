@@ -244,7 +244,12 @@ async def _check_bulk_import(
             worker.process_bulk_import_background(
                 session_id=session_id,
                 character_id=target_char,
-                messages=[m.model_dump() for m in request.messages],
+                # Gating phase 5 (side channels): imported memories must not carry the
+                # user's private 'quoted thoughts' (decision 11).
+                messages=[{**m.model_dump(),
+                           "content": _redact_private_spans(m.content)
+                           if m.role == "user" and m.content else m.content}
+                          for m in request.messages],
                 skip_registration=True,
             )
         )
@@ -879,9 +884,16 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
     actual_messages = _strip_user_persona(actual_messages, target_char)
     user_messages = [m for m in actual_messages if getattr(m, 'role', '') == 'user']
     user_msg_count = len(user_messages)
-    
+
     assistant_turn = {"role": "assistant", "content": f"<think>\n{inner_monologue}\n</think>\n{public_resp}"}
-    full_turn_history = [m.model_dump() for m in actual_messages] + [assistant_turn]
+    # Gating phase 5 (side channels): the extractor must never see the user's private
+    # 'quoted thoughts' (decision 11 — private EVERYWHERE, including background jobs).
+    # The character's own monologue stays: this extractor runs as that character.
+    full_turn_history = [
+        {**m.model_dump(),
+         "content": _redact_private_spans(m.content) if m.role == "user" else m.content}
+        for m in actual_messages
+    ] + [assistant_turn]
     
     if user_msg_count <= 1:
         task = asyncio.create_task(

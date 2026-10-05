@@ -133,6 +133,7 @@ def rig(monkeypatch):
         world_app.app.state.start_time = 0.0
 
     import proxy.api.routes as routes
+    real_lore_dispatch = routes._dispatch_lore_extraction
     prompts = []
 
     async def fake_stream(*args, **kwargs):
@@ -147,7 +148,9 @@ def rig(monkeypatch):
         transport=httpx.ASGITransport(app=world_app.app), base_url="http://world.test")
 
     with TestClient(proxy_app) as client, TestClient(world_app.app) as engine:
-        yield Rig(client, engine, prompts)
+        r = Rig(client, engine, prompts)
+        r.real_lore_dispatch = real_lore_dispatch   # for the side-channel scenarios
+        yield r
 
 
 def sysmsgs(char="Mira", scene="dungeon_cellar"):
@@ -306,3 +309,58 @@ def test_s14_vardus_fixture_planted_thought_stays_private(rig):
             break
     rig.turn(msgs)
     assert PH(14) not in rig.prompt_text(0)
+
+
+# ── side channels (gating phase 5): background jobs never see private thoughts ──
+
+def _drain_until(rig, pred, what):
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        rig.client.get("/health")                # lets the proxy loop run its tasks
+        if pred():
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for {what}")
+
+
+def test_s15_lore_extractor_never_sees_private_thoughts(rig, monkeypatch):
+    import proxy.api.routes as routes
+    from proxy.rag.lore_extractor import LoreExtractionWorker
+    captured = {}
+
+    async def fake_extract(self, session_id, character_id, context_text, model=""):
+        captured["text"] = context_text
+
+    monkeypatch.setattr(LoreExtractionWorker, "extract_initial_rules", fake_extract)
+    monkeypatch.setattr(routes, "_dispatch_lore_extraction", rig.real_lore_dispatch)
+    rig.turn(sysmsgs() + [{"role": "user", "content": f'"Hello there." \'{PH(15)}\''}])
+    _drain_until(rig, lambda: "text" in captured, "lore extraction dispatch")
+    assert PH(15) not in captured["text"]        # the private thought never reaches lore
+    assert "Hello there." in captured["text"]    # the spoken words still do
+
+
+def test_s16_bulk_import_rows_never_carry_private_thoughts(rig, monkeypatch):
+    from proxy.rag.import_worker import BulkImportWorker
+    captured = {}
+
+    async def fake_process(self, session_id, character_id, messages, skip_registration=False):
+        captured["messages"] = messages
+
+    async def fake_register(self, session_id, character_id, n):
+        return "job-1"
+
+    async def fake_status(self, session_id):
+        return None
+
+    monkeypatch.setattr(BulkImportWorker, "process_bulk_import_background", fake_process)
+    monkeypatch.setattr(BulkImportWorker, "register_import_job", fake_register)
+    monkeypatch.setattr(BulkImportWorker, "check_import_status", fake_status)
+    msgs = sysmsgs()
+    for i in range(6):                           # >10 messages triggers the import
+        msgs += [{"role": "user", "content": f'"line {i}" \'{PH(16)}\''},
+                 {"role": "assistant", "content": f"reply {i}"}]
+    rig.turn(msgs)
+    _drain_until(rig, lambda: "messages" in captured, "bulk import dispatch")
+    joined = json.dumps(captured["messages"])
+    assert PH(16) not in joined                  # imported memories carry no thoughts
+    assert "line 3" in joined                    # the spoken words still import
