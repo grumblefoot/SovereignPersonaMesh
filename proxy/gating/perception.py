@@ -22,29 +22,32 @@ async def record_turn_perceptions(conn, *, session_id: str, tick: int,
 
     Idempotent per turn: existing rows for (session_id, turn_id) are replaced, so a
     regenerate rewrites its turn instead of duplicating it (leak suite scenario 13)."""
-    if turn_id is not None:
-        await conn.execute(
-            "DELETE FROM spm_perception WHERE session_id = $1 AND turn_id = $2",
-            session_id, turn_id)
     rows = 0
-    for c in consequences:
-        recipient = c.get("recipient_id")
-        if not recipient:
-            continue
-        await conn.execute(
-            """
-            INSERT INTO spm_perception
-                (session_id, tick, turn_id, actor_id, action_type, recipient_id,
-                 gating_level, perceived_text, distance_ft, barriers)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-            """,
-            session_id, tick, turn_id, actor_id, action_type, recipient,
-            str(c.get("gating_level", "direct")).lower(),
-            c.get("sensory_feed") or "",
-            float(c["distance_ft"]) if c.get("distance_ft") is not None else None,
-            json.dumps(list(c.get("barriers") or [])),
-        )
-        rows += 1
+    # One transaction: a failure mid-way must not leave the turn half-recorded (or,
+    # worse, deleted-but-not-reinserted on a regenerate) — callers swallow exceptions.
+    async with conn.transaction():
+        if turn_id is not None:
+            await conn.execute(
+                "DELETE FROM spm_perception WHERE session_id = $1 AND turn_id = $2",
+                session_id, turn_id)
+        for c in consequences:
+            recipient = c.get("recipient_id")
+            if not recipient:
+                continue
+            await conn.execute(
+                """
+                INSERT INTO spm_perception
+                    (session_id, tick, turn_id, actor_id, action_type, recipient_id,
+                     gating_level, perceived_text, distance_ft, barriers)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+                """,
+                session_id, tick, turn_id, actor_id, action_type, recipient,
+                str(c.get("gating_level", "direct")).lower(),
+                c.get("sensory_feed") or "",
+                float(c["distance_ft"]) if c.get("distance_ft") is not None else None,
+                json.dumps(list(c.get("barriers") or [])),
+            )
+            rows += 1
     return rows
 
 

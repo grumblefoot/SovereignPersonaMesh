@@ -26,7 +26,7 @@ from proxy.rag.import_worker import BulkImportWorker, get_import_worker, _comput
 from proxy.rag.tier_manager import MemoryTierManager
 from proxy.rag.lore_extractor import LoreExtractionWorker
 from proxy.backend_client.lemonade_client import LemonadeLLMClient, LLMBackendError, DEFAULT_CHAT_MODEL, SPM_VIRTUAL_MODEL_ID
-from proxy.core.llm_scheduler import get_scheduled_client, QueueFull, QueueWaitTimeout
+from proxy.core.llm_scheduler import get_scheduled_client, QueueFull, QueueWaitTimeout, TurnSuperseded
 from proxy.gating.action_parser import parse_user_message
 from proxy.gating.world_seed import propose_world_seed
 from proxy.gating.perception import gated_history, record_turn_perceptions, render_history_rows
@@ -568,6 +568,11 @@ The text after </think> must ONLY be narrative and dialogue.
             logger.error(f"[SPMProxy] Backend busy for {target_char}; turn not saved: {e}")
             return JSONResponse(status_code=503, headers={"Retry-After": "10"},
                                 content={"error": {"message": str(e), "type": "llm_backend_busy"}})
+        except TurnSuperseded as e:
+            # A newer request for this session replaced this turn (regenerate). The
+            # client has abandoned this response; end it quietly without saving.
+            logger.info(f"[SPMProxy] Turn superseded for {target_char}: {e}")
+            return JSONResponse(status_code=409, content={"error": {"message": str(e), "type": "turn_superseded"}})
         inner_monologue, public_resp = parser.get_final_buffers()
 
         logger.info(f"[BackendReturnSPMLog] Monologue: {inner_monologue} | Public: {public_resp}")
@@ -653,6 +658,12 @@ The text after </think> must ONLY be narrative and dialogue.
         try:
             async for public_chunk in parser.process_token_stream(raw_stream):
                 yield _chunk(public_chunk)
+        except TurnSuperseded as e:
+            # A newer request for this session replaced this queued turn (regenerate);
+            # the client has already abandoned this stream. End it quietly, save nothing.
+            logger.info(f"[SPMProxy] Turn superseded for {target_char}: {e}")
+            yield "data: [DONE]\n\n"
+            return
         except (LLMBackendError, QueueFull, QueueWaitTimeout) as e:
             # Tell the user instead of inventing a reply; skip persistence, GM actions and lore extraction.
             logger.error(f"[SPMProxy] Backend failure/busy for {target_char}; turn not saved: {e}")

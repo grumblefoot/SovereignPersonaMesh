@@ -52,6 +52,11 @@ class QueueWaitTimeout(RuntimeError):
     """An interactive turn waited longer than the deadline for a slot."""
 
 
+class TurnSuperseded(RuntimeError):
+    """This queued turn was replaced by a newer turn for the same session (regenerate).
+    Typed, so a waiter can tell supersession from its own task being cancelled."""
+
+
 @dataclass
 class _Job:
     seq: int
@@ -166,19 +171,30 @@ class LLMScheduler:
                         + (" (evicted)" if job.evicted else ""))
         self._dispatch()
 
-    def _supersede(self, session_id: str) -> None:
-        """P3: a new interactive turn for a session replaces any other P0 for that
-        session — queued or running. The frontend only re-sends a turn (regenerate,
-        retry after a stall) once it has abandoned the previous stream."""
+    def _supersede_queued(self, session_id: str) -> None:
+        """P3 phase 1: a new interactive turn evicts its session's QUEUED turn. Runs
+        before the cap check so a regenerate frees its own seat. The waiter gets a
+        typed TurnSuperseded, never a bare cancel (review C2.3: a bare CancelledError
+        is indistinguishable from the waiter's own task being cancelled)."""
         me = asyncio.current_task()
         for job in list(self._queues[P0_CHAT]):
             if job.session_id == session_id and not job.ready.done() and job.task is not me:
                 self._queues[P0_CHAT].remove(job)
                 self.counters["superseded"] += 1
                 logger.info(f"[LLMScheduler] supersede queued seq={job.seq} session={session_id}")
-                job.ready.cancel()
+                job.ready.set_exception(TurnSuperseded(
+                    f"a newer turn for session {session_id} replaced this one"))
+
+    def _supersede_running(self, session_id: str) -> None:
+        """P3 phase 2: evict the session's RUNNING turn. Runs only AFTER the cap check
+        — a rejected arrival must not have killed the in-flight turn (review C2.1).
+        Eviction is cancel-only: the victim stays in _running until its own
+        __aexit__/finally releases the slot, so max_concurrency is never violated and
+        the successor is dispatched by that release, not by loop timing."""
+        me = asyncio.current_task()
         for job in list(self._running):
             if (job.priority == P0_CHAT and job.session_id == session_id
+                    and not job.evicted
                     and job.task is not None and job.task is not me and not job.task.done()):
                 self.counters["superseded"] += 1
                 job.evicted = True
@@ -187,10 +203,12 @@ class LLMScheduler:
 
     def _preempt_background(self) -> None:
         """P3: free a slot for an interactive turn by cancelling one running P2/P3 job
-        (P3 first). P1 embed is exempt: it may be serving the chat turn itself."""
+        (P3 first). P1 embed is exempt: it may be serving the chat turn itself.
+        Already-evicted victims are skipped (review C2.4), so repeated chat arrivals
+        while a cancellation is still propagating neither double-count nor re-cancel."""
         me = asyncio.current_task()
         victims = [j for j in self._running
-                   if j.priority >= P2_LORE and j.task is not None
+                   if j.priority >= P2_LORE and not j.evicted and j.task is not None
                    and j.task is not me and not j.task.done()]
         if not victims:
             return
@@ -208,10 +226,12 @@ class LLMScheduler:
 
         if priority == P0_CHAT:
             if session_id:
-                self._supersede(session_id)  # before the cap: a regenerate frees its own seat
+                self._supersede_queued(session_id)   # frees this session's own seat
             if len(self._queues[P0_CHAT]) >= self.max_interactive_waiting:
                 self.counters["rejected"] += 1
                 raise QueueFull(f"{len(self._queues[P0_CHAT])} interactive turns already waiting")
+            if session_id:
+                self._supersede_running(session_id)  # only once this arrival is accepted
             if len(self._running) >= self.max_concurrency:
                 self._preempt_background()
 

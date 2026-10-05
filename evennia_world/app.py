@@ -709,6 +709,11 @@ async def configure_world(payload: WorldConfigPayload):
         # seeded directly on the engine — and rebuilding here silently un-placed every
         # character the proxy didn't know about: leak suite s3/s6/s7/s10.)
         world_inst = app_state.session_worlds[session_id_for_config][payload.template_key]
+        if payload.flavor_text:
+            # New flavor text on a re-configure is an explicit request — apply it
+            # (review C1.2a); rooms, occupants and edges still stay untouched.
+            for rm in world_inst.values():
+                rm.flavor_text = payload.flavor_text
     else:
         # Same per-session deep copy as _ensure_world: instantiate_world's copies share
         # present_characters lists with the template (shallow model_copy).
@@ -738,14 +743,16 @@ async def configure_world(payload: WorldConfigPayload):
     bad = [pl.room_id for pl in payload.placements if pl.room_id not in world_now]
     if bad:
         raise HTTPException(status_code=400, detail=f"Unknown room(s) in placements: {bad}; nothing was placed")
-    placed_anywhere = {c for rm in world_now.values() for c in rm.present_characters}
+    # Case-insensitive like whisper targets (review C1.1): the live world holds "mira",
+    # and a placement for "Mira" must not create a second occupant.
+    placed_anywhere = {c.lower() for rm in world_now.values() for c in rm.present_characters}
     for pl in payload.placements:
-        if pl.character_id in placed_anywhere:
+        if pl.character_id.lower() in placed_anywhere:
             # Already in the world (possibly another room): a configure placement is a
             # spawn point, never a teleport — moving is /world/move's job.
             continue
         world_now[pl.room_id].present_characters.append(pl.character_id)
-        placed_anywhere.add(pl.character_id)
+        placed_anywhere.add(pl.character_id.lower())
         _log_mutation(session_id_for_config, "PLACE", payload.origin, {"character_id": pl.character_id, "room_id": pl.room_id})
 
     return CharacterResponse(
@@ -991,6 +998,7 @@ async def startup_event():
     if os.getenv("SPM_WORLD_DB", "1") == "0":
         app_state._db_pool = None
         logging.info("Evennia World State Engine running memory-only (SPM_WORLD_DB=0)")
+        _ensure_world("dynamic")   # the default world load still happens (review C1.3)
         return
 
     try:
