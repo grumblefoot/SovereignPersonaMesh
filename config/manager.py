@@ -47,10 +47,27 @@ _DEFAULT_VALUES: Dict[str, Any] = {
     "EMBEDDING_TIMEOUT_S": 3,
     # Explicit SLA-2 opt-in: lets `auto` pick a non-local EMBEDDING_URL.
     "EMBEDDING_ALLOW_REMOTE": False,
+    # ── GM_ACTION extraction (GM actions plan, task A1) ──
+    # off | move_only | full. Invalid values fall back to "full" (see
+    # _validate_gm_actions_mode) — the safest mode is the pre-feature behaviour
+    # boundary, so a typo never silently disables world actions entirely.
+    "gm_actions_mode": "full",
+    "gm_actions_max_per_turn": 4,
+    "gm_actions_max_rooms_per_session": 40,
 }
 
 # Integer-typed keys that should always produce int values.
-_INT_KEYS = frozenset({"SPM_PROXY_PORT", "backend_max_tokens", "EMBEDDING_DIM", "EMBEDDING_TIMEOUT_S"})
+_INT_KEYS = frozenset({
+    "SPM_PROXY_PORT",
+    "backend_max_tokens",
+    "EMBEDDING_DIM",
+    "EMBEDDING_TIMEOUT_S",
+    "gm_actions_max_per_turn",
+    "gm_actions_max_rooms_per_session",
+})
+
+# Allowed values for gm_actions_mode; anything else falls back to "full".
+_GM_ACTIONS_MODES = frozenset({"off", "move_only", "full"})
 
 # Mapping from config key → env var name (some differ, e.g. backend_max_tokens → BACKEND_MAX_TOKENS).
 _ENV_VAR_MAP: Dict[str, str] = {

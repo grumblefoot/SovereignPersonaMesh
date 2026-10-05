@@ -794,7 +794,13 @@ async def reset_world_state(session_id: Optional[str] = None):
 async def world_snapshot(session_id: str = "default_session", template_key: str = "dynamic"):
     """Full session graph for the proxy's perception layer (adapter gap 1): rooms,
     edges (explicit stateful edges first, exit-derived defaults for the rest),
-    occupants and the per-session tick. Create-on-read via _ensure_world."""
+    occupants and the per-session tick. Create-on-read via _ensure_world.
+
+    template_key="" means "whatever this session is actually running" — callers like
+    the GM-action validator don't track the template and must not create a parallel
+    'dynamic' world beside a configured one."""
+    if not template_key:
+        template_key = next(iter(app_state.session_worlds.get(session_id, {})), "dynamic")
     world = _ensure_world(template_key, session_id)
     rooms, occupants, edges, seen = [], [], [], set()
     for rid, room in world.items():
