@@ -263,3 +263,12 @@ def test_perception_view_filters_and_serialises():
 def test_perception_view_503_without_pool():
     resp = client.get("/admin/api/v1/sessions/s1/perception")
     assert resp.status_code == 503
+
+
+def test_scheduler_snapshot_endpoint():
+    resp = client.get("/admin/api/v1/scheduler")
+    assert resp.status_code == 200
+    data = resp.json()
+    for key in ("max_concurrency", "depth", "running", "preempted", "superseded",
+                "wait_p50_s", "loaded_model"):
+        assert key in data

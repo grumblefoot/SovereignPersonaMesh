@@ -440,3 +440,11 @@ async def session_perception(session_id: str, recipient_id: str = "", turn_id: s
     except Exception as e:
         logger.error(f"[AdminAPI] perception view failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/scheduler")
+async def scheduler_snapshot():
+    """LLM scheduler telemetry (fifo_queue.md phase 6): queue depths, running jobs,
+    wait percentiles, dispatch/preempt/supersede counters, loaded model."""
+    from proxy.core.llm_scheduler import get_scheduler
+    return JSONResponse(content=get_scheduler().snapshot())
