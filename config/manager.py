@@ -62,6 +62,11 @@ _DEFAULT_VALUES: Dict[str, Any] = {
     # _validate_gm_actions_mode) — the safest explicit mode is the pre-feature
     # behaviour boundary, so a typo never silently disables world actions.
     "gm_actions_mode": "auto",
+    # ── Token budget P0 (OPEN-008) ──
+    # ST's Response Length wins; this is the public cap when ST sends none.
+    "public_output_default": 400,
+    # Empty/0 = use the hardware tier's window; set to pin the context window.
+    "context_window_override": 0,
     "gm_actions_max_per_turn": 4,
     "gm_actions_max_rooms_per_session": 40,
 }
@@ -73,6 +78,8 @@ _INT_KEYS = frozenset({
     "EMBEDDING_DIM",
     "EMBEDDING_TIMEOUT_S",
     "gm_actions_max_per_turn",
+    "public_output_default",
+    "context_window_override",
     "gm_actions_max_rooms_per_session",
 })
 
@@ -107,6 +114,8 @@ _ENV_VAR_MAP: Dict[str, str] = {
     "EMBEDDING_ALLOW_REMOTE": "EMBEDDING_ALLOW_REMOTE",
     "EMBEDDING_MAX_COSINE_DISTANCE": "EMBEDDING_MAX_COSINE_DISTANCE",
     "gm_actions_mode": "SPM_GM_ACTIONS_MODE",
+    "public_output_default": "SPM_PUBLIC_OUTPUT_DEFAULT",
+    "context_window_override": "SPM_CONTEXT_WINDOW_OVERRIDE",
     "gm_actions_max_per_turn": "SPM_GM_ACTIONS_MAX_PER_TURN",
     "gm_actions_max_rooms_per_session": "SPM_GM_ACTIONS_MAX_ROOMS",
 }

@@ -388,3 +388,23 @@ def test_gm_directive_move_only_hides_create_room(rig):
     text = rig.prompt_text(0)
     assert "CREATE_ROOM" not in text
     assert '"type": "MOVE"' in text
+
+
+# ── Token budget P0: no request ever exceeds the window ───────────────────
+
+def test_backend_max_tokens_is_clamped_to_window(rig, monkeypatch):
+    import proxy.api.routes as routes
+    captured = {}
+    orig = None
+
+    async def capturing_stream(*args, **kwargs):
+        captured["max_tokens"] = kwargs.get("max_tokens")
+        yield "<think>plan</think>"
+        yield "A measured reply."
+
+    monkeypatch.setattr(routes.lemonade_client, "generate_stream", capturing_stream)
+    rig.turn(sysmsgs() + [{"role": "user", "content": '"Hello."'}])
+    window = routes.prompt_builder.config.max_context_tokens
+    assert captured["max_tokens"] is not None
+    assert captured["max_tokens"] <= window          # old code sent a flat 128000
+    assert captured["max_tokens"] >= 256

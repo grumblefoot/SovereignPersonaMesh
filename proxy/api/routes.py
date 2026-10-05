@@ -28,6 +28,7 @@ from proxy.rag.lore_extractor import LoreExtractionWorker
 from proxy.backend_client.lemonade_client import LemonadeLLMClient, LLMBackendError, DEFAULT_CHAT_MODEL, SPM_VIRTUAL_MODEL_ID
 from proxy.core.llm_scheduler import get_scheduled_client, QueueFull, QueueWaitTimeout, TurnSuperseded
 from proxy.core import gm_actions as gm_validation
+from proxy.rag import budget
 from proxy.gating.action_parser import parse_user_message
 from proxy.gating.world_seed import propose_world_seed
 from proxy.gating.perception import gated_history, record_turn_perceptions, render_history_rows
@@ -422,9 +423,9 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         return StreamingResponse(empty_generator(), media_type="text/event-stream")
 
     # --- Step 3: Token Decoupling & Cognitive prompt assembly ---
-    frontend_max_tokens = request.max_tokens or 300
     settings = get_settings_manager().get_settings()
-    backend_max_tokens = settings.get("backend_max_tokens", 2048)
+    # public cap: ST's max_tokens, else the configured default (plan §5).
+    frontend_max_tokens = request.max_tokens or int(settings.get("public_output_default", 400) or 400)
 
     system_prompt = _assemble_system_prompt(request.messages, settings)
 
@@ -558,6 +559,11 @@ The text after </think> must ONLY be narrative and dialogue.
     else:
         init_state = 1
     
+    # Token budget P0 (OPEN-008): never ask the backend for more room than the
+    # window has left. backend_max_tokens is now a CEILING, not a flat value.
+    backend_max_tokens = budget.clamp_max_tokens(
+        csa_messages, settings, prompt_builder.config, model=str(request.model))
+
     logger.info(f"[SPMIntoBackendLog] Sending to Backend (model={request.model}): {csa_messages}")
 
     # ---- Non-streaming path ----
