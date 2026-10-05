@@ -187,6 +187,9 @@
       <div class="form-group">
         <label>Backend Max Tokens (Hardware Boundary)</label>
         <input type="number" id="cfg-backend-max-tokens" value="128000">
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
+          CEILING on generation tokens; the actual max_tokens sent is min(this, window minus prompt).
+        </p>
       </div>
       <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0;">
       <h3 style="font-size: 1rem; margin-bottom: 12px;">Auto-Populating GM Rules</h3>
@@ -259,6 +262,24 @@
         <input type="text" id="cfg-embedding-url" placeholder="Blank = use the chat backend URL">
         <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
           Blank = use the chat backend URL.
+        </p>
+      </div>
+      <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0;">
+      <h3 style="font-size: 1rem; margin-bottom: 12px;">Token Budget</h3>
+      <div class="form-group">
+        <label>Public Output Default (tokens)</label>
+        <input type="number" id="cfg-public-output-default" min="50" max="4000" value="400">
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
+          Public reply cap (tokens) when SillyTavern doesn't send max_tokens. ST's Response Length wins.
+        </p>
+      </div>
+      <div class="form-group">
+        <label>Context Window Override</label>
+        <input type="number" id="cfg-context-window-override" min="0" step="1024" value="0">
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
+          0 = use the hardware tier's window (SOVEREIGN 32768). Set to pin the context window; the
+          proxy trims memories/lore/history to fit and refuses turns whose character card
+          alone overflows.
         </p>
       </div>
       <button class="btn" onclick="saveConfig()">Save Configuration</button>
@@ -531,6 +552,9 @@
         document.getElementById('cfg-embedding-max-cosine-distance').value = data.EMBEDDING_MAX_COSINE_DISTANCE ?? 0.45;
         document.getElementById('cfg-embedding-provider').value = data.EMBEDDING_PROVIDER || 'auto';
         document.getElementById('cfg-embedding-url').value = data.EMBEDDING_URL || '';
+        document.getElementById('cfg-backend-max-tokens').value = data.backend_max_tokens ?? 128000;
+        document.getElementById('cfg-public-output-default').value = data.public_output_default ?? 400;
+        document.getElementById('cfg-context-window-override').value = data.context_window_override ?? 0;
       } catch (e) {}
     }
 
@@ -548,7 +572,10 @@
         EMBEDDING_MODEL: document.getElementById('cfg-embedding-model').value,
         EMBEDDING_MAX_COSINE_DISTANCE: parseFloat(document.getElementById('cfg-embedding-max-cosine-distance').value),
         EMBEDDING_PROVIDER: document.getElementById('cfg-embedding-provider').value,
-        EMBEDDING_URL: document.getElementById('cfg-embedding-url').value
+        EMBEDDING_URL: document.getElementById('cfg-embedding-url').value,
+        backend_max_tokens: parseInt(document.getElementById('cfg-backend-max-tokens').value),
+        public_output_default: parseInt(document.getElementById('cfg-public-output-default').value),
+        context_window_override: parseInt(document.getElementById('cfg-context-window-override').value)
       };
       const res = await fetch('/admin/api/v1/config', {
         method: 'POST',
