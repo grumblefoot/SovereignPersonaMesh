@@ -68,13 +68,15 @@ class EvenniaWorldClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def move_character(self, character_id: str, room_id: str, session_id: str = "default_session", idempotency_key: Optional[str] = None, origin: str = "system") -> Dict[str, Any]:
-        """Moves a character to a room."""
+    async def move_character(self, character_id: str, room_id: str, session_id: str = "default_session", idempotency_key: Optional[str] = None, origin: str = "system", template_key: str = "dynamic") -> Dict[str, Any]:
+        """Moves a character to a room. template_key MUST match the session's live
+        world ("" asks the server to resolve it) — a hardcoded 'dynamic' here sent
+        GM moves into a phantom world the character never sees."""
         payload = {
             "character_id": character_id,
             "room_id": room_id,
             "session_id": session_id,
-            "template_key": "dynamic",
+            "template_key": template_key,
             "origin": origin,
         }
         if idempotency_key:
@@ -109,14 +111,15 @@ class EvenniaWorldClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def create_room(self, room_id: str, name: str, desc: str, session_id: str = "default_session", idempotency_key: Optional[str] = None, origin: str = "system") -> Dict[str, Any]:
-        """Creates a new dynamic room."""
+    async def create_room(self, room_id: str, name: str, desc: str, session_id: str = "default_session", idempotency_key: Optional[str] = None, origin: str = "system", template_key: str = "dynamic") -> Dict[str, Any]:
+        """Creates a new room in the session's live world (see move_character on
+        why template_key must match; "" asks the server to resolve it)."""
         payload = {
             "room_id": room_id,
             "room_name": name,
             "description": desc,
             "session_id": session_id,
-            "template_key": "dynamic",
+            "template_key": template_key,
             "origin": origin,
         }
         # The server reads idempotency_key from the BODY; the old header-only form was

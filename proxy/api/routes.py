@@ -1126,12 +1126,13 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
             if isinstance(action, gm_validation.MoveAction):
                 await evennia_client.move_character(
                     character_id=action.entity, room_id=action.room_id,
-                    session_id=session_id, idempotency_key=key, origin="gm")
+                    session_id=session_id, idempotency_key=key, origin="gm",
+                    template_key="")       # "" = the session's live world
             else:
                 await evennia_client.create_room(
                     room_id=action.room_id, name=action.name or "New Room",
                     desc=action.desc, session_id=session_id,
-                    idempotency_key=key, origin="gm")
+                    idempotency_key=key, origin="gm", template_key="")
         except Exception as e:
             logger.error(f"[GMAction] Task '{action.type}' failed for session {session_id}: {e}")
 
