@@ -196,6 +196,24 @@ class LemonadeLLMClient:
                             break
                         try:
                             data = json.loads(data_str)
+                            # Token budget P2: llama.cpp-family backends attach usage to
+                            # the final chunk. Feed prompt_tokens back into the per-model
+                            # chars/token EMA so estimates converge on real counts.
+                            usage = data.get("usage")
+                            if usage and usage.get("prompt_tokens"):
+                                self.last_usage = usage
+                                try:
+                                    from proxy.rag import budget as _budget
+                                    prompt_chars = sum(len(str(m.get("content", "")))
+                                                       for m in req_messages)
+                                    _budget.calibrate(target_model, prompt_chars,
+                                                      int(usage["prompt_tokens"]))
+                                    logger.info(
+                                        f"[LemonadeClient] usage: prompt={usage.get('prompt_tokens')} "
+                                        f"completion={usage.get('completion_tokens')} "
+                                        f"(ratio now {_budget.ratio_for(target_model):.2f} chars/tok)")
+                                except Exception as cal_exc:  # calibration must never break a stream
+                                    logger.debug(f"[LemonadeClient] calibration skipped: {cal_exc}")
                             choices = data.get("choices", [])
                             reasoning, content = self._extract_reasoning_and_content(choices)
 
