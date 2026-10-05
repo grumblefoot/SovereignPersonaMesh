@@ -27,7 +27,8 @@ from proxy.rag.tier_manager import MemoryTierManager
 from proxy.rag.lore_extractor import LoreExtractionWorker
 from proxy.backend_client.lemonade_client import LemonadeLLMClient, LLMBackendError, DEFAULT_CHAT_MODEL, SPM_VIRTUAL_MODEL_ID
 from proxy.core.llm_scheduler import get_scheduled_client, QueueFull, QueueWaitTimeout
-from proxy.gating.perception import record_turn_perceptions
+from proxy.gating.action_parser import parse_user_message
+from proxy.gating.perception import gated_history, record_turn_perceptions, render_history_rows
 from proxy.backend_client.evennia_client import EvenniaWorldClient
 from proxy.embeddings import get_embedding_service, space_id_for
 from core.resource_manager import strings
@@ -304,17 +305,41 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # re-sends the same turn_id and the engine's per-session tick does not advance.
     user_msg_count = sum(1 for m in request.messages if m.role == "user")
     turn_id = f"{session_id}:{user_msg_count}"
+
+    # Sprint 2 chunk 4: deterministic action parsing (decision 11, fail-open). The user's
+    # 'quoted thoughts' are PRIVATE: they never reach the engine, other characters'
+    # memories, or this character's sensory feed (DESIGN-001's deterministic half).
+    parsed_actions = parse_user_message(user_text)
+    observable_actions = [a for a in parsed_actions if a.action_type != "thought"]
+    observable_text = " ".join(
+        a.content for a in observable_actions if a.action_type != "move").strip() or (
+        user_text if not parsed_actions else "")
+    whispers = [a for a in observable_actions if a.action_type == "whisper"]
+    primary_action = ("whisper" if whispers
+                      else "shout" if any(a.action_type == "shout" for a in observable_actions)
+                      else "speak")
+    move_requests = [a for a in observable_actions if a.action_type == "move" and a.target]
     # OPEN-010: if the world engine is down, degrade to an ungated turn instead of a raw 500.
     # Roleplay must survive an engine outage; the turn simply has no spatial consequences.
     try:
         world_res = await evennia_client.submit_action(
             character_id="user",
-            action_type="speak",
-            raw_text=user_text,
-            target_id=target_char,
+            action_type=primary_action,
+            raw_text=observable_text,
+            target_id=(whispers[0].target if whispers and whispers[0].target else target_char),
             session_id=session_id,
             turn_id=turn_id,
         )
+        # Explicit user moves ([move:PLACE] or parsed movement) are applied as mutations;
+        # unknown destinations 404 at the engine and are ignored (fail-open).
+        for i, mv in enumerate(move_requests):
+            room_slug = re.sub(r"[^a-z0-9_]+", "_", mv.target.lower()).strip("_")
+            try:
+                await evennia_client.move_character(
+                    character_id="user", room_id=room_slug, session_id=session_id,
+                    idempotency_key=f"user-move:{turn_id}:{i}", origin="user")
+            except Exception as mv_exc:
+                logger.info(f"[SPMProxy] User move to '{room_slug}' not applied: {mv_exc}")
     except Exception as e:
         logger.error(f"[SPMProxy] World engine unavailable; continuing ungated for session {session_id}: {e}")
         world_res = {"consequences": [], "engine_unavailable": True}
@@ -334,7 +359,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             logger.warning(f"[SPMProxy] Perception recording skipped: {e}")
 
     # Find sensory consequence for target character
-    sensory_feed = user_text
+    sensory_feed = observable_text
     gating_level = "direct"
     consequences = world_res.get("consequences", [])
     for c in consequences:
@@ -383,7 +408,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     if _db_pool and user_text:
         try:
             retriever = EpisodicRAGRetriever(_db_pool)
-            query_emb = await embedder.generate_embedding(user_text)
+            query_emb = await embedder.generate_embedding(observable_text)
             query_space_id = None
             if query_emb is not None:
                 async with _db_pool.acquire() as conn:
@@ -411,11 +436,27 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         except Exception as e:
             logger.warning(f"[SPMProxy] Lore retrieval skipped: {e}")
 
+    # Sprint 2 chunk 4: the character's history is what THEY perceived (spm_perception),
+    # never the raw transcript — the omniscience fix. Falls back to the raw messages when
+    # perception rows don't exist yet (fresh chat, engine down) or the setting is off.
+    chat_history = [{"role": m.role, "content": m.content} for m in request.messages]
+    if _db_pool and settings.get("gated_history_enabled", True):
+        try:
+            async with _db_pool.acquire() as conn:
+                percep_rows = await gated_history(conn, session_id=session_id,
+                                                  recipient_id=target_char, limit=30)
+            if len(percep_rows) >= 2:
+                chat_history = render_history_rows(percep_rows, target_char)
+                logger.info(f"[SPMProxy] Gated history in use for {target_char}: "
+                            f"{len(chat_history)} perceived turns (raw transcript withheld).")
+        except Exception as e:
+            logger.warning(f"[SPMProxy] Gated history unavailable, using raw transcript: {e}")
+
     csa_messages = prompt_builder.build_csa_messages(
         system_prompt=system_prompt,
         sensory_feed=sensory_feed,
         retrieved_memories=retrieved_memories,
-        chat_history=[{"role": m.role, "content": m.content} for m in request.messages],
+        chat_history=chat_history,
         spatial_context=f"Location: {location_name}",
         frontend_max_tokens=frontend_max_tokens,
     )
@@ -501,6 +542,9 @@ The text after </think> must ONLY be narrative and dialogue.
         # Dispatch any GM actions found in the monologue sequentially in background
         task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
                                                 turn_index=user_msg_count))
+        reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id))
+        _background_tasks.add(reply_task)
+        reply_task.add_done_callback(_background_tasks.discard)
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
@@ -522,9 +566,9 @@ The text after </think> must ONLY be narrative and dialogue.
                     await conn.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS public_response TEXT;")
                     await conn.execute(
                         f"DELETE FROM {table_name} WHERE session_id = $1 AND LOWER(sensory_input) = LOWER($2);",
-                        session_id, user_text
+                        session_id, observable_text
                     )
-                    emb = await embedder.generate_embedding(user_text)
+                    emb = await embedder.generate_embedding(observable_text)
                     emb_str = None if emb is None else "[" + ",".join(map(str, emb)) + "]"
                     space_id = await space_id_for(embedder, conn) if emb is not None else None
                     await conn.execute(
@@ -532,7 +576,7 @@ The text after </think> must ONLY be narrative and dialogue.
                         INSERT INTO {table_name} (session_id, sensory_input, inner_monologue, public_response, episodic_embedding, embedding_space_id)
                         VALUES ($1, $2, $3, $4, $5::vector, $6);
                         """,
-                        session_id, user_text, inner_monologue, public_resp, emb_str, space_id
+                        session_id, observable_text, inner_monologue, public_resp, emb_str, space_id
                     )
             except Exception as e:
                 logger.warning(f"[SPMProxy] Failed to persist turn memory: {e}")
@@ -605,6 +649,9 @@ The text after </think> must ONLY be narrative and dialogue.
         # Dispatch any GM actions found in the monologue sequentially in background
         task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
                                                 turn_index=user_msg_count))
+        reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id))
+        _background_tasks.add(reply_task)
+        reply_task.add_done_callback(_background_tasks.discard)
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
@@ -635,9 +682,9 @@ The text after </think> must ONLY be narrative and dialogue.
                     await conn.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS public_response TEXT;")
                     await conn.execute(
                         f"DELETE FROM {table_name} WHERE session_id = $1 AND LOWER(sensory_input) = LOWER($2);",
-                        session_id, user_text
+                        session_id, observable_text
                     )
-                    emb = await embedder.generate_embedding(user_text)
+                    emb = await embedder.generate_embedding(observable_text)
                     emb_str = None if emb is None else "[" + ",".join(map(str, emb)) + "]"
                     space_id = await space_id_for(embedder, conn) if emb is not None else None
                     await conn.execute(
@@ -645,7 +692,7 @@ The text after </think> must ONLY be narrative and dialogue.
                         INSERT INTO {table_name} (session_id, sensory_input, inner_monologue, public_response, episodic_embedding, embedding_space_id)
                         VALUES ($1, $2, $3, $4, $5::vector, $6);
                         """,
-                        session_id, user_text, inner_monologue, public_resp, emb_str, space_id
+                        session_id, observable_text, inner_monologue, public_resp, emb_str, space_id
                     )
             except Exception as e:
                 logger.warning(f"[SPMProxy] Failed to persist turn memory: {e}")
@@ -827,6 +874,35 @@ def _gm_action_key(session_id: str, turn_index: int, idx: int, action: dict) -> 
     engine can drop the duplicate. The old uuid4 keys made every regenerate re-apply its actions."""
     payload = json.dumps(action, sort_keys=True)
     return "gm-" + hashlib.sha1(f"{session_id}|{turn_index}|{idx}|{payload}".encode()).hexdigest()[:32]
+
+
+async def _record_reply_action(session_id: str, target_char: str, public_resp: str,
+                               turn_id: str) -> None:
+    """The character's public reply is a world action too: other characters perceive it
+    per gating, and the character remembers saying it (a 'self' perception row)."""
+    if not public_resp:
+        return
+    consequences = []
+    tick = 0
+    try:
+        res = await evennia_client.submit_action(
+            character_id=target_char, action_type="speak", raw_text=public_resp,
+            target_id=None, session_id=session_id, turn_id=f"{turn_id}#reply")
+        consequences = list(res.get("consequences", []))
+        tick = int(res.get("action_tick", 0))
+    except Exception as e:
+        logger.warning(f"[SPMProxy] Reply action not routed (engine?): {e}")
+    consequences.append({"recipient_id": target_char, "sensory_feed": public_resp,
+                         "gating_level": "self", "distance_ft": 0.0, "barriers": []})
+    if _db_pool:
+        try:
+            async with _db_pool.acquire() as conn:
+                await record_turn_perceptions(conn, session_id=session_id, tick=tick,
+                                              turn_id=f"{turn_id}#reply",
+                                              actor_id=target_char, action_type="speak",
+                                              consequences=consequences)
+        except Exception as e:
+            logger.warning(f"[SPMProxy] Reply perception recording skipped: {e}")
 
 
 async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str,

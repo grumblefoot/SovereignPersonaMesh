@@ -369,5 +369,6 @@ class TestChatCompletionsEndpoint:
             resp = client.post("/v1/chat/completions", json=payload)
             assert resp.status_code == 200
             # Verify Evennia was called with domino as target
-            call_args = mock_action.call_args
+            # The reply action is submitted after the turn, so check the FIRST call.
+            call_args = mock_action.call_args_list[0]
             assert call_args.kwargs["target_id"] == "domino"

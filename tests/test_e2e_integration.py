@@ -346,7 +346,8 @@ class TestSillyTavernChatCompletion:
                 data["choices"][0]["message"]["content"]
                 == "Hello there."
             )
-            assert mock_action.call_args.kwargs["target_id"] == "seraphina"
+            # The reply action is submitted after the turn, so check the FIRST call.
+            assert mock_action.call_args_list[0].kwargs["target_id"] == "seraphina"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
