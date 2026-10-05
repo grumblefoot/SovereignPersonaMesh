@@ -97,7 +97,10 @@ class TestFR004Observability:
         from proxy.api.admin_routes import AdminState
 
         mock_conn = AsyncMock()
-        mock_conn.fetch.return_value = [{"table_name": "csa_memory_seraphina"}]
+        # First fetch: memory tables; second: lore tables (session delete also
+        # clears that chat's lore). Later calls (factory reset) reuse memory list.
+        mock_conn.fetch.side_effect = [[{"table_name": "csa_memory_seraphina"}], [],
+                                       [{"table_name": "csa_memory_seraphina"}], []]
         mock_conn.execute.return_value = "DELETE 5"
 
         mock_cm = AsyncMock()

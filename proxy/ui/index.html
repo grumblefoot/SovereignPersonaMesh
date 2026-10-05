@@ -227,6 +227,40 @@
         <label>Max New Rooms Per Session</label>
         <input type="number" id="cfg-gm-actions-max-rooms" value="40">
       </div>
+      <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0;">
+      <h3 style="font-size: 1rem; margin-bottom: 12px;">Memory &amp; Embeddings</h3>
+      <div class="form-group">
+        <label>Embedding Model</label>
+        <input type="text" id="cfg-embedding-model" value="Qwen3-Embedding-0.6B-GGUF-Q8_0">
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
+          Embedding model served by the backend (default Qwen3-Embedding-0.6B-GGUF-Q8_0; pull with: lemonade pull Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0)
+        </p>
+      </div>
+      <div class="form-group">
+        <label>Max Cosine Distance</label>
+        <input type="number" id="cfg-embedding-max-cosine-distance" step="0.01" min="0" max="1" value="0.45">
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
+          Max cosine distance for memory/lore recall. Calibrated 0.45 for Qwen3-Embedding (see docs/plans/BAKEOFF_2026-10-05.md). Lower = stricter.
+        </p>
+      </div>
+      <div class="form-group">
+        <label>Embedding Provider</label>
+        <select id="cfg-embedding-provider">
+          <option value="auto">Auto</option>
+          <option value="openai_compat">OpenAI Compatible</option>
+          <option value="none">None (full-text search only)</option>
+        </select>
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
+          auto picks the backend's /v1/embeddings for local URLs, none (full-text search only) for cloud.
+        </p>
+      </div>
+      <div class="form-group">
+        <label>Embedding URL</label>
+        <input type="text" id="cfg-embedding-url" placeholder="Blank = use the chat backend URL">
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
+          Blank = use the chat backend URL.
+        </p>
+      </div>
       <button class="btn" onclick="saveConfig()">Save Configuration</button>
     </div>
   </div>
@@ -493,6 +527,10 @@
         document.getElementById('cfg-gm-actions-mode').value = data.gm_actions_mode || 'full';
         document.getElementById('cfg-gm-actions-max-per-turn').value = data.gm_actions_max_per_turn ?? 4;
         document.getElementById('cfg-gm-actions-max-rooms').value = data.gm_actions_max_rooms_per_session ?? 40;
+        document.getElementById('cfg-embedding-model').value = data.EMBEDDING_MODEL || 'Qwen3-Embedding-0.6B-GGUF-Q8_0';
+        document.getElementById('cfg-embedding-max-cosine-distance').value = data.EMBEDDING_MAX_COSINE_DISTANCE ?? 0.45;
+        document.getElementById('cfg-embedding-provider').value = data.EMBEDDING_PROVIDER || 'auto';
+        document.getElementById('cfg-embedding-url').value = data.EMBEDDING_URL || '';
       } catch (e) {}
     }
 
@@ -506,7 +544,11 @@
         alternate_extraction_model_name: document.getElementById('cfg-alternate-model').value,
         gm_actions_mode: document.getElementById('cfg-gm-actions-mode').value,
         gm_actions_max_per_turn: parseInt(document.getElementById('cfg-gm-actions-max-per-turn').value),
-        gm_actions_max_rooms_per_session: parseInt(document.getElementById('cfg-gm-actions-max-rooms').value)
+        gm_actions_max_rooms_per_session: parseInt(document.getElementById('cfg-gm-actions-max-rooms').value),
+        EMBEDDING_MODEL: document.getElementById('cfg-embedding-model').value,
+        EMBEDDING_MAX_COSINE_DISTANCE: parseFloat(document.getElementById('cfg-embedding-max-cosine-distance').value),
+        EMBEDDING_PROVIDER: document.getElementById('cfg-embedding-provider').value,
+        EMBEDDING_URL: document.getElementById('cfg-embedding-url').value
       };
       const res = await fetch('/admin/api/v1/config', {
         method: 'POST',

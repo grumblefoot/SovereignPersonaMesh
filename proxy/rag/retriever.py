@@ -202,10 +202,12 @@ class EpisodicRAGRetriever:
         query_embedding: Optional[List[float]],
         max_cosine_distance: float = 0.35,
         embedding_space_id: Optional[int] = None,
+        session_id: str = "default_session",
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Retrieves active lore rules for a character.
-        Returns all 'invariant' rules, and 'conditional_trigger'/'game_over' rules that match
+        Retrieves active lore rules for a character, scoped per chat (OPEN-007):
+        this session's rules plus the character's canon (scope='global'). Returns
+        all 'invariant' rules, and 'conditional_trigger'/'game_over' rules that match
         the query embedding within the active space. Trigger matching stays vector-only:
         without a query embedding (provider 'none' or an outage) the invariants still
         apply and triggers are skipped.
@@ -216,8 +218,10 @@ class EpisodicRAGRetriever:
             await conn.execute("SELECT create_csa_lore_rules_table($1);", safe_char_id(character_id))
 
             # Fetch Invariants (never depend on vectors)
-            invariants_query = f"SELECT id, rule_text, rule_type FROM {table_name} WHERE rule_type = 'invariant' AND status = 'active';"
-            invariant_records = await conn.fetch(invariants_query)
+            invariants_query = (f"SELECT id, rule_text, rule_type FROM {table_name} "
+                                f"WHERE rule_type = 'invariant' AND status = 'active' "
+                                f"AND (session_id = $1 OR scope = 'global');")
+            invariant_records = await conn.fetch(invariants_query, session_id)
 
             trigger_records = []
             if query_embedding is not None:
@@ -233,13 +237,15 @@ class EpisodicRAGRetriever:
                           AND rule_embedding IS NOT NULL
                           AND embedding_space_id IS NOT DISTINCT FROM $3
                           AND status = 'active'
+                          AND (session_id = $4 OR scope = 'global')
                         OFFSET 0
                     ) candidates
                     WHERE (rule_embedding <=> $1::vector) < $2
                     ORDER BY cosine_distance ASC;
                 """
                 trigger_records = await conn.fetch(
-                    triggers_query, embedding_str, max_cosine_distance, embedding_space_id
+                    triggers_query, embedding_str, max_cosine_distance, embedding_space_id,
+                    session_id
                 )
             else:
                 logger.info(
