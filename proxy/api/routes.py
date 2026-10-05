@@ -486,6 +486,9 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         except Exception as e:
             logger.warning(f"[SPMProxy] Gated history unavailable, using raw transcript: {e}")
 
+    gm_mode = str(settings.get("gm_actions_mode", "full")).lower()
+    if gm_mode not in ("off", "move_only", "full"):
+        gm_mode = "full"
     csa_messages = prompt_builder.build_csa_messages(
         system_prompt=system_prompt,
         sensory_feed=sensory_feed,
@@ -493,6 +496,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         chat_history=chat_history,
         spatial_context=f"Location: {location_name}",
         frontend_max_tokens=frontend_max_tokens,
+        gm_mode=gm_mode,
     )
 
     # Ensure closing tags are NOT in LLM stop sequence list
@@ -518,9 +522,6 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         # A2 (gm_actions_and_lore_scope.md): the GM_ACTION bullets are assembled by
         # mode, so 'off' spends zero prompt tokens on them and 'move_only' never
         # advertises CREATE_ROOM. The lore/anti-puppeting parts are mode-independent.
-        gm_mode = str(settings.get("gm_actions_mode", "full")).lower()
-        if gm_mode not in ("off", "move_only", "full"):
-            gm_mode = "full"
         gm_move = ('\n- If ANY character (including the user) moves to a new location, you MUST '
                    'output [GM_ACTION: {"type": "MOVE", "entity": "...", "room_id": "..."}] '
                    'inside your <think> block.')

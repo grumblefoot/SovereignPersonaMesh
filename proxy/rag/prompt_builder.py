@@ -30,6 +30,22 @@ class CognitivePromptBuilder:
             hw_config = HARDWARE_TIERS[tier]
         self.config = hw_config
 
+    @staticmethod
+    def _gm_actions_block(gm_mode: str) -> str:
+        """The GM_ACTION directive for this mode (OPEN-005 / SD-01). 'off' returns ''
+        (~90 prompt tokens saved per turn); 'move_only' never advertises CREATE_ROOM."""
+        mode = str(gm_mode or "full").lower()
+        if mode == "off":
+            return ""
+        if mode == "move_only":
+            fragments = [a.prompt_fragment for a in default_gm_registry.get_all_active()
+                         if a.id == "MOVE"]
+            return strings.get("rag.gm_actions_directive_move_only",
+                               gm_instructions="\n".join(fragments))
+        fragments = [a.prompt_fragment for a in default_gm_registry.get_all_active()]
+        return strings.get("rag.gm_actions_directive",
+                           gm_instructions="\n".join(fragments))
+
     def build_csa_prompt(
         self,
         system_prompt: str,
@@ -40,6 +56,7 @@ class CognitivePromptBuilder:
         flavor_text: str = "",
         frontend_max_tokens: int = 300,
         style_card: Optional[Any] = None,
+        gm_mode: str = "full",
     ) -> str:
         """
         Assembles structured prompt for Character Subagent turn execution.
@@ -82,15 +99,12 @@ class CognitivePromptBuilder:
             content = msg.get("content", "")
             formatted_prompt += f"\n{role.capitalize()}: {content}"
 
-        gm_actions = default_gm_registry.get_all_active()
-        gm_instructions = "\n".join([a.prompt_fragment for a in gm_actions])
-
         if self.config.inner_monologue_enabled:
             formatted_prompt += strings.get(
                 "rag.monologue_directive",
                 frontend_max_tokens=frontend_max_tokens,
-                gm_instructions=gm_instructions
             )
+            formatted_prompt += self._gm_actions_block(gm_mode)
         else:
             formatted_prompt += strings.get("rag.no_monologue_directive")
 
@@ -106,10 +120,13 @@ class CognitivePromptBuilder:
         flavor_text: str = "",
         frontend_max_tokens: int = 300,
         style_card: Optional[Any] = None,
+        gm_mode: str = "full",
     ) -> List[Dict[str, str]]:
         """
         Assembles OpenAI-native structured messages array for Character Subagent execution.
         Prevents system prompt dumping and keeps character dialogue 100% clean.
+        gm_mode (off | move_only | full) decides whether and which GM_ACTION
+        directive joins the prompt (OPEN-005 / SD-01): 'off' spends zero tokens on it.
         """
         memory_str = ""
         if retrieved_memories:
@@ -131,9 +148,6 @@ class CognitivePromptBuilder:
         if style_card and hasattr(style_card, "style_instruction"):
             style_block = strings.get("rag.style_heuristics", style_instruction=style_card.style_instruction)
 
-        gm_actions = default_gm_registry.get_all_active()
-        gm_instructions = "\n".join([a.prompt_fragment for a in gm_actions])
-
         system_content = strings.get(
             "rag.csa_messages_system_block",
             system_prompt=system_prompt,
@@ -146,8 +160,8 @@ class CognitivePromptBuilder:
             system_content += strings.get(
                 "rag.monologue_directive_strict",
                 frontend_max_tokens=frontend_max_tokens,
-                gm_instructions=gm_instructions
             )
+            system_content += self._gm_actions_block(gm_mode)
         else:
             system_content += strings.get(
                 "rag.no_monologue_directive_strict",
