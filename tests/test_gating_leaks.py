@@ -1,0 +1,308 @@
+"""Sprint 2 exit gate: the gating leak suite (docs/plans/SPRINT_PLAN.md §2).
+
+Planted high-entropy phrases must never appear in the prompt of a character who could
+not perceive them. Runs the REAL proxy against the REAL world engine (ASGI-mounted,
+no sockets, no live services); only the LLM is faked, and it captures every prompt.
+
+Scenario map (gating.md):
+  1 same-room speech reaches the target        8 shout vs closed door: silence
+  2 closed door: silence                        9 user 'thought' private everywhere
+  3 open door: muffled, never verbatim         10 reply overheard by same-room char
+  4 metal partition: silence                   11 reply NOT heard behind closed door
+  5 distant room: silence                      12 after a move, old room hears nothing
+  6 whisper: bystander never gets the words    13 regenerate: no tick/row duplication
+  7 shout at 20 ft: perceived but not verbatim 14 Vardus fixture + planted thought
+"""
+import itertools
+import json
+import time
+from pathlib import Path
+
+import httpx
+import pytest
+from starlette.testclient import TestClient
+
+import evennia_world.app as world_app
+from evennia_world.hybrid_builder import HybridWorldBuilder
+from proxy.main import app as proxy_app
+
+_counter = itertools.count(1)
+FIXTURE = Path(__file__).parent / "fixtures" / "test_chat_payload.json"
+PH = lambda n: f"zq_leak_{n}_xylophone"
+
+
+class Rig:
+    def __init__(self, client, engine, prompts):
+        self.client = client            # proxy TestClient
+        self.engine = engine            # ENGINE TestClient (same module state)
+        self.prompts = prompts          # captured LLM prompts, one list per call
+        self.chat_id = f"leak{next(_counter)}"
+        self.history = []               # accumulated user/assistant log (ST resends it)
+        self._last_payload = None
+
+    @property
+    def session_id(self):
+        return f"st_chat_{self.chat_id}"
+
+    def _rows_for_turn(self, turn_id):
+        import asyncio
+        import asyncpg
+        from tests._testdb import TEST_DB_CONFIG
+
+        async def count():
+            conn = await asyncpg.connect(**TEST_DB_CONFIG)
+            try:
+                return await conn.fetchval(
+                    "SELECT count(*) FROM spm_perception WHERE session_id=$1 AND turn_id=$2",
+                    self.session_id, turn_id)
+            finally:
+                await conn.close()
+        return asyncio.run(count())
+
+    def turn(self, messages, regenerate=False):
+        # SillyTavern resends the FULL chat history every request; the proxy derives the
+        # turn_id from the user-message count. The rig mirrors that: it accumulates the
+        # user/assistant log across turns, so turn 2 is really turn 2 and is not treated
+        # as a regenerate of turn 1. ``regenerate=True`` resends the previous payload.
+        if regenerate:
+            payload = self._last_payload
+        else:
+            sys_part = [m for m in messages if m.get("role") == "system"]
+            new_part = [m for m in messages if m.get("role") != "system"]
+            payload = sys_part + self.history + new_part
+            self.history = self.history + new_part + [
+                {"role": "assistant", "content": "A measured reply."}]
+            self._last_payload = payload
+        n_users = sum(1 for m in payload if m.get("role") == "user")
+        r = self.client.post("/v1/chat/completions",
+                             headers={"X-SPM-Chat-ID": self.chat_id},
+                             json={"model": "spm-sovereign-mesh", "stream": True,
+                                   "messages": payload})
+        assert r.status_code == 200, r.text
+        # The reply action is recorded by a background task on the proxy's loop. Each
+        # extra request lets that loop run; poll until the reply turn's rows exist.
+        reply_turn = f"{self.session_id}:{n_users}#reply"
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            self.client.get("/health")
+            if self._rows_for_turn(reply_turn) >= 1:
+                break
+            time.sleep(0.05)
+        return r
+
+    def prompt_text(self, call_index=-1):
+        return "\n".join(m.get("content", "") for m in self.prompts[call_index])
+
+    # ── engine-side world setup (sync, same app_state) ──────────────
+    def seed(self, template="dungeon_cellar", placements=()):
+        r = self.engine.post("/api/v1/world/configure", json={
+            "template_key": template, "session_id": self.session_id,
+            "placements": [{"character_id": c, "room_id": room} for c, room in placements]})
+        assert r.status_code == 200, r.text
+
+    def barrier(self, a, b, barrier="closed_door", state="closed", distance_ft=15.0,
+                template="dungeon_cellar"):
+        r = self.engine.post("/api/v1/world/barrier", json={
+            "session_id": self.session_id, "template_key": template, "a": a, "b": b,
+            "barrier": barrier, "state": state, "distance_ft": distance_ft})
+        assert r.status_code == 200, r.text
+
+    def make_room(self, room_id, template="dungeon_cellar"):
+        r = self.engine.post("/api/v1/world/rooms", json={
+            "room_id": room_id, "room_name": room_id, "description": "test room",
+            "template_key": template, "session_id": self.session_id})
+        assert r.status_code == 200, r.text
+
+
+@pytest.fixture
+def rig(monkeypatch):
+    # The engine app is driven from two loops here (its TestClient + the proxy's
+    # ASGITransport); an asyncpg pool can't span loops, so the engine runs memory-only.
+    monkeypatch.setenv("SPM_WORLD_DB", "0")
+    st = world_app.app_state
+    st._db_pool = None
+    st.current_world = {}
+    st.session_worlds = {}
+    st.session_ticks = {}
+    st.session_turn_ticks = {}
+    st.idempotency_seen = {}
+    st.session_edges = {}
+    st.mutation_log = {}
+    world_app.world_builder = HybridWorldBuilder()
+    if not hasattr(world_app.app.state, "start_time"):
+        world_app.app.state.start_time = 0.0
+
+    import proxy.api.routes as routes
+    prompts = []
+
+    async def fake_stream(*args, **kwargs):
+        prompts.append([dict(m) for m in kwargs.get("messages", [])])
+        yield "<think>plan</think>"
+        yield "A measured reply."
+
+    monkeypatch.setattr(routes.lemonade_client, "generate_stream", fake_stream)
+    monkeypatch.setattr(routes, "_dispatch_lore_extraction", lambda *a, **k: None)
+    routes.evennia_client.base_url = "http://world.test/api/v1"
+    routes.evennia_client._client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=world_app.app), base_url="http://world.test")
+
+    with TestClient(proxy_app) as client, TestClient(world_app.app) as engine:
+        yield Rig(client, engine, prompts)
+
+
+def sysmsgs(char="Mira", scene="dungeon_cellar"):
+    return [
+        {"role": "system",
+         "content": f"Write {char}'s next reply in a fictional chat between {char} and Tom. [scene:{scene}]"},
+        {"role": "system", "content": f"[Character: {char}] A test character."},
+    ]
+
+
+def two_char_setup(rig, a_room="cellar", b_room="tavern_upstairs"):
+    """mira with the user in a_room; watcher alone in b_room (default edge: closed door)."""
+    rig.seed(placements=[("user", a_room), ("mira", a_room), ("watcher", b_room)])
+
+
+def watcher_prompt(rig, n_before, room=None):
+    """Probe the watcher: walk the user into their room (if needed), ask a neutral
+    question, and return the captured prompt. If the planted phrase reached the watcher
+    it will surface here, in their gated history. Without the walk, a probe through a
+    closed door is (correctly) answered by the proxy's no-perception bypass and no LLM
+    call ever happens."""
+    if room is not None:
+        r = rig.engine.post("/api/v1/world/move", json={
+            "character_id": "user", "room_id": room,
+            "template_key": "dungeon_cellar", "session_id": rig.session_id})
+        assert r.status_code == 200, r.text
+    rig.turn(sysmsgs("Watcher") + [{"role": "user", "content": '"Anything new?"'}])
+    assert len(rig.prompts) > n_before, "no LLM call captured for the watcher turn"
+    return rig.prompt_text(-1)
+
+
+# ── direct reach and simple occlusion ───────────────────────────────────────
+
+def test_s1_same_room_direct_speech_reaches_target(rig):
+    rig.turn(sysmsgs() + [{"role": "user", "content": f'"{PH(1)}"'}])
+    assert PH(1) in rig.prompt_text(0)
+
+
+def test_s2_closed_door_blocks_the_phrase(rig):
+    two_char_setup(rig)
+    rig.turn(sysmsgs() + [{"role": "user", "content": f'"{PH(2)}"'}])
+    text = watcher_prompt(rig, 1, room="tavern_upstairs")
+    assert PH(2) not in text
+
+
+def test_s3_open_door_gives_muffle_never_verbatim(rig):
+    two_char_setup(rig)
+    rig.barrier("cellar", "tavern_upstairs", barrier="open_door", state="open", distance_ft=10.0)
+    rig.turn(sysmsgs() + [{"role": "user", "content": f'"{PH(3)}"'}])
+    text = watcher_prompt(rig, 1, room="tavern_upstairs")
+    assert PH(3) not in text
+    assert "muffled" in text.lower() or "indistinct" in text.lower()
+
+
+def test_s4_metal_partition_blocks_the_phrase(rig):
+    two_char_setup(rig)
+    rig.barrier("cellar", "tavern_upstairs", barrier="metal_partition", state="closed",
+                distance_ft=10.0)
+    rig.turn(sysmsgs() + [{"role": "user", "content": f'"{PH(4)}"'}])
+    assert PH(4) not in watcher_prompt(rig, 1, room="tavern_upstairs")
+
+
+def test_s5_distant_room_blocks_the_phrase(rig):
+    rig.seed(placements=[("user", "cellar"), ("mira", "cellar")])
+    rig.make_room("far_study")
+    rig.barrier("cellar", "far_study", barrier="closed_door", state="closed", distance_ft=45.0)
+    rig.engine.post("/api/v1/world/move", json={
+        "character_id": "watcher", "room_id": "far_study",
+        "template_key": "dungeon_cellar", "session_id": rig.session_id})
+    rig.turn(sysmsgs() + [{"role": "user", "content": f'"{PH(5)}"'}])
+    assert PH(5) not in watcher_prompt(rig, 1, room="far_study")
+
+
+# ── whisper and shout ───────────────────────────────────────────────────────
+
+def test_s6_whisper_bystander_never_gets_the_words(rig):
+    rig.seed(placements=[("user", "cellar"), ("mira", "cellar"), ("watcher", "cellar")])
+    rig.turn(sysmsgs() + [{"role": "user", "content": f'[whisper:Mira] "{PH(6)}"'}])
+    assert PH(6) in rig.prompt_text(0)          # the addressed target hears it
+    assert PH(6) not in watcher_prompt(rig, 1)  # the bystander never does
+
+
+def test_s7_shout_at_20ft_is_perceived_but_not_verbatim(rig):
+    two_char_setup(rig)
+    rig.barrier("cellar", "tavern_upstairs", barrier="open_door", state="open", distance_ft=20.0)
+    rig.turn(sysmsgs() + [{"role": "user", "content": f'[shout] "{PH(7)}"'}])
+    text = watcher_prompt(rig, 1, room="tavern_upstairs")
+    assert PH(7) not in text                    # degraded band: tone, never words
+    assert "muffled" in text.lower() or "indistinct" in text.lower()
+
+
+def test_s8_shout_cannot_pierce_a_closed_door(rig):
+    two_char_setup(rig)
+    rig.turn(sysmsgs() + [{"role": "user", "content": f'[shout] "{PH(8)}"'}])
+    assert PH(8) not in watcher_prompt(rig, 1, room="tavern_upstairs")
+
+
+# ── privacy of thoughts ─────────────────────────────────────────────────────
+
+def test_s9_thought_absent_from_every_prompt(rig):
+    rig.turn(sysmsgs() + [{"role": "user", "content": f'"Hello." \'{PH(9)}\''}])
+    assert PH(9) not in rig.prompt_text(0)
+    assert "Hello." in rig.prompt_text(0)
+
+
+# ── replies as world events ─────────────────────────────────────────────────
+
+def test_s10_reply_is_overheard_in_the_same_room(rig):
+    rig.seed(placements=[("user", "cellar"), ("mira", "cellar"), ("watcher", "cellar")])
+    rig.turn(sysmsgs() + [{"role": "user", "content": '"Tell me everything."'}])
+    text = watcher_prompt(rig, 1)
+    assert "A measured reply." in text          # mira's reply, perceived by the watcher
+
+
+def test_s11_reply_not_heard_behind_a_closed_door(rig):
+    two_char_setup(rig)
+    rig.turn(sysmsgs() + [{"role": "user", "content": '"Tell me everything."'}])
+    text = watcher_prompt(rig, 1, room="tavern_upstairs")
+    assert "A measured reply." not in text
+
+
+def test_s12_after_moving_away_old_room_hears_nothing(rig):
+    rig.seed(placements=[("user", "cellar"), ("mira", "cellar"), ("watcher", "cellar")])
+    rig.make_room("garden")
+    rig.barrier("cellar", "garden", barrier="closed_door", state="closed", distance_ft=30.0)
+    # user and mira leave; watcher stays in the cellar
+    for char in ("user", "mira"):
+        rig.engine.post("/api/v1/world/move", json={
+            "character_id": char, "room_id": "garden",
+            "template_key": "dungeon_cellar", "session_id": rig.session_id})
+    rig.turn(sysmsgs() + [{"role": "user", "content": f'"{PH(12)}"'}])
+    assert PH(12) not in watcher_prompt(rig, 1, room="cellar")
+
+
+# ── regeneration semantics ──────────────────────────────────────────────────
+
+def test_s13_regenerate_no_tick_advance_no_duplicate_rows(rig):
+    msgs = sysmsgs() + [{"role": "user", "content": '"Once more."'}]
+    rig.turn(msgs)
+    tick1 = dict(world_app.app_state.session_ticks).get(rig.session_id, 0)
+    rig.turn(msgs, regenerate=True)              # resend of the same payload
+    tick2 = dict(world_app.app_state.session_ticks).get(rig.session_id, 0)
+    assert tick2 == tick1
+    n = rig._rows_for_turn(f"{rig.session_id}:1")
+    assert n <= 2, f"regenerate duplicated perception rows: {n}"  # mira row (+1 if a second recipient exists)
+
+
+# ── the real-world fixture ──────────────────────────────────────────────────
+
+def test_s14_vardus_fixture_planted_thought_stays_private(rig):
+    payload = json.loads(FIXTURE.read_text())
+    msgs = payload["messages"]
+    for m in reversed(msgs):
+        if m["role"] == "user":
+            m["content"] = m["content"] + f" '{PH(14)}'"
+            break
+    rig.turn(msgs)
+    assert PH(14) not in rig.prompt_text(0)

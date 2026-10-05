@@ -18,7 +18,14 @@ async def record_turn_perceptions(conn, *, session_id: str, tick: int,
     """Insert one perception row per consequence recipient. Returns rows written.
 
     Blackout rows ARE recorded (with empty perceived_text): "X perceived nothing of this
-    turn" is itself the fact the gated-history builder needs."""
+    turn" is itself the fact the gated-history builder needs.
+
+    Idempotent per turn: existing rows for (session_id, turn_id) are replaced, so a
+    regenerate rewrites its turn instead of duplicating it (leak suite scenario 13)."""
+    if turn_id is not None:
+        await conn.execute(
+            "DELETE FROM spm_perception WHERE session_id = $1 AND turn_id = $2",
+            session_id, turn_id)
     rows = 0
     for c in consequences:
         recipient = c.get("recipient_id")
