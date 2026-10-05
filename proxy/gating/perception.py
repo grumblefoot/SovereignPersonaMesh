@@ -61,3 +61,37 @@ async def gated_history(conn, *, session_id: str, recipient_id: str,
         session_id, recipient_id, limit,
     )
     return [dict(r) for r in reversed(rows)]
+
+
+GAP_MARKER = "[Time passes. You perceive nothing of what happens.]"
+
+
+def render_history_rows(rows: List[Dict[str, Any]], target_char: str) -> List[Dict[str, str]]:
+    """Turn a character's perception rows into chat messages for THEIR prompt.
+
+    - rows the character produced (gating 'self') -> assistant turns, verbatim;
+    - rows they perceived directly -> user turns (prefixed with the actor when it
+      isn't the player, so group scenes stay attributable);
+    - degraded rows -> the engine's muffled text, marked as such;
+    - blackout rows -> one gap marker, consecutive blackouts collapsed.
+    The raw transcript never appears here: this list IS the character's knowledge.
+    """
+    out: List[Dict[str, str]] = []
+    for r in rows:
+        gating = str(r.get("gating_level", "direct")).lower()
+        actor = r.get("actor_id") or "someone"
+        text = r.get("perceived_text") or ""
+        if gating == "self":
+            out.append({"role": "assistant", "content": text})
+            continue
+        if gating == "blackout" or not text:
+            if out and out[-1]["content"] == GAP_MARKER:
+                continue
+            out.append({"role": "user", "content": GAP_MARKER})
+            continue
+        prefix = "" if actor == "user" else f"[{actor}] "
+        if gating == "degraded":
+            out.append({"role": "user", "content": f"{prefix}(indistinct) {text}"})
+        else:
+            out.append({"role": "user", "content": f"{prefix}{text}"})
+    return out

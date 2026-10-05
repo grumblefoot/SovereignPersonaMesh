@@ -70,10 +70,10 @@ def test_chat_route_records_perceptions_and_sends_turn_id():
     async def fake_stream(*a, **kw):
         yield "A reply."
 
-    captured = {}
+    calls = []
 
     async def fake_submit(**kw):
-        captured.update(kw)
+        calls.append(kw)
         return {"success": True, "action_tick": 7, "consequences": CONS}
 
     recorded = {}
@@ -101,5 +101,12 @@ def test_chat_route_records_perceptions_and_sends_turn_id():
                           {"role": "assistant", "content": "Hi."},
                           {"role": "user", "content": "Hello?"}]})
     assert r.status_code == 200
-    assert captured["turn_id"] == "wire_s1:2"      # two user messages
-    assert recorded["tick"] == 7 and len(recorded["consequences"]) == 3
+    assert calls[0]["turn_id"] == "wire_s1:2"      # two user messages
+    assert recorded["tick"] == 7 and len(recorded["consequences"]) >= 3
+    # chunk 4: the character's reply is itself submitted as a world action
+    import time as _t
+    deadline = _t.time() + 2
+    while len(calls) < 2 and _t.time() < deadline:
+        _t.sleep(0.05)
+    assert any(c.get("turn_id") == "wire_s1:2#reply" and c["character_id"] == "mira"
+               for c in calls[1:])

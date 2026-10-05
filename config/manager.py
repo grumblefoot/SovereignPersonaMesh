@@ -26,6 +26,7 @@ _DEFAULT_VALUES: Dict[str, Any] = {
     "SPM_HARDWARE_TIER": "SOVEREIGN",
     "EVENNIA_LIAISON_URL": "http://localhost:4005",
     "backend_max_tokens": 128000,
+    "gated_history_enabled": True,
     # ── Embeddings (embeddings plan phases 1-3, OPEN-002) ──
     # auto | openai_compat | none | fake  (onnx_local is phase 4 and raises).
     # auto resolves to openai_compat for a loopback/LAN base URL and to
@@ -59,6 +60,7 @@ _ENV_VAR_MAP: Dict[str, str] = {
     "SPM_HARDWARE_TIER": "SPM_HARDWARE_TIER",
     "EVENNIA_LIAISON_URL": "EVENNIA_LIAISON_URL",
     "backend_max_tokens": "BACKEND_MAX_TOKENS",
+    "gated_history_enabled": "GATED_HISTORY_ENABLED",
     "EMBEDDING_PROVIDER": "EMBEDDING_PROVIDER",
     "EMBEDDING_URL": "EMBEDDING_URL",
     "EMBEDDING_API_KEY": "EMBEDDING_API_KEY",
