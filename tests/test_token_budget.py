@@ -120,3 +120,38 @@ def test_memories_and_lore_trim_worst_first():
     assert kept_lore["invariants"]                            # invariants survive longest
     assert report.trimmed["memories"] > 0
     assert report.trimmed["lore"] > 0
+
+
+# ── P2: streamed usage feeds the calibration EMA ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_streamed_usage_calibrates_the_model_ratio():
+    import httpx
+    from proxy.backend_client.lemonade_client import LemonadeLLMClient
+
+    model = "usage-test-model"
+    body = (
+        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        'data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5}}\n\n'
+        "data: [DONE]\n\n")
+
+    def handler(request):
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": model}]})
+        return httpx.Response(200, text=body,
+                              headers={"content-type": "text/event-stream"})
+
+    client = LemonadeLLMClient()
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler),
+                                       base_url="http://fake")
+    client.base_url = "http://fake/v1"
+    budget._calibrated_ratio.pop(model, None)
+    out = []
+    async for c in client.generate_stream(messages=[{"role": "user", "content": "x" * 320}],
+                                          model=model):
+        out.append(c)
+    assert "hi" in "".join(out)
+    assert model in budget._calibrated_ratio            # EMA updated from usage
+    assert client.last_usage["prompt_tokens"] == 100
+    budget._calibrated_ratio.pop(model, None)
+    await client.close()
