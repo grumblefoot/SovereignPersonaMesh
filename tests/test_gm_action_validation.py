@@ -58,7 +58,7 @@ def test_move_requires_known_entity_and_room():
         {"type": "MOVE", "entity": "USER", "room_id": "garden"},   # case-insensitive
     ], **WORLD)
     assert [r.reason for r in out.rejections] == [REASON_UNKNOWN_ENTITY, REASON_UNKNOWN_ROOM]
-    assert [m.entity for m in out.moves] == ["USER"]
+    assert [m.entity for m in out.moves] == ["user"]   # canonical engine id
 
 
 def test_create_then_move_into_new_room_in_one_batch():
@@ -140,3 +140,11 @@ def test_unknown_name_still_rejected_despite_aliases():
         {"type": "MOVE", "entity": "Stranger", "room_id": "garden"},
     ], user_aliases={"tom"}, **WORLD)
     assert [r.reason for r in out.rejections] == [REASON_UNKNOWN_ENTITY]
+
+
+def test_move_entity_rewritten_to_canonical_stored_id():
+    """The LLM writes "Mira"; the world stores "mira". Passing "Mira" through made
+    the engine add a SECOND occupant instead of moving the real one."""
+    out = validate_batch([{"type": "MOVE", "entity": "MIRA", "room_id": "garden"}], **WORLD)
+    assert not out.rejections
+    assert out.moves[0].entity == "mira"
