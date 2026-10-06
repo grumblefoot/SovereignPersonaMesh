@@ -39,7 +39,7 @@
 > - **Since the 2026-10-03 corrections:** the embedder is real (it was a stub), the LLM queue is
 >   wired (`proxy/core/llm_scheduler.py`), and gating is real (per-character perception; leak suite
 >   `tests/test_gating_leaks.py`). Still true (re-checked 2026-10-06): the ambient-log bypass filter
->   (`proxy/core/sensory_filter.py`) is imported but never called; the Phase 7 SLA/TTFT figures are
+>   (`proxy/core/sensory_filter.py`) is imported but never called (OPEN-015); the Phase 7 SLA/TTFT figures are
 >   retracted; monologue tags are `<think>`/`<thinking>`. Strikethroughs below mark claims that were wrong.
 > - **Hermes' own LLM** runs outside Lemonade: `gufo-flash` on :8080 (fallback `llama-flash` :8090).
 >   Delegating work to Hermes: `~/Desktop/Playbooks/hermes_dev_playbook.md`.
