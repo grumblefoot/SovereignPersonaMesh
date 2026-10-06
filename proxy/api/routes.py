@@ -319,10 +319,12 @@ async def _check_bulk_import(
                 character_id=target_char,
                 # Gating phase 5 (side channels): imported memories must not carry the
                 # user's private 'quoted thoughts' (decision 11).
+                # Only what was SAID: system messages (character cards, persona,
+                # SillyTavern's instructions) are not memories (QA F11).
                 messages=[{**m.model_dump(),
                            "content": _redact_private_spans(m.content)
                            if m.role == "user" and m.content else m.content}
-                          for m in request.messages],
+                          for m in request.messages if m.role in ("user", "assistant")],
                 skip_registration=True,
             )
         )
@@ -395,7 +397,13 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         return await _ephemeral_passthrough(request, session_id)
 
     # --- FR-002: Bulk Import Detection ---
-    is_bulk = await _check_bulk_import(request, session_id, _db_pool)
+    # Only for a session SPM has never seen (a chat that predates SPM). Once a session
+    # has perception rows, the gated log is the authority: a group member joining a
+    # long chat used to get the ENTIRE raw transcript imported as her memories,
+    # including scenes she never witnessed (QA F11, 2026-10-05).
+    _pre_count = sum(1 for m in request.messages if m.role == "user")
+    is_new_session = await _session_is_new(session_id, _pre_count)
+    is_bulk = await _check_bulk_import(request, session_id, _db_pool) if is_new_session else False
 
     # --- Step 1: spatial routing via Evennia ---
     # Decision 10 on the live path: the turn id is the user-message count, so a regenerate
@@ -424,7 +432,6 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # branch (or a chat that predates SPM) arrives carrying many user messages and was
     # never seeded, so nobody was placed (QA step A4, 2026-10-05). Ephemeral turns
     # (quiet/impersonate) never seed: they write nothing.
-    is_new_session = await _session_is_new(session_id, user_msg_count)
     if is_new_session and not ephemeral:
         try:
             seed = propose_world_seed(
