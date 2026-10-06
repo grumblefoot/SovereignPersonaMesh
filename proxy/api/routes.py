@@ -219,6 +219,9 @@ async def _gather_public_response(prompt: str, model: str, temperature: float,
 _SHARED_NOTE_REGEX = re.compile(r"^\s*\[?\s*(summary|author'?s\s+note)\s*[:\]]", re.IGNORECASE)
 
 
+_ST_CHAT_MARKER_REGEX = re.compile(r"^\[Start a new (?:group )?chat\b[^\]]*\]$", re.IGNORECASE)
+
+
 def _assemble_system_prompt(messages: List[ChatCompletionMessage], settings: dict) -> str:
     """Join ALL system messages in order (the old code kept only the first, dropping world info,
     persona and scenario). Summary/Author's Note blocks are stripped unless the
@@ -230,6 +233,11 @@ def _assemble_system_prompt(messages: List[ChatCompletionMessage], settings: dic
             continue
         if not passthrough and _SHARED_NOTE_REGEX.match(m.content):
             logger.info("[SPMProxy] Stripped shared Summary/Author's Note block from character prompt.")
+            continue
+        if _ST_CHAT_MARKER_REGEX.match(m.content.strip()):
+            # SillyTavern's chat-start markers are UI scaffolding, not story. Read
+            # literally, "[Start a new group chat. Group members: ...]" made the GM
+            # create rooms called "Family Chat" and "Chat Interface" (QA F13).
             continue
         parts.append(m.content)
     if not parts:

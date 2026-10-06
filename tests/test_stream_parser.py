@@ -382,3 +382,23 @@ async def test_strip_scene_description_header():
 
 
 
+
+
+def test_future_tense_stage_direction_is_stripped_from_salvaged_reply():
+    """QA F12: the GM-action salvage path leaked the model's plan as the first line."""
+    from proxy.core.stream_parser import MonologueStreamParser
+    p = MonologueStreamParser()
+    text = ("Mei will bow slightly, acknowledge his request, and then move toward the kitchen.\n\n"
+            "\"Yes, Brother. I understand,\" Mei whispered.\n\n"
+            "She turned toward the kitchen.")
+    out = p._strip_monologue_bleed(text)
+    assert not out.startswith("Mei will")
+    assert "\"Yes, Brother. I understand,\" Mei whispered." in out
+
+
+def test_dialogue_or_past_tense_opening_is_kept():
+    from proxy.core.stream_parser import MonologueStreamParser
+    p = MonologueStreamParser()
+    for opening in ['"Mei will be fine," Lian said softly.', "Mei bowed slightly."]:
+        text = opening + "\n\nShe turned toward the kitchen."
+        assert p._strip_monologue_bleed(text).startswith(opening.split()[0])

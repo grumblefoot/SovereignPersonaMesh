@@ -287,6 +287,13 @@ class MonologueStreamParser:
                 re.IGNORECASE
             ):
                 cleaned = "\n\n".join(paragraphs[1:])
+            # Future-tense stage direction with no dialogue ("Mei will bow slightly,
+            # acknowledge his request, and then move toward the kitchen.") is the
+            # model's plan, not narration: RP prose is past tense. Leaked to the
+            # user via the GM-action salvage path (QA F12, 2026-10-05).
+            elif '"' not in p0 and '“' not in p0 and re.match(
+                    r"^\s*(?:I|[A-Z][\w’'\-]*(?:\s[A-Z][\w’'\-]*)?)\s+will\s+\w+", p0):
+                cleaned = "\n\n".join(paragraphs[1:])
 
         lines = []
         for line in cleaned.split("\n"):
