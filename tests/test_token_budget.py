@@ -265,3 +265,14 @@ def test_non_latin_names_get_distinct_stable_ids():
     assert a == safe_char_id("美美")                           # stable
     assert safe_char_id("美 Mei") == "mei"                     # Latin part still readable
     assert safe_char_id("") == "default"
+
+
+def test_st_chat_start_markers_are_not_story():
+    """QA F13: '[Start a new group chat...]' made the GM create 'Chat Interface' rooms."""
+    from proxy.api.routes import _assemble_system_prompt, ChatCompletionMessage as M
+    out = _assemble_system_prompt([
+        M(role="system", content="Write 莲 Lian's next reply."),
+        M(role="system", content="[Start a new group chat. Group members: 莲 Lian, 美 Mei]"),
+        M(role="system", content="[Start a new chat]")], {})
+    assert "Start a new" not in out
+    assert "Write 莲 Lian's next reply." in out
