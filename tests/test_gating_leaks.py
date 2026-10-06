@@ -620,3 +620,15 @@ def test_ooc_forms_carry_their_text_as_directions():
     r = parse_message('"Hi." **Make her nervous** ((keep it short)) [OOC: no time skips]')
     assert [a.content for a in r.actions] == ["Hi."]                 # only the speech is in-world
     assert r.ooc_texts == ["Make her nervous", "keep it short", "no time skips"]
+
+
+# ── QA F15: the GM is told which rooms exist (and only who it can see) ────
+
+def test_gm_directive_lists_known_rooms_and_only_own_room_occupants(rig):
+    rig.seed(placements=[("user", "cellar"), ("mira", "cellar"), ("watcher", "tavern_upstairs")])
+    rig.turn(sysmsgs() + [{"role": "user", "content": '"Hello."'}])
+    prompt = rig.prompt_text(-1)
+    assert "KNOWN ROOMS" in prompt
+    assert "- cellar" in prompt and "- tavern_upstairs" in prompt     # reuse existing ids
+    assert "you are here, with: user" in prompt                       # her own room: who she sees
+    assert "watcher" not in prompt.split("KNOWN ROOMS", 1)[1]         # not where others are
