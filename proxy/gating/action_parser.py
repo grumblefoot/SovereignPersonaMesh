@@ -107,6 +107,10 @@ class ParsedMessage(BaseModel):
 
     actions: list[ParsedAction] = Field(default_factory=list)
     ooc: bool = False
+    # The OOC text itself: the user's directions to the AI ("**Lian enters with tea**").
+    # Never a world event or a memory, but it IS delivered to the model as an author's
+    # direction for this turn (QA F17, 2026-10-05). It used to be discarded entirely.
+    ooc_texts: list[str] = Field(default_factory=list)
 
 
 def parse_user_message(text: str) -> list[ParsedAction]:
@@ -122,6 +126,7 @@ def parse_message(text: str) -> ParsedMessage:
 
     actions: list[ParsedAction] = []
     ooc = False
+    ooc_texts: list[str] = []
     # Pending explicit tag (kind, target); governs the next spoken span.
     pending: Optional[tuple[ActionType, Optional[str]]] = None
 
@@ -189,6 +194,7 @@ def parse_message(text: str) -> ParsedMessage:
             m = _OOC_BRACKET_RE.match(text, i)
             if m:
                 ooc = True
+                ooc_texts.append(m.group(1).strip())
                 i = m.end()
                 continue
             m = _TAG_RE.match(text, i)
@@ -227,6 +233,7 @@ def parse_message(text: str) -> ParsedMessage:
             m = _OOC_PAREN_RE.match(text, i)
             if m:
                 ooc = True
+                ooc_texts.append(m.group(0)[2:-2].strip())
                 i = m.end()
                 continue
             nxt = _next_marker(text, i + 2)
@@ -239,6 +246,7 @@ def parse_message(text: str) -> ParsedMessage:
             m = _OOC_STARS_RE.match(text, i)
             if m:
                 ooc = True
+                ooc_texts.append(m.group(1).strip())
                 i = m.end()
                 continue
             nxt = _next_marker(text, i + 2)
@@ -314,6 +322,7 @@ def parse_message(text: str) -> ParsedMessage:
 
     result.actions = actions
     result.ooc = ooc
+    result.ooc_texts = [t for t in ooc_texts if t]
     return result
 
 

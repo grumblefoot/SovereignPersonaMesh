@@ -29,7 +29,7 @@ from proxy.backend_client.lemonade_client import LemonadeLLMClient, LLMBackendEr
 from proxy.core.llm_scheduler import get_scheduled_client, QueueFull, QueueWaitTimeout, TurnSuperseded
 from proxy.core import gm_actions as gm_validation
 from proxy.rag import budget
-from proxy.gating.action_parser import parse_user_message
+from proxy.gating.action_parser import parse_user_message, parse_message, CONF_TAG
 from proxy.gating.world_seed import propose_world_seed
 from proxy.gating.perception import gated_history, record_turn_perceptions, render_history_rows
 from proxy.backend_client.evennia_client import EvenniaWorldClient
@@ -383,7 +383,11 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
 
     # Extract target character identifier
     target_char = _extract_target_char(request.messages)
-    last_msg = request.messages[-1] if request.messages else ChatCompletionMessage(role="user", content="")
+    # The user's turn is the last USER message. In group chats SillyTavern appends its
+    # nudge ("[Write the next reply only as X.]") as the final SYSTEM message; taking
+    # messages[-1] made characters "hear" the user speak that instruction (QA F16).
+    last_msg = next((m for m in reversed(request.messages) if m.role == "user"), None) \
+        or ChatCompletionMessage(role="user", content="")
     user_text = last_msg.content
 
     # B5 (gm_actions_and_lore_scope.md): ST background generations must not touch
@@ -422,11 +426,22 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # Sprint 2 chunk 4: deterministic action parsing (decision 11, fail-open). The user's
     # 'quoted thoughts' are PRIVATE: they never reach the engine, other characters'
     # memories, or this character's sensory feed (DESIGN-001's deterministic half).
-    parsed_actions = parse_user_message(user_text)
+    parsed_msg = parse_message(user_text)
+    parsed_actions = parsed_msg.actions
+    # Out-of-character directions (**bold**, ((...)), [OOC: ...]) are the user's
+    # instructions to the AI: never perceived by any character, never stored, but
+    # delivered to the model for THIS turn as an author's direction (QA F17).
+    ooc_directions = parsed_msg.ooc_texts
     observable_actions = [a for a in parsed_actions if a.action_type != "thought"]
+    # Narrated movement ("*Lian enters the room, a tea set in hand*") is visible to
+    # whoever is present; only explicit [move:PLACE] tags (content = a room name)
+    # are hidden. Excluding every move dropped such narration entirely (QA F17).
     observable_text = " ".join(
-        a.content for a in observable_actions if a.action_type != "move").strip() or (
-        user_text if not parsed_actions else "")
+        a.content for a in observable_actions
+        if not (a.action_type == "move" and a.confidence >= CONF_TAG)).strip() or (
+        user_text if not parsed_actions and not parsed_msg.ooc else "")
+    # A message that is ONLY a direction has no in-world action this turn.
+    direction_only = not observable_text and bool(ooc_directions)
     whispers = [a for a in observable_actions if a.action_type == "whisper"]
     primary_action = ("whisper" if whispers
                       else "shout" if any(a.action_type == "shout" for a in observable_actions)
@@ -463,8 +478,10 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # OPEN-010: if the world engine is down, degrade to an ungated turn instead of a raw 500.
     # Roleplay must survive an engine outage; the turn simply has no spatial consequences.
     try:
-        if ephemeral:
-            raise _EphemeralTurn()      # no world action, no tick; handled below
+        if ephemeral or direction_only:
+            # No in-world action: ephemeral turns write nothing; a direction-only
+            # message is the author talking to the AI, not the user's character acting.
+            raise _EphemeralTurn()
         world_res = await evennia_client.submit_action(
             character_id="user",
             action_type=primary_action,
@@ -724,6 +741,7 @@ The text after </think> must ONLY be narrative and dialogue.
 - For Lore Violations: Forcefully reject the hallucination in your public dialogue.
 - For Rule Violations: React appropriately to enforce the rule. Do NOT write the GM Warning in your public dialogue.
 - Anti-Puppeting: NEVER act, speak, or think for the user's character. Only describe your own character's actions and the environment."""
+        directive = _author_direction_block(ooc_directions) + directive
         if csa_messages and csa_messages[-1]["role"] == "user":
             csa_messages[-1]["content"] += directive
         else:
@@ -731,6 +749,12 @@ The text after </think> must ONLY be narrative and dialogue.
         csa_messages.append({"role": "assistant", "content": "<think>\n"})
         init_state = 0
     else:
+        block = _author_direction_block(ooc_directions)
+        if block:
+            if csa_messages and csa_messages[-1]["role"] == "user":
+                csa_messages[-1]["content"] += block
+            else:
+                csa_messages.append({"role": "user", "content": block.strip()})
         init_state = 1
     
     # Token budget P0 (OPEN-008): never ask the backend for more room than the
@@ -1125,6 +1149,16 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
         task.add_done_callback(_log_task_done)
+
+def _author_direction_block(directions: List[str]) -> str:
+    """The user's out-of-character directions, delivered to the model for this turn."""
+    if not directions:
+        return ""
+    lines = "\n".join(f"- {d}" for d in directions)
+    return ("\n\n[AUTHOR'S DIRECTION for this reply: written by the user, out of character. "
+            "Follow it when writing the scene. No character said or heard it; never quote it.]\n"
+            + lines)
+
 
 async def _ephemeral_passthrough(request: "ChatCompletionRequest", session_id: str):
     """Quiet/impersonate: SillyTavern's prompt as-is to the backend; nothing persisted.
