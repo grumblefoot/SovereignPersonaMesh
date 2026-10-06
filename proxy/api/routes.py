@@ -386,8 +386,16 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     if ephemeral:
         logger.info(f"[SPMProxy] Ephemeral generation ({gen_type}): nothing will be persisted.")
 
+    # Quiet/impersonate are SillyTavern's own utility generations (summaries, writing
+    # the USER's next message). They get NO character framing: wrapping them in the
+    # target character's gated prompt + GM scratchpad directive made impersonate
+    # return only "[CHARACTER PERSPECTIVE: Vardus]" (QA step A5, 2026-10-05).
+    # Passed through as SillyTavern built them; <think> reasoning is still stripped.
+    if ephemeral:
+        return await _ephemeral_passthrough(request, session_id)
+
     # --- FR-002: Bulk Import Detection ---
-    is_bulk = False if ephemeral else await _check_bulk_import(request, session_id, _db_pool)
+    is_bulk = await _check_bulk_import(request, session_id, _db_pool)
 
     # --- Step 1: spatial routing via Evennia ---
     # Decision 10 on the live path: the turn id is the user-message count, so a regenerate
@@ -1092,6 +1100,58 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
         task.add_done_callback(_log_task_done)
+
+async def _ephemeral_passthrough(request: "ChatCompletionRequest", session_id: str):
+    """Quiet/impersonate: SillyTavern's prompt as-is to the backend; nothing persisted.
+    Still scheduled (P0 chat lane), still budget-clamped, and reasoning is stripped."""
+    settings = get_settings_manager().get_settings()
+    messages = [{"role": m.role, "content": m.content} for m in request.messages if m.content]
+    max_tokens = budget.clamp_max_tokens(messages, settings, prompt_builder.config,
+                                         model=str(request.model))
+
+    def _stream():
+        return lemonade_client.generate_stream(
+            messages=messages, model=request.model,
+            temperature=request.temperature or 0.7, max_tokens=max_tokens,
+            stop=None, job_kind="chat", session_id=session_id)
+
+    if request.stream is False:
+        parser = MonologueStreamParser(max_public_tokens=request.max_tokens or 10_000, initial_state=1)
+        try:
+            async for _ in parser.process_token_stream(_stream()):
+                pass
+        except (LLMBackendError, QueueFull, QueueWaitTimeout) as e:
+            return JSONResponse(status_code=502, content={"error": {"message": str(e), "type": "llm_backend_error"}})
+        except TurnSuperseded as e:
+            return JSONResponse(status_code=409, content={"error": {"message": str(e), "type": "turn_superseded"}})
+        _, public = parser.get_final_buffers()
+        return JSONResponse(content={
+            "id": "chatcmpl-spm-ephemeral", "object": "chat.completion", "created": int(time.time()),
+            "model": request.model,
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": public},
+                         "finish_reason": "stop"}]})
+
+    async def gen():
+        parser = MonologueStreamParser(max_public_tokens=request.max_tokens or 10_000, initial_state=1)
+
+        def chunk(content, finish=None):
+            return "data: " + json.dumps({
+                "id": "chatcmpl-spm-ephemeral", "object": "chat.completion.chunk",
+                "created": int(time.time()), "model": request.model,
+                "choices": [{"index": 0, "delta": {"content": content} if content else {},
+                             "finish_reason": finish}]}) + "\n\n"
+        try:
+            async for piece in parser.process_token_stream(_stream()):
+                yield chunk(piece)
+        except TurnSuperseded:
+            yield "data: [DONE]\n\n"
+            return
+        except (LLMBackendError, QueueFull, QueueWaitTimeout) as e:
+            yield chunk(f"*[SPM: the LLM backend is unavailable ({e}).]*")
+        yield chunk("", finish="stop")
+        yield "data: [DONE]\n\n"
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
 
 async def _session_is_new(session_id: str, user_msg_count: int) -> bool:
     """True the first time SPM sees this session: it has no perception rows yet.
