@@ -1106,8 +1106,11 @@ async def _ephemeral_passthrough(request: "ChatCompletionRequest", session_id: s
     Still scheduled (P0 chat lane), still budget-clamped, and reasoning is stripped."""
     settings = get_settings_manager().get_settings()
     messages = [{"role": m.role, "content": m.content} for m in request.messages if m.content]
+    # SillyTavern's Response Length is the ceiling here (it is the user's own
+    # utility call); the window clamp still applies on top.
+    ceiling = request.max_tokens or settings.get("backend_max_tokens", 2048)
     max_tokens = budget.clamp_max_tokens(messages, settings, prompt_builder.config,
-                                         model=str(request.model))
+                                         model=str(request.model), configured_ceiling=ceiling)
 
     def _stream():
         return lemonade_client.generate_stream(
@@ -1125,6 +1128,7 @@ async def _ephemeral_passthrough(request: "ChatCompletionRequest", session_id: s
         except TurnSuperseded as e:
             return JSONResponse(status_code=409, content={"error": {"message": str(e), "type": "turn_superseded"}})
         _, public = parser.get_final_buffers()
+        logger.info(f"[SPMReturnSillyLog] Ephemeral reply ({len(public)} chars): {public[:500]}")
         return JSONResponse(content={
             "id": "chatcmpl-spm-ephemeral", "object": "chat.completion", "created": int(time.time()),
             "model": request.model,
@@ -1148,6 +1152,8 @@ async def _ephemeral_passthrough(request: "ChatCompletionRequest", session_id: s
             return
         except (LLMBackendError, QueueFull, QueueWaitTimeout) as e:
             yield chunk(f"*[SPM: the LLM backend is unavailable ({e}).]*")
+        _, public = parser.get_final_buffers()
+        logger.info(f"[SPMReturnSillyLog] Ephemeral reply ({len(public)} chars): {public[:500]}")
         yield chunk("", finish="stop")
         yield "data: [DONE]\n\n"
     return StreamingResponse(gen(), media_type="text/event-stream")
