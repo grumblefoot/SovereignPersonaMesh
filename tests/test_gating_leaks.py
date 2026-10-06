@@ -472,3 +472,23 @@ def test_quiet_first_turn_does_not_seed_a_world(rig):
         room.present_characters
         for w in world_app.app_state.session_worlds[rig.session_id].values()
         for room in w.values())
+
+
+# ── QA A5: impersonate/quiet get SillyTavern's prompt, not the character pipeline ──
+
+def test_impersonate_is_passed_through_without_character_framing(rig):
+    instr = ("[Write your next reply from the point of view of Tom. "
+             "Don't write as Mira or system.]")
+    msgs = sysmsgs() + [{"role": "user", "content": '"Hello."'},
+                        {"role": "assistant", "content": "Hi there."},
+                        {"role": "system", "content": instr}]
+    r = rig.client.post("/v1/chat/completions",
+                        headers={"X-SPM-Chat-ID": rig.chat_id, "X-SPM-Gen-Type": "impersonate"},
+                        json={"model": "spm-sovereign-mesh", "stream": True, "messages": msgs})
+    assert r.status_code == 200
+    sent = rig.prompt_text(-1)
+    assert instr in sent                          # SillyTavern's instruction reached the model
+    assert "GAME MASTER" not in sent              # no SPM scratchpad directive
+    assert "<think>" not in sent                  # no monologue prefill
+    assert "A measured reply." in r.text          # the reply came back (reasoning stripped)
+    assert "plan" not in r.text                   # the fake model's <think>plan</think> is gone
