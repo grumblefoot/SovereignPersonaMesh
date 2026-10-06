@@ -297,3 +297,11 @@ The release proceeds in this order, owner-approved:
 
 Already done toward packaging: runtime dependencies cut to six packages, dev
 dependencies split out, Python 3.13+ verified (`d761b82`).
+
+## 13. v0.5 backlog (decided 2026-10-05)
+
+- **Group scenes and user-directed scene transitions** — headline v0.5 feature, found in
+  v0.4 group-chat QA. Spec: `docs/plans/group_scenes_v0.5.md` (current behaviour, intent,
+  proposed `[focus:room]` / `[at:Character:room]` tags, narrator room events, a
+  group-aware skip rule, placement by room name). v0.4 ships with the interim F10
+  behaviour: a character joining a group chat is placed in the user's room.
