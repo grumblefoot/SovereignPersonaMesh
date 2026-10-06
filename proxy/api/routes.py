@@ -742,6 +742,15 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     if lore_text_parts:
         active_lore_str = "\n\n[ACTIVE LORE]\n" + "\n".join(lore_text_parts)
 
+    # Decision D1 (owner, option A): an author direction goes only to the FIRST
+    # character who replies to it in this turn (regenerating that character still gets
+    # it). Later responders learn what happened through perception, like anyone else;
+    # sending it to all of them leaked the direction to characters elsewhere.
+    if ooc_directions and await _turn_answered_by_other(session_id, turn_id, target_char):
+        logger.info(f"[SPMProxy] Author direction withheld from {target_char}: "
+                    f"another character already answered turn {turn_id}.")
+        ooc_directions = []
+
     # --- Inject Assistant Prefill (Only if Monologue is enabled) ---
     if prompt_builder.config.inner_monologue_enabled:
         # A2 (gm_actions_and_lore_scope.md): the GM_ACTION bullets are assembled by
@@ -1216,6 +1225,32 @@ async def _known_rooms_block(session_id: str, target_char: str, gm_mode: str = "
     return (f"\n- KNOWN ROOMS ({rule}; 'user' is the player):\n" + "\n".join(lines))
 
 
+# (session, turn) -> the character a direction belongs to: the first to answer it.
+# Remembered so that regenerating the first responder still gets the direction even
+# after another character has replied in the same turn.
+_direction_owner: Dict[tuple, str] = {}
+
+
+async def _turn_answered_by_other(session_id: str, turn_id: str, target_char: str) -> bool:
+    """Decision D1 / option A: True when this turn's direction belongs to a DIFFERENT
+    character, i.e. someone else was the first to answer it."""
+    key = (session_id, turn_id)
+    owner = _direction_owner.get(key)
+    if owner is None and _db_pool is not None:
+        try:
+            async with _db_pool.acquire() as conn:
+                owner = await conn.fetchval(
+                    "SELECT actor_id FROM spm_perception WHERE session_id = $1 "
+                    "AND turn_id LIKE $2 ORDER BY created_at, id LIMIT 1",
+                    session_id, f"{turn_id}#reply:%")
+        except Exception as e:
+            logger.warning(f"[SPMProxy] direction-recipient check failed, delivering: {e}")
+    if owner is None:
+        owner = target_char            # nobody has answered yet: this character is first
+    _direction_owner[key] = owner
+    return owner != target_char
+
+
 def _author_direction_block(directions: List[str]) -> str:
     """The user's out-of-character directions, delivered to the model for this turn."""
     if not directions:
@@ -1367,7 +1402,10 @@ async def _record_reply_action(session_id: str, target_char: str, public_resp: s
     try:
         # Same engine turn_id as the user's message: the reply happens in the SAME
         # turn, so it reuses that turn's tick (decision 10: the tick counts user
-        # turns). The '#reply' key below only separates its perception rows. With
+        # turns). The '#reply:<char>' key below only separates its perception rows; it
+        # is PER CHARACTER, because the recorder replaces all rows of a key: with one
+        # shared '#reply' key, Mei's reply erased Lian's reply in the same turn (QA F21).
+        # With
         # '#reply' here, every reply advanced the clock — tick 3 after 2 messages
         # (QA step A2, 2026-10-05).
         res = await evennia_client.submit_action(
@@ -1375,6 +1413,16 @@ async def _record_reply_action(session_id: str, target_char: str, public_resp: s
             target_id=None, session_id=session_id, turn_id=turn_id)
         consequences = list(res.get("consequences", []))
         tick = int(res.get("action_tick", 0))
+        # A reply is prose with its own dialogue ('Lian paused... "Mei," she said').
+        # The engine wraps speech in quotes, which presented the whole paragraph as
+        # spoken words in others' histories (F18, reply side). Unwrap when the reply
+        # already carries its own quotes or *action* markup.
+        if any(ch in public_resp for ch in ('"', '“', '*')):
+            for c in consequences:
+                feed = c.get("sensory_feed") or ""
+                label, sep, rest = feed.partition(': "')
+                if sep and rest == public_resp + '"':
+                    c["sensory_feed"] = f"{label}: {public_resp}"
     except Exception as e:
         logger.warning(f"[SPMProxy] Reply action not routed (engine?): {e}")
     consequences.append({"recipient_id": target_char, "sensory_feed": public_resp,
@@ -1383,7 +1431,7 @@ async def _record_reply_action(session_id: str, target_char: str, public_resp: s
         try:
             async with _db_pool.acquire() as conn:
                 await record_turn_perceptions(conn, session_id=session_id, tick=tick,
-                                              turn_id=f"{turn_id}#reply",
+                                              turn_id=f"{turn_id}#reply:{target_char}",
                                               actor_id=target_char, action_type="speak",
                                               consequences=consequences)
         except Exception as e:
