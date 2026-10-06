@@ -108,8 +108,14 @@ class SpatialConstraintsMatrix:
 
         if action_type == ActionType.WHISPER:
             if target_gating == GatingLevel.DIRECT and is_target:
+                if "*" in raw_text or '"' in raw_text:
+                    # Text with its own markup is not re-quoted (F18, whisper side).
+                    return GatingLevel.DIRECT, f'{actor_id.capitalize()} whispers to you: {raw_text}'
                 return GatingLevel.DIRECT, f'{actor_id.capitalize()} whispers to you: "{raw_text}"'
-            elif target_gating == GatingLevel.DEGRADED:
+            # A bystander within earshot NOTICES the whispering but never gets the words
+            # (decision 11). A same-room bystander used to fall through to BLACKOUT, so a
+            # character standing right there was skipped as "out of earshot" (QA F23).
+            elif target_gating in (GatingLevel.DIRECT, GatingLevel.DEGRADED):
                 return GatingLevel.DEGRADED, f'You hear {actor_id.capitalize()} murmur quietly.'
             else:
                 return GatingLevel.BLACKOUT, ""

@@ -105,7 +105,28 @@ def _tick_for_turn(session_id: str, turn_id: str) -> Tuple[int, bool]:
         return turns[turn_id], False
     tick = _advance_session_tick(session_id)
     turns[turn_id] = tick
+    _persist_turn_tick(session_id, turn_id, tick)
     return tick, True
+
+
+def _persist_turn_tick(session_id: str, turn_id: str, tick: int) -> None:
+    """QA F20: persist the turn -> tick map so a restart never re-advances a known
+    turn. Fire-and-forget; the in-memory map stays authoritative for this process."""
+    if not app_state._db_pool:
+        return
+
+    async def _write():
+        try:
+            async with app_state._db_pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO spm_turn_ticks (session_id, turn_id, tick) VALUES ($1, $2, $3) "
+                    "ON CONFLICT (session_id, turn_id) DO NOTHING", session_id, turn_id, tick)
+        except Exception as e:
+            logging.error(f"Failed to persist turn tick {session_id}/{turn_id}: {e}")
+    try:
+        asyncio.get_running_loop().create_task(_write())
+    except RuntimeError:
+        pass  # no running loop (sync tests): nothing to persist to
 
 
 def _resolve_action_tick(session_id: str, turn_id: Optional[str]) -> int:
@@ -764,10 +785,24 @@ async def list_templates():
     return {"templates": world_builder.list_templates()}
 
 
+async def _clear_turn_ticks(session_id: Optional[str]) -> None:
+    if not app_state._db_pool:
+        return
+    try:
+        async with app_state._db_pool.acquire() as conn:
+            if session_id is None:
+                await conn.execute("DELETE FROM spm_turn_ticks")
+            else:
+                await conn.execute("DELETE FROM spm_turn_ticks WHERE session_id = $1", session_id)
+    except Exception as e:
+        logging.error(f"Failed to clear turn ticks: {e}")
+
+
 @app.delete("/api/v1/world/admin/reset")
 async def reset_world_state(session_id: Optional[str] = None):
     """Factory reset. With ?session_id=X, clear ONLY that session (A2, adapter gap 9);
     without, clear everything as before."""
+    await _clear_turn_ticks(session_id)          # F20: persisted turn ticks too
     if session_id is not None:
         for store in (app_state.session_worlds, app_state.idempotency_seen,
                       app_state.session_ticks, app_state.session_turn_ticks,
@@ -1027,6 +1062,15 @@ async def startup_event():
                 ticks = await conn.fetch("SELECT session_id, MAX(action_tick) AS t FROM objective_world_log GROUP BY session_id")
                 for row in ticks:
                     app_state.session_ticks[row["session_id"]] = int(row["t"] or 0)
+                # F20: restore the turn -> tick map, and never let the session tick
+                # fall below a tick already handed to a turn.
+                try:
+                    for row in await conn.fetch("SELECT session_id, turn_id, tick FROM spm_turn_ticks"):
+                        app_state.session_turn_ticks.setdefault(row["session_id"], {})[row["turn_id"]] = int(row["tick"])
+                        if int(row["tick"]) > app_state.session_ticks.get(row["session_id"], 0):
+                            app_state.session_ticks[row["session_id"]] = int(row["tick"])
+                except Exception as e:
+                    logging.error(f"Turn-tick reload skipped: {e}")
                 if rows:
                     logging.info(f"Reloaded {len(rows)} room(s) across {len(app_state.session_worlds)} session(s) from Postgres")
         except Exception as e:
