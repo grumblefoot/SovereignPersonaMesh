@@ -276,3 +276,16 @@ def test_st_chat_start_markers_are_not_story():
         M(role="system", content="[Start a new chat]")], {})
     assert "Start a new" not in out
     assert "Write 莲 Lian's next reply." in out
+
+
+def test_long_scenario_title_is_the_target_not_default():
+    """QA F24: 'My Hero Academia RPG World' (5 words) fell back to the shared 'default'."""
+    from proxy.api.routes import _extract_target_char, ChatCompletionMessage as M
+    msgs = [M(role="system", content="Write My Hero Academia RPG World's next reply in a "
+                                     "fictional chat between My Hero Academia RPG World and Vardus."),
+            M(role="user", content="hi")]
+    assert _extract_target_char(msgs) == "my_hero_academia_rpg_world"
+    # still not a sentence: a description on the Write line is rejected
+    bad = [M(role="system", content="Write Vardus is a tall and fit human male's next reply"),
+           M(role="user", content="hi")]
+    assert _extract_target_char(bad) == "default"

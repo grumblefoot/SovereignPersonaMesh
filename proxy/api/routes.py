@@ -109,6 +109,20 @@ _CONTROL_TAGS = ("scenario", "system", "user", "assistant", "context", "scene", 
                  "whisper", "shout", "gm_action", "character", "charactername")
 
 
+def _looks_like_title(text: str) -> bool:
+    """SillyTavern's own "Write X's next reply" line is structured, so X may be a longer
+    title: scenario cards are named like "My Hero Academia RPG World" (5 words), which
+    the 3-word name guard rejected, filing the whole scenario under the shared 'default'
+    character (QA F24, 2026-10-06). Still not a sentence: no clause punctuation and no
+    "is/are/was" (the persona-description failure mode from F1)."""
+    words = text.split()
+    if not 0 < len(words) <= 8:
+        return False
+    if re.search(r"[.;:!?]", text):
+        return False
+    return not any(w.lower() in ("is", "are", "was", "were") for w in words)
+
+
 def _looks_like_name(text: str) -> bool:
     """Names are short. A bracketed persona/card DESCRIPTION ("[Vardus is a tall and fit
     human male in his late 20's ...") is not a name (QA 2026-10-05)."""
@@ -127,7 +141,7 @@ def _extract_target_char(messages: List[ChatCompletionMessage]) -> str:
     for msg in messages:
         if msg.role == "system" and msg.content:
             match = re.search(r"Write\s+(.+?)['’]s\s+next\s+reply", msg.content, re.IGNORECASE)
-            if match and _looks_like_name(match.group(1)):
+            if match and _looks_like_title(match.group(1)):
                 return safe_char_id(match.group(1))
     for msg in reversed(messages):
         if msg.role == "system" and msg.content:
