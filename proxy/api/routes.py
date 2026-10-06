@@ -831,13 +831,13 @@ The text after </think> must ONLY be narrative and dialogue.
 
         if not ephemeral:
             # Dispatch any GM actions found in the monologue sequentially in background
-            task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
-                                                    turn_index=user_msg_count,
-                                                    persona=_extract_persona_name(request.messages)))
-            reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id,
-                                                             tainted=parser.is_tainted))
-            _background_tasks.add(reply_task)
-            reply_task.add_done_callback(_background_tasks.discard)
+            # GM moves FIRST, then the reply as a world event: the reply narrates the
+            # scene after those moves ("Mei re-enters; Lian asks her..."). Run in
+            # parallel, the reply was recorded while Mei was still in the kitchen, so
+            # she never heard the question (QA F19, 2026-10-05).
+            task = asyncio.create_task(_gm_then_reply(
+                parser, session_id, target_char, public_resp, turn_id,
+                turn_index=user_msg_count, persona=_extract_persona_name(request.messages)))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
@@ -949,13 +949,13 @@ The text after </think> must ONLY be narrative and dialogue.
 
         if not ephemeral:
             # Dispatch any GM actions found in the monologue sequentially in background
-            task = asyncio.create_task(_dispatch_gm_actions(parser, session_id, target_char,
-                                                    turn_index=user_msg_count,
-                                                    persona=_extract_persona_name(request.messages)))
-            reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id,
-                                                             tainted=parser.is_tainted))
-            _background_tasks.add(reply_task)
-            reply_task.add_done_callback(_background_tasks.discard)
+            # GM moves FIRST, then the reply as a world event: the reply narrates the
+            # scene after those moves ("Mei re-enters; Lian asks her..."). Run in
+            # parallel, the reply was recorded while Mei was still in the kitchen, so
+            # she never heard the question (QA F19, 2026-10-05).
+            task = asyncio.create_task(_gm_then_reply(
+                parser, session_id, target_char, public_resp, turn_id,
+                turn_index=user_msg_count, persona=_extract_persona_name(request.messages)))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
@@ -1388,6 +1388,18 @@ async def _record_reply_action(session_id: str, target_char: str, public_resp: s
                                               consequences=consequences)
         except Exception as e:
             logger.warning(f"[SPMProxy] Reply perception recording skipped: {e}")
+
+
+async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_char: str,
+                         public_resp: str, turn_id: str, turn_index: int, persona: str) -> None:
+    """Apply the turn's GM actions, then record the reply as a world event, in order."""
+    try:
+        await _dispatch_gm_actions(parser, session_id, target_char,
+                                   turn_index=turn_index, persona=persona)
+    except Exception as e:  # never let a GM failure lose the reply
+        logger.error(f"[GMAction] dispatch failed for {session_id}: {e}")
+    await _record_reply_action(session_id, target_char, public_resp, turn_id,
+                               tainted=parser.is_tainted)
 
 
 async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str,
