@@ -39,6 +39,21 @@ user's character at the door.
 | GM actions | The model may create rooms and move characters from its scratchpad. This is the only way characters get re-positioned today. |
 | Skip rule (decision 8) | If the target can't perceive the user's message, SPM skips the model and shows "*X hears only muffled sounds…*". Built for 1:1 chats: in a group, a character in another room is skipped even when she perceived something else worth reacting to. |
 
+### More live examples from v0.4 QA
+
+- **World drifts from the story.** The narrative put Vardus in the living room, but SPM
+  still had him at the entrance; nothing moved him when the story did. Corrected by
+  hand during QA.
+- **Duplicate props from placement drift.** In the story, Lian came *from the kitchen*
+  carrying the tea set. SPM had placed her with the player when she joined, so she was
+  never in the kitchen with Mei. Mei therefore never saw Lian take the tea, and
+  correctly from her own point of view, brought a second tea set. Story-driven placement
+  (gap 1) fixes this class of problem.
+- **Author directions vs. gating** (decision D1, v0.4 interim): a direction goes only
+  to the first character who answers it; later responders learn by perception. v0.5's
+  narrator room events make this exact, since directions become gated events in the
+  focus room.
+
 ## Gaps to close
 
 1. **Story-driven placement.** A joining character should start where the story puts
