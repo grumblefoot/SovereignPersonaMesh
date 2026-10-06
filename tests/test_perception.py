@@ -2,7 +2,7 @@
 import asyncpg
 import pytest
 
-from proxy.gating.perception import gated_history, record_turn_perceptions
+from proxy.gating.perception import gated_history, prune_later_turns, record_turn_perceptions
 from tests._testdb import TEST_DB_CONFIG
 
 CONS = [
@@ -163,3 +163,30 @@ async def test_tainted_reply_is_not_recorded_as_world_state():
         await routes._record_reply_action("s1", "mira", "leaked planning text", "s1:3", tainted=True)
     sub.assert_not_called()
     rec.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prune_later_turns_forgets_abandoned_branch():
+    """Deleting messages back to turn 2 and continuing: turns 3+ (including per-character
+    reply rows '<turn>#reply:<char>') must not resurface as recent history."""
+    conn = await asyncpg.connect(**TEST_DB_CONFIG)
+    try:
+        sid = "percep_rewind"
+        await conn.execute("DELETE FROM spm_perception WHERE session_id = $1", sid)
+        for t in range(1, 6):
+            for key in (f"{sid}:{t}", f"{sid}:{t}#reply:mira"):
+                await record_turn_perceptions(conn, session_id=sid, tick=t, turn_id=key,
+                                              actor_id="user", action_type="speak",
+                                              consequences=[{**CONS[0], "sensory_feed": f"{key}"}])
+        # A turn 12 must not be mistaken for turn 1 (numeric, not prefix, comparison).
+        await record_turn_perceptions(conn, session_id=sid, tick=12, turn_id=f"{sid}:12",
+                                      actor_id="user", action_type="speak",
+                                      consequences=[{**CONS[0], "sensory_feed": "late"}])
+        n = await prune_later_turns(conn, session_id=sid, turn_no=2)
+        assert n == 7                                           # turns 3,4,5 x2 + turn 12
+        left = await gated_history(conn, session_id=sid, recipient_id="mira")
+        assert [r["perceived_text"] for r in left] == [
+            f"{sid}:1", f"{sid}:1#reply:mira", f"{sid}:2", f"{sid}:2#reply:mira"]
+        assert await prune_later_turns(conn, session_id=sid, turn_no=2) == 0
+    finally:
+        await conn.close()

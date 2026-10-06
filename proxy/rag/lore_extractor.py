@@ -9,6 +9,9 @@ from proxy.backend_client.lemonade_client import LemonadeLLMClient, DEFAULT_CHAT
 from scripts.onnx_embedder import CPUEmbeddingEngine
 from proxy.embeddings import space_id_for as _space_id_for
 
+# Cosine distance below which a new rule restates an existing one (QA O4, 2026-10-06).
+NEAR_DUPLICATE_DISTANCE = 0.20
+
 logger = logging.getLogger(__name__)
 
 from core.resource_manager import strings
@@ -117,8 +120,17 @@ class LoreExtractionWorker:
                     existing = await conn.fetchval(
                         strings.get("sql.check_lore_rule_exists").format(table_name=table_name),
                         rule_text, session_id)
+                    space_id = await _space_id_for(self.embedding_engine, conn) if emb_str is not None else None
+                    # Reworded restatements of a rule we already hold ("Characters can/may
+                    # experience sudden bursts of strength") are duplicates too. Measured on
+                    # the MHA lorebook: paraphrases <= 0.17, distinct rules >= 0.25 (QA O4).
+                    if not existing and emb_str is not None and space_id is not None:
+                        existing = await conn.fetchval(
+                            strings.get("sql.check_lore_rule_near_duplicate").format(table_name=table_name),
+                            emb_str, session_id, space_id, NEAR_DUPLICATE_DISTANCE)
+                        if existing:
+                            self.logger.info(f"Skipping near-duplicate lore rule: {rule_text[:80]}")
                     if not existing:
-                        space_id = await _space_id_for(self.embedding_engine, conn) if emb_str is not None else None
                         await conn.execute(
                             f"""
                             INSERT INTO {table_name} (rule_text, rule_type, rule_embedding,

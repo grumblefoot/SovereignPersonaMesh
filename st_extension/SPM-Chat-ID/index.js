@@ -113,6 +113,25 @@
         return genTypeValue;
     }
 
+    /**
+     * {{spmUserTurns}}: how many user messages the chat holds (hidden ones
+     * excluded, as ST never sends them). ST trims the oldest messages from the
+     * prompt when the context fills, so the proxy cannot count turns from the
+     * request; this is the authoritative count. It lets SPM tell "the user
+     * deleted messages and went back" from "old messages were trimmed".
+     */
+    function spmUserTurns() {
+        const ctx = getContextSafe();
+        try {
+            const chat = ctx?.chat;
+            if (!Array.isArray(chat)) return '';
+            return String(chat.filter(m => m && m.is_user && !m.is_system).length);
+        } catch (err) {
+            console.error(`[${MODULE}] spmUserTurns failed`, err);
+            return '';
+        }
+    }
+
     function init() {
         const ctx = getContextSafe();
         if (!ctx) {
@@ -146,7 +165,9 @@
                 'SPM: parent chat file name when this chat is a branch/checkpoint (chat_metadata.main_chat), else empty.');
             ctx.registerMacro('spmGenType', spmGenType,
                 'SPM: type of the generation being produced (normal, swipe, regenerate, continue, impersonate, quiet). Empty before the first generation in a chat.');
-            console.log(`[${MODULE}] registered macros: {{spmChatId}}, {{spmParentChat}}, {{spmGenType}}`);
+            ctx.registerMacro('spmUserTurns', spmUserTurns,
+                'SPM: number of user messages in the current chat (hidden excluded), counted before ST trims the prompt to fit the context.');
+            console.log(`[${MODULE}] registered macros: {{spmChatId}}, {{spmParentChat}}, {{spmGenType}}, {{spmUserTurns}}`);
         } catch (err) {
             console.error(`[${MODULE}] macro registration failed`, err);
         }

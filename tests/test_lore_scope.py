@@ -115,3 +115,27 @@ async def test_same_rule_text_allowed_in_two_chats_but_deduped_within_one():
             assert await conn.fetchval(sql, "The moon is a lie.", "st_chat_B") is None
             await _seed_rule(conn, "The moon is a lie.", "canon", scope="global")
             assert await conn.fetchval(sql, "The moon is a lie.", "st_chat_B") is not None
+
+
+@pytest.mark.asyncio
+async def test_near_duplicate_rule_detected_by_embedding_distance():
+    """QA O4: a reworded restatement of an existing rule is a duplicate (same chat or
+    canon, same embedding space); a distinct rule, another chat or another space is not."""
+    from proxy.rag.lore_extractor import NEAR_DUPLICATE_DISTANCE, strings as lore_strings
+    sql = lore_strings.get("sql.check_lore_rule_near_duplicate").format(table_name=TABLE)
+    async with scoped_pool() as pool:
+        async with pool.acquire() as conn:
+            space = await conn.fetchval("SELECT id FROM spm_embedding_spaces ORDER BY id LIMIT 1")
+            if space is None:
+                space = await conn.fetchval(
+                    "INSERT INTO spm_embedding_spaces (provider, model, dim) "
+                    "VALUES ('test', 'near-dup-test', 3) RETURNING id")
+            await conn.execute(
+                f"INSERT INTO {TABLE} (id, rule_text, rule_type, status, session_id, scope, "
+                f"rule_embedding, embedding_space_id) VALUES ($1, 'Bursts of power.', 'invariant', "
+                f"'pending', 'st_chat_A', 'chat', '[1,0,0]'::vector, $2)", uuid.uuid4(), space)
+            near, far = "[0.98,0.15,0]", "[0.6,0.8,0]"          # cos dist ~0.011 / 0.4
+            assert await conn.fetchval(sql, near, "st_chat_A", space, NEAR_DUPLICATE_DISTANCE)
+            assert await conn.fetchval(sql, far, "st_chat_A", space, NEAR_DUPLICATE_DISTANCE) is None
+            assert await conn.fetchval(sql, near, "st_chat_B", space, NEAR_DUPLICATE_DISTANCE) is None
+            assert await conn.fetchval(sql, near, "st_chat_A", space + 1000, NEAR_DUPLICATE_DISTANCE) is None

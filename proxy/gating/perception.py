@@ -51,6 +51,27 @@ async def record_turn_perceptions(conn, *, session_id: str, tick: int,
     return rows
 
 
+async def prune_later_turns(conn, *, session_id: str, turn_no: int) -> int:
+    """Delete perception rows for turns AFTER `turn_no` (turn ids are '<session>:<N>...').
+
+    The chat is the authority on which turns exist. When the user deletes messages and
+    continues (or swipes back to another greeting), the abandoned turns' rows used to
+    stay and, with their higher ticks, read as the most recent events of the new branch
+    (QA 2026-10-06). Returns rows deleted."""
+    result = await conn.execute(
+        r"""
+        DELETE FROM spm_perception
+        WHERE session_id = $1
+          AND substring(turn_id from length($1) + 2) ~ '^\d+'
+          AND substring(substring(turn_id from length($1) + 2) from '^\d+')::int > $2
+        """,
+        session_id, turn_no)
+    try:
+        return int(str(result).split()[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
 async def gated_history(conn, *, session_id: str, recipient_id: str,
                         limit: int = 30) -> List[Dict[str, Any]]:
     """The last `limit` perception rows for one character, oldest first.

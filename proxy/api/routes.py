@@ -31,7 +31,7 @@ from proxy.core import gm_actions as gm_validation
 from proxy.rag import budget
 from proxy.gating.action_parser import parse_user_message, parse_message, CONF_TAG
 from proxy.gating.world_seed import propose_world_seed
-from proxy.gating.perception import gated_history, record_turn_perceptions, render_history_rows
+from proxy.gating.perception import gated_history, prune_later_turns, record_turn_perceptions, render_history_rows
 from proxy.backend_client.evennia_client import EvenniaWorldClient
 from proxy.embeddings import get_embedding_service, space_id_for
 from core.resource_manager import strings
@@ -453,7 +453,26 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # Decision 10 on the live path: the turn id is the user-message count, so a regenerate
     # re-sends the same turn_id and the engine's per-session tick does not advance.
     user_msg_count = sum(1 for m in request.messages if m.role == "user")
+    # ST trims the oldest messages once the prompt outgrows the context, so the request
+    # can under-count. The extension's {{spmUserTurns}} counts the whole chat.
+    chat_user_turns = _header_user_turns(req)
+    if chat_user_turns is not None and chat_user_turns >= user_msg_count:
+        user_msg_count = chat_user_turns
     turn_id = f"{session_id}:{user_msg_count}"
+    # Deleted messages / a branch back to an earlier point: forget the abandoned turns,
+    # so they can't resurface as "recent" in the gated history. World state (rooms,
+    # positions) is not rolled back; that needs engine snapshots (v0.5).
+    # Only with the extension's authoritative count: a request count alone can't tell a
+    # rewind from trimming, and pruning on a trimmed prompt would delete real history.
+    if _db_pool and not is_new_session and chat_user_turns is not None:
+        try:
+            async with _db_pool.acquire() as conn:
+                pruned = await prune_later_turns(conn, session_id=session_id, turn_no=user_msg_count)
+            if pruned:
+                logger.info(f"[SPMProxy] Chat rewound to turn {user_msg_count}: dropped "
+                            f"{pruned} perception rows from abandoned later turns.")
+        except Exception as e:
+            logger.warning(f"[SPMProxy] Rewind prune skipped: {e}")
 
     # Sprint 2 chunk 4: deterministic action parsing (decision 11, fail-open). The user's
     # 'quoted thoughts' are PRIVATE: they never reach the engine, other characters'
@@ -1174,6 +1193,16 @@ def _strip_user_persona(messages: List[ChatCompletionMessage], target_char: str)
         return messages
     opener = re.compile(r"^\s*\[?\s*" + re.escape(user_name) + r"(?:'s)?\b", re.IGNORECASE)
     return [m for m in messages if not (m.role == "system" and m.content and opener.match(m.content))]
+
+
+def _header_user_turns(req) -> Optional[int]:
+    """The chat's user-message count from the extension (X-SPM-User-Turns), or None
+    when absent, unsubstituted ("{{spmUserTurns}}") or not a number."""
+    try:
+        raw = (req.headers.get("X-SPM-User-Turns") or "").strip().strip('"')
+    except Exception:
+        return None
+    return int(raw) if raw.isdigit() else None
 
 
 def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_monologue: str, public_resp: str,

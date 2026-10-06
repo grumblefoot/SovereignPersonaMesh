@@ -823,3 +823,14 @@ def test_narrator_name_heuristic():
         assert R.search(name), name
     for name in ["美 Mei", "莲 Lian", "Mira", "Seraphina", "Wordsworth"]:
         assert not R.search(name), name
+
+
+def test_header_user_turns_parses_only_real_counts():
+    from types import SimpleNamespace
+    from proxy.api.routes import _header_user_turns
+    mk = lambda v: SimpleNamespace(headers={} if v is None else {"X-SPM-User-Turns": v})
+    assert _header_user_turns(mk("7")) == 7
+    assert _header_user_turns(mk('"7"')) == 7
+    assert _header_user_turns(mk(None)) is None
+    assert _header_user_turns(mk("{{spmUserTurns}}")) is None   # extension missing
+    assert _header_user_turns(mk("")) is None
