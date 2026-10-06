@@ -498,3 +498,33 @@ def test_impersonate_is_passed_through_without_character_framing(rig):
     assert "<think>" not in sent                  # no monologue prefill
     assert "A measured reply." in r.text          # the reply came back (reasoning stripped)
     assert "plan" not in r.text                   # the fake model's <think>plan</think> is gone
+
+
+# ── QA group chat (Mei + her mother): late-joining members ─────────────────
+
+def test_group_member_joining_later_is_placed_and_hears_the_player(rig):
+    rig.turn(sysmsgs("Mei") + [{"role": "user", "content": '"Hello, Mei."'}])
+    rig.turn(sysmsgs("Lian") + [{"role": "user", "content": '"You must be her mother. zq_join_word"'}])
+    snap = rig.engine.get("/api/v1/world/snapshot",
+                          params={"session_id": rig.session_id, "template_key": ""}).json()
+    where = {o["entity_id"]: o["room_id"] for o in snap["occupants"]}
+    assert where.get("lian") == where.get("user")          # placed with the player
+    assert "zq_join_word" in rig.prompt_text(-1)           # and she heard the line
+    assert "muffled sounds" not in rig.prompt_text(-1)
+
+
+def test_target_never_inherits_another_characters_blackout(rig):
+    """Mei out of earshot must not make a DIFFERENT, unrowed target blacked out."""
+    rig.seed(placements=[("user", "cellar"), ("mei", "tavern_upstairs")])
+    n = len(rig.prompts)
+    r = rig.turn(sysmsgs("Lian") + [{"role": "user", "content": '"Lian, are you there?"'}])
+    assert len(rig.prompts) == n + 1                        # Lian's turn reached the LLM
+    assert "muffled sounds" not in r.text                   # not bypassed via Mei's row
+
+
+def test_joining_does_not_teleport_a_character_already_placed(rig):
+    rig.seed(placements=[("user", "cellar"), ("mei", "tavern_upstairs")])
+    rig.turn(sysmsgs("Mei") + [{"role": "user", "content": '"Mei?"'}])
+    snap = rig.engine.get("/api/v1/world/snapshot",
+                          params={"session_id": rig.session_id, "template_key": ""}).json()
+    assert {o["entity_id"]: o["room_id"] for o in snap["occupants"]}["mei"] == "tavern_upstairs"

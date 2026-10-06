@@ -438,6 +438,13 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
             logger.info(f"[SPMProxy] Seeded world '{seed.template_key}' ({seed.source}) for {session_id}.")
         except Exception as e:
             logger.warning(f"[SPMProxy] World seeding skipped: {e}")
+    # Group chats: a character who speaks for the first time AFTER the session was
+    # seeded (Mei's mother joining) was never placed in any room, so she perceived
+    # nothing (QA 2026-10-05). Place a missing target in the player's room before the
+    # player's action, so she hears it; GM actions can move her afterwards.
+    if not is_new_session:
+        await _ensure_target_placed(session_id, target_char, turn_id)
+
     # OPEN-010: if the world engine is down, degrade to an ungated turn instead of a raw 500.
     # Roleplay must survive an engine outage; the turn simply has no spatial consequences.
     try:
@@ -488,7 +495,10 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     consequences = world_res.get("consequences", [])
     for c in consequences:
         recip = c.get("recipient_id", "").lower()
-        if recip == target_char or target_char == "default" or len(consequences) == 1:
+        # Only the TARGET's own row counts. The old 'len(consequences) == 1' fallback
+        # judged a character by someone else's position: Mei (kitchen) blacked out,
+        # so Lian, who had no row at all, inherited Mei's blackout (QA 2026-10-05).
+        if recip == target_char or target_char == "default":
             sensory_feed = c.get("sensory_feed", user_text)
             gating_level = c.get("gating_level", "direct")
             break
@@ -1157,6 +1167,28 @@ async def _ephemeral_passthrough(request: "ChatCompletionRequest", session_id: s
         yield chunk("", finish="stop")
         yield "data: [DONE]\n\n"
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+async def _ensure_target_placed(session_id: str, target_char: str, turn_id: str) -> None:
+    """Place the target character in the player's room if the world doesn't have them.
+    Idempotent per (session, turn, character); never moves a character already placed."""
+    if not target_char or target_char == "default":
+        return
+    try:
+        snap = await evennia_client.get_snapshot(session_id=session_id, template_key="")
+        where = {o["entity_id"].lower(): o["room_id"] for o in snap.get("occupants", [])}
+        if target_char.lower() in where:
+            return
+        room = where.get("user") or next((r["room_id"] for r in snap.get("rooms", [])), None)
+        if not room:
+            return
+        await evennia_client.move_character(
+            character_id=target_char, room_id=room, session_id=session_id,
+            idempotency_key=f"join:{session_id}:{target_char}", origin="system",
+            template_key="")
+        logger.info(f"[SPMProxy] {target_char} joined session {session_id}: placed in '{room}' with the player.")
+    except Exception as e:
+        logger.warning(f"[SPMProxy] Could not place joining character {target_char}: {e}")
 
 
 async def _session_is_new(session_id: str, user_msg_count: int) -> bool:
