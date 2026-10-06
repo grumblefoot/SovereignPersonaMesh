@@ -655,3 +655,33 @@ def test_mixed_speech_and_action_keep_their_markup_and_persona_name(rig):
 def test_pure_speech_format_unchanged_apart_from_the_name(rig):
     rig.turn(sysmsgs() + [{"role": "user", "content": '"Just words."'}])
     assert 'Tom: "Just words."' in rig.prompt_text(-1)
+
+
+# ── QA F19: GM moves apply before the reply is perceived ───────────────────
+
+def test_character_moved_in_by_gm_hears_the_reply_that_moved_them(rig, monkeypatch):
+    """Lian's reply moved Mei into the room and then addressed her. Mei must perceive
+    the reply; recorded in parallel, the reply was gated while Mei was still away."""
+    import proxy.api.routes as routes
+    rig.seed(placements=[("user", "cellar"), ("mira", "cellar"), ("mei", "tavern_upstairs")])
+
+    async def stream_with_move(*args, **kwargs):
+        rig.prompts.append([dict(m) for m in kwargs.get("messages", [])])
+        yield '[GM_ACTION: {"type": "MOVE", "entity": "mei", "room_id": "cellar"}]</think>'
+        yield '"Mei, do you know what zq_moved_word means?"'
+    monkeypatch.setattr(routes.lemonade_client, "generate_stream", stream_with_move)
+    rig.turn(sysmsgs() + [{"role": "user", "content": '"Hello."'}])
+    import asyncio, asyncpg
+    from tests._testdb import TEST_DB_CONFIG
+
+    async def mei_rows():
+        c = await asyncpg.connect(**TEST_DB_CONFIG)
+        try:
+            return await c.fetch("SELECT gating_level, perceived_text FROM spm_perception "
+                                 "WHERE session_id=$1 AND recipient_id='mei' AND turn_id LIKE '%#reply'",
+                                 rig.session_id)
+        finally:
+            await c.close()
+    rows = asyncio.run(mei_rows())
+    assert rows and rows[0]["gating_level"] == "direct"
+    assert "zq_moved_word" in rows[0]["perceived_text"]
