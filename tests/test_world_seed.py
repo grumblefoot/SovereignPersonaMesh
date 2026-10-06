@@ -209,3 +209,23 @@ def test_confidence_out_of_range_rejected():
     with pytest.raises(Exception):
         SeedProposal(template_key="tavern_common", confidence=1.5,
                      source="tag")
+
+
+# ── QA F25: incidental keywords in long lore must not pick a template ─────
+
+def test_single_stray_keyword_in_long_lore_falls_back():
+    """The live case: one 'nature' among hundreds of lorebook words seeded forest_camp."""
+    lore = " ".join(f"quirk{i} hero{i} society{i}" for i in range(200)) + " the nature of quirks"
+    p = propose_world_seed(lore, "Name: Vardus. Quirk: hypnotic appearance.")
+    assert p.template_key == FALLBACK_TEMPLATE
+    assert p.source == "fallback"
+
+
+def test_keywords_diluted_by_a_huge_prompt_fall_back():
+    import itertools, string
+    # 900 DISTINCT alphabetic words (digits are stripped by the tokenizer, so
+    # "word17" would collapse into one keyword and not dilute anything).
+    words = ("".join(t) for t in itertools.product(string.ascii_lowercase, repeat=4))
+    lore = " ".join(itertools.islice(words, 900)) + " forest camp"
+    p = propose_world_seed(lore, "hello")
+    assert p.template_key == FALLBACK_TEMPLATE        # 2 hits but density far below 0.02

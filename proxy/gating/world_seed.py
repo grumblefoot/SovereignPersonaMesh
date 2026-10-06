@@ -131,11 +131,32 @@ def _match_template(system_text: str, user_text: str,
     keywords = extract_keywords(system_text, user_text)
     if keywords:
         matched = builder.match_template(keywords)
-        if matched != FALLBACK_TEMPLATE:
+        if matched != FALLBACK_TEMPLATE and _strong_keyword_evidence(matched, keywords):
             return matched, CONF_KEYWORDS, "keywords"
 
     # 3. Fallback.
     return FALLBACK_TEMPLATE, CONF_FALLBACK, "fallback"
+
+
+MIN_DISTINCT_HITS = 2
+MIN_KEYWORD_DENSITY = 0.02
+
+
+def _strong_keyword_evidence(template_key: str, keywords: list[str]) -> bool:
+    """A keyword match must be specific, not incidental (QA F25, 2026-10-06).
+
+    The builder's score is a plain sum, so a long prompt (a ~10k-character lorebook
+    injection) clears its threshold on ONE stray word: a My Hero Academia scenario was
+    seeded as forest_camp from the single word "nature" among 626, and the opening
+    scene came out in a forest. Require at least two distinct template keywords and a
+    score dense enough relative to the text (measured: incidental 0.0024; real
+    template-y texts 0.31-1.5). Otherwise fall back to the blank world."""
+    from evennia_world.hybrid_builder import _KEYWORD_SCORES
+    weights = _KEYWORD_SCORES.get(template_key, {})
+    hits = [k for k in set(keywords) if k in weights]
+    if len(hits) < MIN_DISTINCT_HITS:
+        return False
+    return sum(weights[k] for k in hits) / max(1, len(set(keywords))) >= MIN_KEYWORD_DENSITY
 
 
 def extract_keywords(*texts: str) -> list[str]:
