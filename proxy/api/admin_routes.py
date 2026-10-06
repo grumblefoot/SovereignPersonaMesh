@@ -465,3 +465,33 @@ async def session_world(session_id: str):
     except Exception as e:
         return JSONResponse(status_code=503, content={"error": f"world engine unavailable: {e}"})
     return JSONResponse(content=snap)
+
+
+@router.get("/sessions/{session_id}/settings")
+async def get_chat_settings(session_id: str):
+    """Per-chat settings (QA F26). narrator_mode: auto | on | off."""
+    pool = AdminState.get_db_pool()
+    if pool is None:
+        return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
+    async with pool.acquire() as conn:
+        mode = await conn.fetchval(
+            "SELECT narrator_mode FROM spm_chat_settings WHERE session_id = $1", session_id)
+    return JSONResponse(content={"session_id": session_id, "narrator_mode": mode or "auto"})
+
+
+@router.put("/sessions/{session_id}/settings")
+async def put_chat_settings(session_id: str, body: dict):
+    """Set per-chat settings. Body: {"narrator_mode": "auto" | "on" | "off"}."""
+    mode = str(body.get("narrator_mode", "")).lower()
+    if mode not in ("auto", "on", "off"):
+        return JSONResponse(status_code=400, content={"error": "narrator_mode must be auto, on or off"})
+    pool = AdminState.get_db_pool()
+    if pool is None:
+        return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO spm_chat_settings (session_id, narrator_mode, updated_at) "
+            "VALUES ($1, $2, CURRENT_TIMESTAMP) ON CONFLICT (session_id) DO UPDATE "
+            "SET narrator_mode = EXCLUDED.narrator_mode, updated_at = CURRENT_TIMESTAMP",
+            session_id, mode)
+    return JSONResponse(content={"session_id": session_id, "narrator_mode": mode})

@@ -309,3 +309,8 @@ def test_factory_reset_clears_the_engine_through_the_configured_client():
         resp = client.delete("/admin/api/v1/factory_reset")
     assert resp.status_code == 200
     http.delete.assert_awaited_once_with(f"{evennia_client.base_url}/world/admin/reset")
+
+
+def test_chat_settings_rejects_bad_mode():
+    resp = client.put("/admin/api/v1/sessions/s1/settings", json={"narrator_mode": "sometimes"})
+    assert resp.status_code == 400

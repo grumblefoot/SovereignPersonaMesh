@@ -755,3 +755,71 @@ def test_second_reply_in_a_turn_does_not_erase_the_first(rig):
     while time.time() < deadline and asyncio.run(actors()) != {"mira", "watcher"}:
         rig.client.get("/health"); time.sleep(0.05)
     assert asyncio.run(actors()) == {"mira", "watcher"}     # was: only the last responder
+
+
+# ── QA F26: a scenario narrator follows the player (v0.4 stopgap, OPEN-016) ──
+
+def _move_player_stream(rig, monkeypatch, room):
+    import proxy.api.routes as routes
+
+    async def stream(*args, **kwargs):
+        rig.prompts.append([dict(m) for m in kwargs.get("messages", [])])
+        yield f'[GM_ACTION: {{"type": "MOVE", "entity": "user", "room_id": "{room}"}}]</think>'
+        yield "The scene shifts as you walk on."
+    monkeypatch.setattr(routes.lemonade_client, "generate_stream", stream)
+
+
+def _where(rig):
+    snap = rig.engine.get("/api/v1/world/snapshot",
+                          params={"session_id": rig.session_id, "template_key": ""}).json()
+    return {o["entity_id"]: o["room_id"] for o in snap["occupants"]}
+
+
+def test_scenario_narrator_follows_player_when_gm_moves_them(rig, monkeypatch):
+    rig.seed(placements=[("user", "cellar"), ("hero_rpg_world", "cellar")])
+    _move_player_stream(rig, monkeypatch, "tavern_upstairs")
+    rig.turn(sysmsgs("Hero RPG World") + [{"role": "user", "content": '"Let us go upstairs."'}])
+    deadline = time.time() + 3
+    while time.time() < deadline and _where(rig).get("hero_rpg_world") != "tavern_upstairs":
+        rig.client.get("/health"); time.sleep(0.05)
+    assert _where(rig) == {"user": "tavern_upstairs", "hero_rpg_world": "tavern_upstairs"}
+    # next turn: the narrator hears the player (was: skipped as "out of earshot")
+    n = len(rig.prompts)
+    r = rig.turn(sysmsgs("Hero RPG World") + [{"role": "user", "content": '"zq_narrator_word"'}])
+    assert len(rig.prompts) == n + 1 and "muffled sounds" not in r.text
+    assert "zq_narrator_word" in rig.prompt_text(-1)
+
+
+def test_ordinary_character_is_not_dragged_along(rig, monkeypatch):
+    rig.seed(placements=[("user", "cellar"), ("mira", "cellar")])
+    _move_player_stream(rig, monkeypatch, "tavern_upstairs")
+    rig.turn(sysmsgs("Mira") + [{"role": "user", "content": '"I am going upstairs."'}])
+    rig.client.get("/health"); time.sleep(0.3); rig.client.get("/health")
+    assert _where(rig)["mira"] == "cellar"          # a person may stay behind
+
+
+def test_narrator_override_off_disables_following(rig, monkeypatch):
+    import asyncio, asyncpg
+    from tests._testdb import TEST_DB_CONFIG
+
+    async def set_off():
+        c = await asyncpg.connect(**TEST_DB_CONFIG)
+        try:
+            await c.execute("INSERT INTO spm_chat_settings (session_id, narrator_mode) VALUES ($1, 'off') "
+                            "ON CONFLICT (session_id) DO UPDATE SET narrator_mode='off'", rig.session_id)
+        finally:
+            await c.close()
+    asyncio.run(set_off())
+    rig.seed(placements=[("user", "cellar"), ("hero_rpg_world", "cellar")])
+    _move_player_stream(rig, monkeypatch, "tavern_upstairs")
+    rig.turn(sysmsgs("Hero RPG World") + [{"role": "user", "content": '"Let us go."'}])
+    rig.client.get("/health"); time.sleep(0.3); rig.client.get("/health")
+    assert _where(rig)["hero_rpg_world"] == "cellar"   # override wins over the name heuristic
+
+
+def test_narrator_name_heuristic():
+    from proxy.api.routes import _NARRATOR_NAME_RE as R
+    for name in ["My Hero Academia RPG World", "Fantasy Adventure", "The Narrator", "Dungeon Master", "Isekai Simulator"]:
+        assert R.search(name), name
+    for name in ["美 Mei", "莲 Lian", "Mira", "Seraphina", "Wordsworth"]:
+        assert not R.search(name), name

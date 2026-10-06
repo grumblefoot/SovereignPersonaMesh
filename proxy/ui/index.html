@@ -132,6 +132,12 @@
               <span>Acoustic Gate: <span class="badge badge-muffled" id="map-gating-badge">UNBOUND</span></span>
               <span>Evennia Tick: <strong id="map-tick">--</strong></span>
             </div>
+            <div style="margin-top:8px; font-size:0.8rem; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
+              <span title="Scenario cards: the narrator follows the player and is never gated away. Auto detects names like World, RPG, Story, Narrator.">Narrator mode (this chat):</span>
+              <select id="narrator-mode" onchange="saveNarratorMode()" style="width:auto; padding:2px 6px; font-size:0.8rem;">
+                <option value="auto">Auto</option><option value="on">On</option><option value="off">Off</option>
+              </select>
+            </div>
           </div>
         </div>
         <div class="card">
@@ -392,6 +398,7 @@
         const latest = logs.length ? logs[logs.length - 1] : null;
         if (!latest || !latest.session_id) { currentSessionId = null; return empty('No chat yet. The map shows the current chat\'s world.'); }
         currentSessionId = latest.session_id;
+        loadNarratorMode();
 
         const g = String(latest.gating_level || latest.gating || 'direct').toLowerCase();
         if (badge) {
@@ -450,6 +457,24 @@
 
         updateRAGInspector();
       } catch (e) {}
+    }
+
+    // QA F26: per-chat narrator mode for scenario cards.
+    let narratorModeFor = null;
+    async function loadNarratorMode() {
+      const sel = document.getElementById('narrator-mode');
+      if (!sel || !currentSessionId || narratorModeFor === currentSessionId) return;
+      try {
+        const res = await fetch(`/admin/api/v1/sessions/${encodeURIComponent(currentSessionId)}/settings`);
+        if (res.ok) { sel.value = (await res.json()).narrator_mode || 'auto'; narratorModeFor = currentSessionId; }
+      } catch (e) {}
+    }
+    async function saveNarratorMode() {
+      const sel = document.getElementById('narrator-mode');
+      if (!sel || !currentSessionId) return;
+      await fetch(`/admin/api/v1/sessions/${encodeURIComponent(currentSessionId)}/settings`, {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({narrator_mode: sel.value})});
     }
 
     async function updateRAGInspector() {
