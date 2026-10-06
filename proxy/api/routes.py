@@ -722,6 +722,8 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                      '{"type": "CREATE_ROOM", "room_id": "...", "name": "...", "desc": "..."}] '
                      'inside your <think> block.')
         gm_action_parts = {"off": "", "move_only": gm_move, "full": gm_move + gm_create}[gm_mode]
+        if gm_mode != "off":
+            gm_action_parts += await _known_rooms_block(session_id, target_char, gm_mode)
         directive = f"""{active_lore_str}
 
 SYSTEM DIRECTIVE: You are the GAME MASTER. You MUST write your internal thoughts strictly inside <think>...</think> tags. Cross-reference the user's input against the ACTIVE LORE.
@@ -1149,6 +1151,36 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
         task.add_done_callback(_log_task_done)
+
+async def _known_rooms_block(session_id: str, target_char: str, gm_mode: str = "full") -> str:
+    """Existing rooms for the GM, so it reuses ids instead of inventing duplicates
+    ('family_home_kitchen' beside 'kitchen' split one place into two and broke
+    gating, QA F15). Only the occupants of the CHARACTER'S OWN room are listed:
+    naming everyone's location would tell her where others are without her having
+    seen it, which is the omniscience leak again."""
+    try:
+        snap = await evennia_client.get_snapshot(session_id=session_id, template_key="")
+    except Exception:
+        return ""
+    rooms = snap.get("rooms", [])
+    if not rooms:
+        return ""
+    where = {}
+    for o in snap.get("occupants", []):
+        where.setdefault(o["room_id"], []).append(o["entity_id"])
+    own = next((r for r, who in where.items() if target_char in [w.lower() for w in who]), None)
+    lines = []
+    for r in rooms:
+        label = f"- {r['room_id']} ({r.get('name') or r['room_id']})"
+        if r["room_id"] == own:
+            present = [w for w in where.get(own, []) if w.lower() != target_char]
+            label += " <- you are here" + (f", with: {', '.join(present)}" if present else "")
+        lines.append(label)
+    rule = ("use these exact room_id values; CREATE_ROOM only for a place not listed, "
+            "and never re-create one under a new name" if gm_mode == "full"
+            else "use these exact room_id values; never invent new ones")
+    return (f"\n- KNOWN ROOMS ({rule}; 'user' is the player):\n" + "\n".join(lines))
+
 
 def _author_direction_block(directions: List[str]) -> str:
     """The user's out-of-character directions, delivered to the model for this turn."""
