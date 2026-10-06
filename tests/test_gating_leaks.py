@@ -580,3 +580,43 @@ def test_bulk_import_never_contains_system_messages(rig, monkeypatch):
     assert captured, "a pre-SPM chat (new session) should still be imported"
     roles = {m["role"] for _, msgs in captured for m in msgs}
     assert roles <= {"user", "assistant"}    # no cards, persona or instructions
+
+
+# ── QA F16/F17: group nudge last + bold narration (the live Lian turn) ─────
+
+def test_group_nudge_is_not_heard_as_user_speech_and_bold_narration_is(rig):
+    rig.turn(sysmsgs("Mei") + [{"role": "user", "content": '"Hello, Mei."'}])
+    msgs = sysmsgs("Lian") + [
+        {"role": "user", "content": '"Hello, Mei."'},
+        {"role": "assistant", "content": "A measured reply."},
+        {"role": "user", "content": "**Not long after Mei leaves, Lian enters the room, a fine tea set in hand.**"},
+        {"role": "system", "content": "[Write the next reply only as Lian.]"},   # ST group nudge, LAST
+    ]
+    r = rig.client.post("/v1/chat/completions", headers={"X-SPM-Chat-ID": rig.chat_id},
+                        json={"model": "spm-sovereign-mesh", "stream": True, "messages": msgs})
+    assert r.status_code == 200
+    prompt = rig.prompt_text(-1)
+    # F16: SillyTavern's nudge is not the user's speech
+    assert 'User: "[Write the next reply only as Lian.]"' not in prompt
+    # F17: **bold** is an out-of-character DIRECTION (common RP convention): the model
+    # receives it as an author's direction for this turn ...
+    assert "AUTHOR'S DIRECTION" in prompt and "fine tea set in hand" in prompt
+    # ... but no character perceives it: it is not in anyone's perception rows.
+    import asyncio, asyncpg
+    from tests._testdb import TEST_DB_CONFIG
+
+    async def perceived():
+        c = await asyncpg.connect(**TEST_DB_CONFIG)
+        try:
+            return [r["perceived_text"] for r in await c.fetch(
+                "SELECT perceived_text FROM spm_perception WHERE session_id = $1", rig.session_id)]
+        finally:
+            await c.close()
+    assert not any("tea set" in (t or "") for t in asyncio.run(perceived()))
+
+
+def test_ooc_forms_carry_their_text_as_directions():
+    from proxy.gating.action_parser import parse_message
+    r = parse_message('"Hi." **Make her nervous** ((keep it short)) [OOC: no time skips]')
+    assert [a.content for a in r.actions] == ["Hi."]                 # only the speech is in-world
+    assert r.ooc_texts == ["Make her nervous", "keep it short", "no time skips"]
