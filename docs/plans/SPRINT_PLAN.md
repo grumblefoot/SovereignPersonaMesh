@@ -310,3 +310,4 @@ dependencies split out, Python 3.13+ verified (`d761b82`).
   then pick a trigger, e.g. once a day after 30 min of chat idle. Until then consolidation is paused
   (logs are kept; nothing is pruned).
 - **Off-screen life and world processes** (design note, 2026-10-06): `docs/plans/offscreen_life_and_world_processes.md`. v0.5 takes the lazy elapsed-context line at re-entry (resolves OPEN-015); world processes (fire, fuses, schedules, game clock) are later.
+- **Scenario cards: one card, many characters** (design need, 2026-10-06): `docs/plans/scenario_cards_v0.5.md`, OPEN-016. The narrator as a camera that follows the player; NPCs as world entities (from lorebook entries, GM actions, user tags); per-NPC point of view written in one model call; lorebook entries tied to the NPCs they describe.
