@@ -9,7 +9,7 @@ A tiny, dependency-free SillyTavern UI extension that registers three macros:
 | Macro | Value |
 |---|---|
 | `{{spmChatId}}` | The chat's stable identity: `chat_metadata.integrity`, a UUIDv4 SillyTavern persists in every chat file. If a (pre-1.13-era) chat has none, the macro mints one and saves it. Empty string when no chat is open. |
-| `{{spmParentChat}}` | For a branch or checkpoint chat, the parent chat's file name (`chat_metadata.main_chat`); empty otherwise. |
+| `{{spmParentChat}}` | For a branch or checkpoint chat, the parent chat's file name (`chat_metadata.main_chat`), **percent-encoded** (decode with `urllib.parse.unquote`); empty otherwise. Header values must be ASCII, and chat files are named after the character, so a raw `美 Mei - …` made SillyTavern fail every branch with `ERR_INVALID_CHAR`. |
 | `{{spmGenType}}` | The type of the generation being produced: `normal`, `swipe`, `regenerate`, `continue`, `impersonate`, `quiet`. Empty before the first generation after opening a chat. |
 
 Pasted into the Custom API's additional-headers field (below), these ride on **every** chat-completion request to the SPM proxy, giving SPM a per-chat session identity that survives chat renames, ST restarts, and returning to an old chat.

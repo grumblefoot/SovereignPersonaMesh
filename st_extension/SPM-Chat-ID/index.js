@@ -80,6 +80,12 @@
     /**
      * {{spmParentChat}}: the parent chat's file name when this chat is a
      * branch or checkpoint (chat_metadata.main_chat), else empty string.
+     *
+     * PERCENT-ENCODED: the value travels as an HTTP header, and header values
+     * must be ASCII. Chat files are named after the character ("美 Mei - …"), so
+     * the raw name made SillyTavern's server throw ERR_INVALID_CHAR and EVERY
+     * branch of a non-ASCII-named character failed before reaching SPM
+     * (QA step A4, 2026-10-05). Decode with decodeURIComponent / urllib unquote.
      */
     function spmParentChat() {
         const ctx = getContextSafe();
@@ -87,7 +93,7 @@
         try {
             if (!ctx.getCurrentChatId()) return '';
             const parent = ctx.chatMetadata?.main_chat;
-            return parent ? String(parent) : '';
+            return parent ? encodeURIComponent(String(parent)) : '';
         } catch (err) {
             console.error(`[${MODULE}] spmParentChat failed`, err);
             return '';
