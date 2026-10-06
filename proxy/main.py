@@ -156,4 +156,10 @@ if __name__ == "__main__":
     # admin dashboard holds its SSE stream open. Opt in with SPM_RELOAD=1.
     reload = os.getenv("SPM_RELOAD", "0") == "1"
     logger.info(f"Starting SPM Proxy Server on http://{host}:{port} (reload={reload})")
-    uvicorn.run("proxy.main:app", host=host, port=port, reload=reload)
+    # The same SSE hang affects a NORMAL shutdown: uvicorn waits for open
+    # connections, and the dashboard's thought stream never closes. The old process
+    # then lingers indefinitely after its port is released, still serving that
+    # stream and still holding an armed 04:00 sleep cycle (two consolidation passes
+    # would run). Cap the wait so a stop always completes (QA 2026-10-05).
+    uvicorn.run("proxy.main:app", host=host, port=port, reload=reload,
+                timeout_graceful_shutdown=5)
