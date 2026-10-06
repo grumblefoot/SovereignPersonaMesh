@@ -184,6 +184,24 @@ def _extract_target_char(messages: List[ChatCompletionMessage]) -> str:
 
 
 
+def _extract_persona_display(messages: List[ChatCompletionMessage]) -> str:
+    """The persona's name as written ("Vardus"), for labelling perceived lines."""
+    for msg in messages:
+        if msg.role == "system" and msg.content:
+            m = re.search(r"chat\s+between\s+.+?\s+and\s+([^\n.,]+)", msg.content, re.IGNORECASE)
+            if m and _looks_like_name(m.group(1)):
+                return m.group(1).strip()
+    return ""
+
+
+def _label_persona(text: str, persona: str) -> str:
+    """Replace the engine's 'User' LABEL (first occurrence only, never words inside
+    the speech) with the persona's name."""
+    if not persona or not text:
+        return text
+    return re.sub(r"\bUser\b", persona, text, count=1)
+
+
 def _extract_persona_name(messages: List[ChatCompletionMessage]) -> str:
     """The USER-side name from ST's "chat between <char> and <persona>" line.
     GM MOVE proposals name the persona ("Tom"), never the engine id "user";
@@ -436,9 +454,17 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # Narrated movement ("*Lian enters the room, a tea set in hand*") is visible to
     # whoever is present; only explicit [move:PLACE] tags (content = a room name)
     # are hidden. Excluding every move dropped such narration entirely (QA F17).
-    observable_text = " ".join(
-        a.content for a in observable_actions
-        if not (a.action_type == "move" and a.confidence >= CONF_TAG)).strip() or (
+    _visible = [a for a in observable_actions
+                if not (a.action_type == "move" and a.confidence >= CONF_TAG)]
+    _speechlike = {"speak", "whisper", "shout"}
+    if _visible and all(a.action_type in _speechlike for a in _visible):
+        _joined = " ".join(a.content for a in _visible)          # pure speech: as before
+    else:
+        # Mixed speech and action keeps the distinction: "Yes." *waggles fingers*.
+        # Flattening made actions part of what the user SAID (QA F18).
+        _joined = " ".join(f'"{a.content}"' if a.action_type in _speechlike else f"*{a.content}*"
+                           for a in _visible)
+    observable_text = _joined.strip() or (
         user_text if not parsed_actions and not parsed_msg.ooc else "")
     # A message that is ONLY a direction has no in-world action this turn.
     direction_only = not observable_text and bool(ooc_directions)
@@ -506,6 +532,12 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     except Exception as e:
         logger.error(f"[SPMProxy] World engine unavailable; continuing ungated for session {session_id}: {e}")
         world_res = {"consequences": [], "engine_unavailable": True}
+
+    # Characters perceive the player by persona name ("Vardus"), not the engine id
+    # ("User: ..."), in their history and this turn's feed (QA F18).
+    _persona = _extract_persona_display(request.messages)
+    for _c in world_res.get("consequences", []):
+        _c["sensory_feed"] = _label_persona(_c.get("sensory_feed") or "", _persona)
 
     # Sprint 2 chunk 3: record what every recipient perceived (post-gating) — the
     # per-character gated history is rebuilt from these rows, not the raw transcript.
@@ -803,14 +835,15 @@ The text after </think> must ONLY be narrative and dialogue.
                                                     turn_index=user_msg_count,
                                                     persona=_extract_persona_name(request.messages)))
             reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id,
-                                                             tainted=parser.is_failsafe_triggered))
+                                                             tainted=parser.is_tainted))
             _background_tasks.add(reply_task)
             reply_task.add_done_callback(_background_tasks.discard)
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
             # Dispatch Lore Extraction in background
-            _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp,
+            if not parser.is_tainted:   # a withheld/tainted reply is never mined for lore
+                _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp,
                                       is_new_session=is_new_session)
 
         if inner_monologue:
@@ -820,7 +853,7 @@ The text after </think> must ONLY be narrative and dialogue.
                 "thought": inner_monologue,
             })
 
-        if _db_pool and public_resp and not ephemeral:
+        if _db_pool and public_resp and not ephemeral and not parser.is_tainted:
             try:
                 table_name = f"csa_memory_{safe_char_id(target_char)}"
                 async with _db_pool.acquire() as conn:
@@ -920,14 +953,15 @@ The text after </think> must ONLY be narrative and dialogue.
                                                     turn_index=user_msg_count,
                                                     persona=_extract_persona_name(request.messages)))
             reply_task = asyncio.create_task(_record_reply_action(session_id, target_char, public_resp, turn_id,
-                                                             tainted=parser.is_failsafe_triggered))
+                                                             tainted=parser.is_tainted))
             _background_tasks.add(reply_task)
             reply_task.add_done_callback(_background_tasks.discard)
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
             # Dispatch Lore Extraction in background
-            _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp,
+            if not parser.is_tainted:   # a withheld/tainted reply is never mined for lore
+                _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp,
                                       is_new_session=is_new_session)
 
         # Push inner monologue to Thought Monitor SSE stream
@@ -946,7 +980,7 @@ The text after </think> must ONLY be narrative and dialogue.
         })
 
         # Persist finalized turn without duplicate bleed on regeneration
-        if _db_pool and public_resp and not ephemeral:
+        if _db_pool and public_resp and not ephemeral and not parser.is_tainted:
             try:
                 table_name = f"csa_memory_{safe_char_id(target_char)}"
                 async with _db_pool.acquire() as conn:

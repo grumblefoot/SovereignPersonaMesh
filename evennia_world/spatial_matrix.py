@@ -115,6 +115,10 @@ class SpatialConstraintsMatrix:
                 return GatingLevel.BLACKOUT, ""
 
         if target_gating == GatingLevel.DIRECT:
+            if "*" in raw_text:
+                # Mixed speech + action keeps its own markup ('"Hi." *waves*'): wrapping
+                # it in quotes turned actions into speech (QA F18, 2026-10-05).
+                return GatingLevel.DIRECT, f'{actor_id.capitalize()}: {raw_text}'
             return GatingLevel.DIRECT, f'{actor_id.capitalize()}: "{raw_text}"'
         else:
             return GatingLevel.DEGRADED, f'You hear muffled voices or sounds from nearby.'

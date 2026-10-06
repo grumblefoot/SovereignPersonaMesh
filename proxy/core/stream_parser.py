@@ -122,7 +122,8 @@ class MonologueStreamParser:
         self.public_token_count: int = 0
         self.max_public_tokens: Optional[int] = max_public_tokens
         self.is_public_truncated: bool = False
-        self.is_failsafe_triggered: bool = False
+        self.is_failsafe_triggered: bool = False   # diagnostic: some salvage/failsafe path ran
+        self.is_tainted: bool = False              # the reply must NOT become world state/memory
         self.passthrough: bool = False
         self._discard_rest: bool = False   # overflow failsafe: swallow the rest of the
                                            # stream into the (private) monologue sections
@@ -261,6 +262,7 @@ class MonologueStreamParser:
         first = text.strip().split("\n\n", 1)[0]
         if self._PLANNING_START.match(first) and self._META_VOCAB.search(first):
             self.is_failsafe_triggered = True
+            self.is_tainted = True
             logger.warning("[StreamParser] Salvaged text was planning, not a reply; withheld.")
             return self.SALVAGE_NOTICE
         return text
@@ -469,6 +471,7 @@ class MonologueStreamParser:
                                 logger.warning("[StreamParser] Max monologue tokens reached "
                                                f"(>{MAX_MONOLOGUE_TOKENS}); monologue withheld from the stream.")
                                 self.is_failsafe_triggered = True
+                                self.is_tainted = True
                                 self._discard_rest = True
                                 m_txt = self._clean_monologue(self.inner_monologue_buffer)
                                 if m_txt:
@@ -543,7 +546,11 @@ class MonologueStreamParser:
                                         yield clean_pub
                                 else:
                                     logger.warning("[StreamParser] Unclosed monologue tag at EOF. Defaulting buffer to public.")
-                                    self.is_failsafe_triggered = True
+                                    self.is_failsafe_triggered = True   # diagnostic: a salvage path ran
+                                    # F5 (QA 2026-10-05): a salvage path no longer means "don't save".
+                                    # Gemma-4 leaves <think> unclosed on 5 of 8 replies, so tainting every
+                                    # salvage made characters forget most of what they said. Only
+                                    # is_tainted (planning guard / runaway scratchpad) blocks saving.
                                     clean_pub = self._guard_salvage(self._strip_monologue_bleed(mono_text))
                                     if clean_pub:
                                         self.public_response_buffer += clean_pub

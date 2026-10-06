@@ -446,3 +446,19 @@ def test_bare_behaviour_label_line_is_dropped():
     # a sentence that merely contains the phrase is kept
     keep = p._strip_monologue_bleed("Lian's behavior: impeccable, as always, she thought.")
     assert "impeccable" in keep
+
+
+async def test_clean_salvage_is_saved_planning_salvage_is_tainted():
+    """QA F5: a clean salvaged reply is NOT tainted (characters remember it); only the
+    planning guard taints. is_failsafe_triggered stays a diagnostic."""
+    from proxy.core.stream_parser import MonologueStreamParser
+
+    async def clean():
+        yield "[SCENE ANALYSIS]\nShe should smile.\n"
+        yield "\"Welcome home,\" Lian said, setting down the tray."
+
+    p = MonologueStreamParser(initial_state=0)
+    out = "".join([c async for c in p.process_token_stream(clean())])
+    assert "Welcome home" in out
+    assert p.is_failsafe_triggered is True       # diagnostic: salvage ran
+    assert p.is_tainted is False                 # ...but the reply is saved
