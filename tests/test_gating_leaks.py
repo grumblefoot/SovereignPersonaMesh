@@ -632,3 +632,26 @@ def test_gm_directive_lists_known_rooms_and_only_own_room_occupants(rig):
     assert "- cellar" in prompt and "- tavern_upstairs" in prompt     # reuse existing ids
     assert "you are here, with: user" in prompt                       # her own room: who she sees
     assert "watcher" not in prompt.split("KNOWN ROOMS", 1)[1]         # not where others are
+
+
+# ── QA F18: speech vs action stay distinct; the player is named, not "User" ──
+
+def test_mixed_speech_and_action_keep_their_markup_and_persona_name(rig):
+    rig.turn(sysmsgs() + [{"role": "user", "content": '"Yes. zq_word" *waggles his fingers at Mira*'}])
+    import asyncio, asyncpg
+    from tests._testdb import TEST_DB_CONFIG
+
+    async def row():
+        c = await asyncpg.connect(**TEST_DB_CONFIG)
+        try:
+            return await c.fetchval("SELECT perceived_text FROM spm_perception WHERE session_id=$1 "
+                                    "AND recipient_id='mira' AND actor_id='user'", rig.session_id)
+        finally:
+            await c.close()
+    text = asyncio.run(row())
+    assert text == 'Tom: "Yes. zq_word" *waggles his fingers at Mira*'   # was: User: "Yes. zq_word waggles..."
+
+
+def test_pure_speech_format_unchanged_apart_from_the_name(rig):
+    rig.turn(sysmsgs() + [{"role": "user", "content": '"Just words."'}])
+    assert 'Tom: "Just words."' in rig.prompt_text(-1)
