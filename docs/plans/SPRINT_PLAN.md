@@ -305,3 +305,7 @@ dependencies split out, Python 3.13+ verified (`d761b82`).
   proposed `[focus:room]` / `[at:Character:room]` tags, narrator room events, a
   group-aware skip rule, placement by room name). v0.4 ships with the interim F10
   behaviour: a character joining a group chat is placed in the user's room.
+- **Sleep-cycle trigger redesign** (owner, 2026-10-06): the 03:00 systemd timer is disabled and the
+  in-proxy run (04:00) only fires if SPM is left running overnight, which it isn't. Define the need,
+  then pick a trigger, e.g. once a day after 30 min of chat idle. Until then consolidation is paused
+  (logs are kept; nothing is pruned).

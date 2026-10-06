@@ -1,13 +1,49 @@
 # Sovereign Persona Mesh (SPM) Implementation Playbook
 
-> ✅ **STATUS 2026-10-03: re-assessed after the pause; working end to end.** Full report: [docs/STATE_ASSESSMENT_2026-10-03.md](docs/STATE_ASSESSMENT_2026-10-03.md). Open items: [known_issues.md](known_issues.md) (OPEN-001…012).
-> - **Stack:** SillyTavern (8000) → SPM proxy (5050) → Lemonade 11.9 (13305, user service `lemond`, started on demand). World engine stand-in on 4005, Postgres `spm-postgres` on 5432. All SPM processes run on **SPM's own `.venv`** (`~/.local/bin/start_spm.sh`); `spm-demo-mvp` is no longer used.
-> - **Models:** SillyTavern currently asks for `Qwen3.8-27B-GGUF` (the narrator LLM of Lemonade's RPG-HaloTales-V2 collection, text only). `spm-sovereign-mesh` and the retired `google/gemma-4-*` ids resolve to `Gemma-4-26B-A4B-it-GGUF` (`SPM_DEFAULT_MODEL`); the sleep cycle uses `Gemma-4-E4B-it-GGUF`. **Never `hermes-coder`** (coding agent alias; excluded by the resolver). Lemonade swaps LLMs on demand (one LLM loaded at a time).
-> - **Tests:** `.venv/bin/python -m pytest tests/` → **431 passed, 1 skipped** (as of `f6b6a44`). The suite rebuilds a throwaway `spm_test` database each run and never touches `litellm_postgres`, the live Evennia, Lemonade or `config/config.json`. `RUN_LIVE_LLM_TESTS=1` enables the one live-LLM test.
-> - **Sleep cycle:** `spm-sleep-cycle.timer` (03:00) runs `.venv/bin/python -m scripts.sleep_cycle`; working again since 2026-10-03.
-> - **Corrections to this playbook** (details in the assessment §4): the embedder is a **stub** (RAG recall is not functional); the FIFO queue is **not wired**; the ambient-log bypass filter is **not called**; the Phase 7 SLA/TTFT figures measured a fabricated fallback reply and are **retracted**; the world engine is a **FastAPI stand-in**, not Evennia/Django; monologue tags are `<think>`/`<thinking>`, not `<ctrl94>`. Strikethroughs below mark the claims that were wrong.
-> - **Next sprints:** [docs/plans/SPRINT_PLAN.md](docs/plans/SPRINT_PLAN.md) (embeddings and gating are P0; auth deferred while dev-only on the homelab). The live database was reset 2026-10-03.
-> - Lemonade operations: `~/Desktop/lemonade_playbook.md`.
+> 🛑 **Run SPM live *or* Hermes on Gufo, never both (owner rule, 2026-10-06).** "Live" means
+> SillyTavern chat through the SPM proxy, or anything else that makes Lemonade load a chat model
+> (Gemma-4-26B, Qwen3.8-27B, the consolidation model Gemma-4-E4B). Hermes' server `gufo-flash`
+> holds ~90 GB of the 124 GB pool, leaving ~20 GB; Gemma-4-26B takes **~24 GB as Lemonade loads
+> it** (17 GB weights + KV for a 262,144-token context; measured 2026-10-06), so the pair doesn't fit.
+> The box's first OOM (2026-10-03) was the same kind of pairing: Hermes' model, Qwen3.8 Flash-Next
+> (then hosted in Lemonade, now on Gufo), held beside Qwen3.8-27B under a 2-model Lemonade setting.
+> - **Before a live SPM/SillyTavern session:** `systemctl --user stop gufo-flash`.
+> - **Before Hermes dev work:** close SillyTavern and stop SPM, then `systemctl --user start gufo-flash`.
+>   Hermes can still run SPM's test suite (it never touches Lemonade). Embeddings (Qwen3-Embedding,
+>   0.6 GB) may load beside Gufo; chat LLMs may not.
+> - **Overnight Hermes runs:** no extra step. Memory consolidation runs only inside the SPM proxy
+>   (see Sleep cycle below), so nothing loads Gemma-4-E4B while SPM is stopped.
+> - Details: `~/Desktop/Playbooks/hermes_llm_playbook.md`.
+
+> ✅ **STATUS 2026-10-06: v0.4 feature-complete, in QA.** Sprints 0–4 done; QA session 1 found 23
+> issues, 22 fixed ([docs/QA_SESSION_2026-10-05.md](docs/QA_SESSION_2026-10-05.md)). Release path:
+> QA → bugfixes → packaging → tag `v0.4` ([SPRINT_PLAN.md](docs/plans/SPRINT_PLAN.md) §12).
+> Open items: [known_issues.md](known_issues.md); v0.5 group scenes: [docs/plans/group_scenes_v0.5.md](docs/plans/group_scenes_v0.5.md).
+> - **Stack:** SillyTavern (8000, with the `SPM-Chat-ID` extension) → SPM proxy (5050) → Lemonade 11.9
+>   (13305, user service `lemond`, started on demand). World engine (SPM's own FastAPI engine, not
+>   Evennia) on 4005, Postgres `spm-postgres` on 5432. All SPM processes run on SPM's own `.venv`
+>   (`~/.local/bin/start_spm.sh`).
+> - **Models:** chat `Gemma-4-26B-A4B-it-GGUF` (what SillyTavern selects in QA; `spm-sovereign-mesh`
+>   resolves to it via `SPM_DEFAULT_MODEL`); embeddings `Qwen3-Embedding-0.6B-GGUF-Q8_0` with
+>   `EMBEDDING_MAX_COSINE_DISTANCE=0.45` (bake-off: [docs/plans/BAKEOFF_2026-10-05.md](docs/plans/BAKEOFF_2026-10-05.md));
+>   consolidation `Gemma-4-E4B-it-GGUF`. **Never `hermes-coder`** (excluded by the resolver, and no
+>   longer in Lemonade). Lemonade keeps one LLM loaded at a time and swaps on demand.
+> - **Tests:** `SPM_TEST_DB=<unique> .venv/bin/python -m pytest tests/ -q` → **801 passed, 2 skipped**
+>   (2026-10-05). Each run rebuilds its throwaway database; tests never touch `litellm_postgres`,
+>   the live services or `config/config.json`. `RUN_LIVE_LLM_TESTS=1` enables the live-LLM test.
+> - **Sleep cycle (memory consolidation):** runs **inside the SPM proxy** at 04:00
+>   (`sleep_cycle_hour`), through the LLM scheduler's lowest-priority lane, only while the proxy is
+>   running. `spm-sleep-cycle.timer` is **disabled** (2026-10-06, owner): SPM isn't left running
+>   overnight, so consolidation is paused until its trigger is redesigned (idea: once a day after
+>   30 min idle). Manual run: `.venv/bin/python -m scripts.sleep_cycle`.
+> - **Since the 2026-10-03 corrections:** the embedder is real (it was a stub), the LLM queue is
+>   wired (`proxy/core/llm_scheduler.py`), and gating is real (per-character perception; leak suite
+>   `tests/test_gating_leaks.py`). Still true (re-checked 2026-10-06): the ambient-log bypass filter
+>   (`proxy/core/sensory_filter.py`) is imported but never called; the Phase 7 SLA/TTFT figures are
+>   retracted; monologue tags are `<think>`/`<thinking>`. Strikethroughs below mark claims that were wrong.
+> - **Hermes' own LLM** runs outside Lemonade: `gufo-flash` on :8080 (fallback `llama-flash` :8090).
+>   Delegating work to Hermes: `~/Desktop/Playbooks/hermes_dev_playbook.md`.
+> - Machine tools index: `~/Desktop/Playbooks/PLAYBOOK.md` (Lemonade: `lemonade_playbook.md`).
 
 
 > **Author**: Antigravity (Senior Code Architect & Auditor)  
@@ -62,7 +98,7 @@ The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay 
     │   └── hybrid_builder.py         # Hybrid Semantic-Template World Builder
     ├── scripts/
     │   ├── init_db.sql               # Database schema & pgvector initialization DDL
-    │   ├── sleep_cycle.py            # Daily 3:00 AM memory consolidation worker
+    │   ├── sleep_cycle.py            # Memory consolidation worker (run inside the proxy since v0.4)
     │   ├── onnx_embedder.py          # CPU offloaded embedding worker (AVX-512)
     │   └── setup_systemd_timer.sh    # Systemd timer installer script
     ├── tests/
