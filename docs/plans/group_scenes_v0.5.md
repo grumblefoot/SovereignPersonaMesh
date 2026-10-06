@@ -54,6 +54,10 @@ user's character at the door.
   narrator room events make this exact, since directions become gated events in the
   focus room.
 
+### Related design note
+
+Off-screen character life (what a character did while out of the scene) is handled by a **lazy elapsed-context line at re-entry**: zero extra model calls; owner decision 2026-10-06. World processes (fire, fuses, schedules) are a later feature. See [offscreen_life_and_world_processes.md](offscreen_life_and_world_processes.md).
+
 ## Gaps to close
 
 1. **Story-driven placement.** A joining character should start where the story puts

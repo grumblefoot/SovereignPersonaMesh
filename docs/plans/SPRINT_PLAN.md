@@ -309,3 +309,4 @@ dependencies split out, Python 3.13+ verified (`d761b82`).
   in-proxy run (04:00) only fires if SPM is left running overnight, which it isn't. Define the need,
   then pick a trigger, e.g. once a day after 30 min of chat idle. Until then consolidation is paused
   (logs are kept; nothing is pruned).
+- **Off-screen life and world processes** (design note, 2026-10-06): `docs/plans/offscreen_life_and_world_processes.md`. v0.5 takes the lazy elapsed-context line at re-entry (resolves OPEN-015); world processes (fire, fuses, schedules, game clock) are later.
