@@ -435,3 +435,14 @@ async def test_unclosed_think_with_gm_pivot_and_planning_tail_is_withheld():
     out = "".join([c async for c in p.process_token_stream(chunks())])
     assert "I will describe" not in out
     assert "withheld" in out and p.is_failsafe_triggered
+
+
+def test_bare_behaviour_label_line_is_dropped():
+    from proxy.core.stream_parser import MonologueStreamParser
+    p = MonologueStreamParser()
+    out = p._strip_monologue_bleed("Lian's behavior:\nThe sound of Mei's footsteps receded.\n\n\"Welcome,\" she said.")
+    assert not out.startswith("Lian's behavior")
+    assert "The sound of Mei's footsteps receded." in out
+    # a sentence that merely contains the phrase is kept
+    keep = p._strip_monologue_bleed("Lian's behavior: impeccable, as always, she thought.")
+    assert "impeccable" in keep
