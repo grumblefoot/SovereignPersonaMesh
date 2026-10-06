@@ -514,6 +514,10 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # player's action, so she hears it; GM actions can move her afterwards.
     if not is_new_session:
         await _ensure_target_placed(session_id, target_char, turn_id)
+    narrator = await _is_narrator(session_id, _target_display_name(request.messages))
+    if narrator:
+        logger.info(f"[SPMProxy] {target_char} is a scenario narrator (follows the player).")
+        await _sync_narrator_with_player(session_id, target_char, f"{turn_id}:pre")
 
     # OPEN-010: if the world engine is down, degrade to an ungated turn instead of a raw 500.
     # Roleplay must survive an engine outage; the turn simply has no spatial consequences.
@@ -860,7 +864,8 @@ The text after </think> must ONLY be narrative and dialogue.
             # she never heard the question (QA F19, 2026-10-05).
             task = asyncio.create_task(_gm_then_reply(
                 parser, session_id, target_char, public_resp, turn_id,
-                turn_index=user_msg_count, persona=_extract_persona_name(request.messages)))
+                turn_index=user_msg_count, persona=_extract_persona_name(request.messages),
+                narrator=narrator))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
@@ -978,7 +983,8 @@ The text after </think> must ONLY be narrative and dialogue.
             # she never heard the question (QA F19, 2026-10-05).
             task = asyncio.create_task(_gm_then_reply(
                 parser, session_id, target_char, public_resp, turn_id,
-                turn_index=user_msg_count, persona=_extract_persona_name(request.messages)))
+                turn_index=user_msg_count, persona=_extract_persona_name(request.messages),
+                narrator=narrator))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
@@ -1339,6 +1345,63 @@ async def _ephemeral_passthrough(request: "ChatCompletionRequest", session_id: s
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+_NARRATOR_NAME_RE = re.compile(
+    r"\b(?:world|rpg|story|adventure|narrator|game\s*master|gm|scenario|campaign|"
+    r"simulator|universe|realm|dungeon\s*master|dm)\b", re.IGNORECASE)
+
+
+def _target_display_name(messages: List[ChatCompletionMessage]) -> str:
+    """The card name as SillyTavern wrote it ("My Hero Academia RPG World")."""
+    for msg in messages:
+        if msg.role == "system" and msg.content:
+            m = re.search(r"Write\s+(.+?)['’]s\s+next\s+reply", msg.content, re.IGNORECASE)
+            if m:
+                return m.group(1).strip()
+    return ""
+
+
+async def _chat_narrator_mode(session_id: str) -> str:
+    """Per-chat override from spm_chat_settings: 'auto' (default), 'on' or 'off'."""
+    if _db_pool is None:
+        return "auto"
+    try:
+        async with _db_pool.acquire() as conn:
+            mode = await conn.fetchval(
+                "SELECT narrator_mode FROM spm_chat_settings WHERE session_id = $1", session_id)
+        return mode if mode in ("auto", "on", "off") else "auto"
+    except Exception as e:
+        logger.warning(f"[SPMProxy] chat settings unavailable, narrator mode 'auto': {e}")
+        return "auto"
+
+
+async def _is_narrator(session_id: str, display_name: str) -> bool:
+    """QA F26 (v0.4 stopgap for OPEN-016): a scenario card's narrator is a camera,
+    not a body. Per-chat override wins; otherwise detect from the card name."""
+    mode = await _chat_narrator_mode(session_id)
+    if mode != "auto":
+        return mode == "on"
+    return bool(display_name and _NARRATOR_NAME_RE.search(display_name))
+
+
+async def _sync_narrator_with_player(session_id: str, target_char: str, key_suffix: str) -> None:
+    """Move the narrator into the player's room (no-op if already there). Run before
+    the player's action and after the GM's moves, so a narrator is never left behind
+    and never gated away from the player."""
+    try:
+        snap = await evennia_client.get_snapshot(session_id=session_id, template_key="")
+        where = {o["entity_id"].lower(): o["room_id"] for o in snap.get("occupants", [])}
+        user_room = where.get("user")
+        if not user_room or where.get(target_char.lower()) == user_room:
+            return
+        await evennia_client.move_character(
+            character_id=target_char, room_id=user_room, session_id=session_id,
+            idempotency_key=f"narrator:{session_id}:{key_suffix}:{user_room}",
+            origin="system", template_key="")
+        logger.info(f"[SPMProxy] Narrator {target_char} follows the player into '{user_room}'.")
+    except Exception as e:
+        logger.warning(f"[SPMProxy] Narrator sync failed for {target_char}: {e}")
+
+
 async def _ensure_target_placed(session_id: str, target_char: str, turn_id: str) -> None:
     """Place the target character in the player's room if the world doesn't have them.
     Idempotent per (session, turn, character); never moves a character already placed."""
@@ -1459,13 +1522,17 @@ async def _record_reply_action(session_id: str, target_char: str, public_resp: s
 
 
 async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_char: str,
-                         public_resp: str, turn_id: str, turn_index: int, persona: str) -> None:
+                         public_resp: str, turn_id: str, turn_index: int, persona: str,
+                         narrator: bool = False) -> None:
     """Apply the turn's GM actions, then record the reply as a world event, in order."""
     try:
         await _dispatch_gm_actions(parser, session_id, target_char,
                                    turn_index=turn_index, persona=persona)
     except Exception as e:  # never let a GM failure lose the reply
         logger.error(f"[GMAction] dispatch failed for {session_id}: {e}")
+    if narrator:
+        # The GM moved the player (F26: the narrator stayed behind in the old room).
+        await _sync_narrator_with_player(session_id, target_char, f"{turn_id}:post")
     await _record_reply_action(session_id, target_char, public_resp, turn_id,
                                tainted=parser.is_tainted)
 
