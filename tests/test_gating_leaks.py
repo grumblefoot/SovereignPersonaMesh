@@ -437,3 +437,38 @@ def test_tick_counts_user_turns_not_replies(rig):
     assert tick == 2          # was 3: each reply advanced the clock too
     # replies still land, at their own turn's tick
     assert rig._rows_for_turn(f"{rig.session_id}:2#reply") >= 1
+
+
+# ── QA A4: a branch arrives with history; it must still be seeded ──────────
+
+def test_branch_first_request_with_history_is_seeded_and_placed(rig):
+    """The first request SPM sees for a session may carry many user messages
+    (a branch, or a chat older than SPM). It must still seed the world and place
+    the player and character; it used to skip seeding (user_msg_count > 1)."""
+    history = [{"role": "user", "content": '"Earlier line one."'},
+               {"role": "assistant", "content": "An earlier reply."},
+               {"role": "user", "content": '"Earlier line two."'},
+               {"role": "assistant", "content": "Another earlier reply."},
+               {"role": "user", "content": '"Now, on the branch."'}]
+    r = rig.client.post("/v1/chat/completions",
+                        headers={"X-SPM-Chat-ID": rig.chat_id},
+                        json={"model": "spm-sovereign-mesh", "stream": True,
+                              "messages": sysmsgs() + history})
+    assert r.status_code == 200
+    snap = rig.engine.get("/api/v1/world/snapshot",
+                          params={"session_id": rig.session_id, "template_key": ""}).json()
+    where = {o["entity_id"]: o["room_id"] for o in snap["occupants"]}
+    assert "user" in where and "mira" in where              # both placed
+    assert where["user"] == where["mira"]                    # together, at the seed
+
+
+def test_quiet_first_turn_does_not_seed_a_world(rig):
+    r = rig.client.post("/v1/chat/completions",
+                        headers={"X-SPM-Chat-ID": rig.chat_id, "X-SPM-Gen-Type": "quiet"},
+                        json={"model": "spm-sovereign-mesh", "stream": True,
+                              "messages": sysmsgs() + [{"role": "user", "content": '"Hi."'}]})
+    assert r.status_code == 200
+    assert rig.session_id not in world_app.app_state.session_worlds or not any(
+        room.present_characters
+        for w in world_app.app_state.session_worlds[rig.session_id].values()
+        for room in w.values())
