@@ -27,6 +27,12 @@ from evennia_world.hybrid_builder import HybridWorldBuilder
 from proxy.main import app as proxy_app
 
 _counter = itertools.count(1)
+# Unique per test RUN: session ids used to restart at leak1 every run, so rows from
+# earlier runs persisted under the same ids in the test DB. Since seeding is decided
+# by "does this session have perception rows yet?", that stale state could silently
+# change behaviour between runs (QA 2026-10-05).
+import uuid as _uuid
+_RUN = _uuid.uuid4().hex[:8]
 FIXTURE = Path(__file__).parent / "fixtures" / "test_chat_payload.json"
 PH = lambda n: f"zq_leak_{n}_xylophone"
 
@@ -36,7 +42,7 @@ class Rig:
         self.client = client            # proxy TestClient
         self.engine = engine            # ENGINE TestClient (same module state)
         self.prompts = prompts          # captured LLM prompts, one list per call
-        self.chat_id = f"leak{next(_counter)}"
+        self.chat_id = f"leak{_RUN}{next(_counter)}"
         self.history = []               # accumulated user/assistant log (ST resends it)
         self._last_payload = None
 
