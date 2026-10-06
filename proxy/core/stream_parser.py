@@ -240,6 +240,31 @@ class MonologueStreamParser:
             
         return outputs
 
+    _PLANNING_START = re.compile(
+        r"^\s*(?:Since I\b|Let me\b|Now I\b|Okay[,.]|Alright[,.]|"
+        r"I(?:'ll| will| need to| should| am going to| cannot| can't| must)\b)", re.IGNORECASE)
+    _META_VOCAB = re.compile(
+        r"\b(?:describe|write|writing|reply|respond|response|the user|the prompt|"
+        r"perspective|narrat\w*|scene|instruction)\b", re.IGNORECASE)
+    SALVAGE_NOTICE = ("*[SPM: the model returned only planning notes, so this reply was "
+                      "withheld and not saved. Regenerate to retry.]*")
+
+    def _guard_salvage(self, text: str) -> str:
+        """Salvage paths only (the model never closed its private block): if what is
+        left is the model talking about the WRITING TASK ("Since I cannot speak for
+        Vardus, I will describe Lian's presence..."), withhold it and taint the turn
+        instead of showing planning as the character's reply (QA F14, 2026-10-05).
+        Needs both a planning-style opening and task vocabulary, so in-character
+        first person ("I will make the tea.") is kept."""
+        if not text:
+            return text
+        first = text.strip().split("\n\n", 1)[0]
+        if self._PLANNING_START.match(first) and self._META_VOCAB.search(first):
+            self.is_failsafe_triggered = True
+            logger.warning("[StreamParser] Salvaged text was planning, not a reply; withheld.")
+            return self.SALVAGE_NOTICE
+        return text
+
     def _strip_monologue_bleed(self, text: str) -> str:
         """Sanitizes public response buffer of leftover tags, trailing blockquote thoughts, or monologue bleed."""
         if not text:
@@ -488,7 +513,7 @@ class MonologueStreamParser:
                         # Check if mono_text contains an implicit public section split
                         m_close = CLOSE_TAG_REGEX.search(mono_text)
                         if m_close:
-                            clean_pub = self._strip_monologue_bleed(mono_text[m_close.end():])
+                            clean_pub = self._guard_salvage(self._strip_monologue_bleed(mono_text[m_close.end():]))
                             if clean_pub:
                                 self.public_response_buffer += clean_pub
                                 yield clean_pub
@@ -497,7 +522,7 @@ class MonologueStreamParser:
                             m_sep = re.search(r'\n-+\n', mono_text)
                             if m_sep:
                                 logger.info("[StreamParser] Unclosed monologue tag at EOF. Using separator '--' as pivot.")
-                                clean_pub = self._strip_monologue_bleed(mono_text[m_sep.end():])
+                                clean_pub = self._guard_salvage(self._strip_monologue_bleed(mono_text[m_sep.end():]))
                                 if clean_pub:
                                     self.public_response_buffer += clean_pub
                                     yield clean_pub
@@ -507,14 +532,14 @@ class MonologueStreamParser:
                                 if m_gm_matches:
                                     last_gm = m_gm_matches[-1]
                                     logger.info("[StreamParser] Unclosed monologue tag at EOF. Using last GM_ACTION as pivot.")
-                                    clean_pub = self._strip_monologue_bleed(mono_text[last_gm.end():])
+                                    clean_pub = self._guard_salvage(self._strip_monologue_bleed(mono_text[last_gm.end():]))
                                     if clean_pub:
                                         self.public_response_buffer += clean_pub
                                         yield clean_pub
                                 else:
                                     logger.warning("[StreamParser] Unclosed monologue tag at EOF. Defaulting buffer to public.")
                                     self.is_failsafe_triggered = True
-                                    clean_pub = self._strip_monologue_bleed(mono_text)
+                                    clean_pub = self._guard_salvage(self._strip_monologue_bleed(mono_text))
                                     if clean_pub:
                                         self.public_response_buffer += clean_pub
                                         yield clean_pub

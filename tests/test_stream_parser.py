@@ -402,3 +402,36 @@ def test_dialogue_or_past_tense_opening_is_kept():
     for opening in ['"Mei will be fine," Lian said softly.', "Mei bowed slightly."]:
         text = opening + "\n\nShe turned toward the kitchen."
         assert p._strip_monologue_bleed(text).startswith(opening.split()[0])
+
+
+def test_salvaged_planning_is_withheld_and_tainted():
+    """QA F14: Lian's whole 'reply' was the model talking about the writing task."""
+    from proxy.core.stream_parser import MonologueStreamParser
+    p = MonologueStreamParser()
+    out = p._guard_salvage("Since I cannot speak for Vardus, I will describe Lian's presence "
+                           "and her current state, awaiting his arrival or response.")
+    assert out == MonologueStreamParser.SALVAGE_NOTICE
+    assert p.is_failsafe_triggered is True        # never saved as world state or memory
+
+
+def test_in_character_first_person_is_not_withheld():
+    from proxy.core.stream_parser import MonologueStreamParser
+    p = MonologueStreamParser()
+    for text in ["I will make the tea now, Brother.", '"Since I saw you last, you have grown."']:
+        assert p._guard_salvage(text) == text
+    assert p.is_failsafe_triggered is False
+
+
+async def test_unclosed_think_with_gm_pivot_and_planning_tail_is_withheld():
+    from proxy.core.stream_parser import MonologueStreamParser
+
+    # As in routes: the <think> is an assistant PREFILL, so the parser starts inside
+    # the monologue (initial_state=0) and the model's text never contains <think>.
+    async def chunks():
+        yield "[SCENE ANALYSIS]\nLian enters.\n"   # what Gemma writes; [SCENE] alone is a public marker
+        yield '[GM_ACTION: {"type": "MOVE", "entity": "lian", "room_id": "hall"}]\n\n'
+        yield "Since I cannot speak for Vardus, I will describe Lian's presence in the scene."
+    p = MonologueStreamParser(initial_state=0)
+    out = "".join([c async for c in p.process_token_stream(chunks())])
+    assert "I will describe" not in out
+    assert "withheld" in out and p.is_failsafe_triggered
