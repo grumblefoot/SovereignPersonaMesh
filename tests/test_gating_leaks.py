@@ -528,3 +528,55 @@ def test_joining_does_not_teleport_a_character_already_placed(rig):
     snap = rig.engine.get("/api/v1/world/snapshot",
                           params={"session_id": rig.session_id, "template_key": ""}).json()
     assert {o["entity_id"]: o["room_id"] for o in snap["occupants"]}["mei"] == "tavern_upstairs"
+
+
+# ── QA F11: bulk import must not hand a joining member the whole transcript ──
+
+def _patch_import(monkeypatch):
+    from proxy.rag.import_worker import BulkImportWorker
+    captured = []
+
+    async def fake_process(self, session_id, character_id, messages, skip_registration=False):
+        captured.append((character_id, messages))
+
+    async def fake_register(self, session_id, character_id, n):
+        return "job"
+
+    async def fake_status(self, session_id):
+        return None
+    monkeypatch.setattr(BulkImportWorker, "process_bulk_import_background", fake_process)
+    monkeypatch.setattr(BulkImportWorker, "register_import_job", fake_register)
+    monkeypatch.setattr(BulkImportWorker, "check_import_status", fake_status)
+    return captured
+
+
+def _long_history(n=6):
+    msgs = []
+    for i in range(n):
+        msgs += [{"role": "user", "content": f'"line {i}"'},
+                 {"role": "assistant", "content": f"reply {i}"}]
+    return msgs
+
+
+def test_group_member_joining_a_known_session_gets_no_bulk_import(rig, monkeypatch):
+    rig.turn(sysmsgs("Mei") + [{"role": "user", "content": '"Hello."'}])   # session now known
+    captured = _patch_import(monkeypatch)
+    r = rig.client.post("/v1/chat/completions", headers={"X-SPM-Chat-ID": rig.chat_id},
+                        json={"model": "spm-sovereign-mesh", "stream": True,
+                              "messages": sysmsgs("Lian") + _long_history()})
+    assert r.status_code == 200
+    rig.client.get("/health")
+    assert captured == []          # was: Lian imported every line, scenes she never saw
+
+
+def test_bulk_import_never_contains_system_messages(rig, monkeypatch):
+    captured = _patch_import(monkeypatch)
+    rig.client.post("/v1/chat/completions", headers={"X-SPM-Chat-ID": rig.chat_id},
+                    json={"model": "spm-sovereign-mesh", "stream": True,
+                          "messages": sysmsgs("Mei") + _long_history()})
+    deadline = time.time() + 3
+    while not captured and time.time() < deadline:
+        rig.client.get("/health"); time.sleep(0.05)
+    assert captured, "a pre-SPM chat (new session) should still be imported"
+    roles = {m["role"] for _, msgs in captured for m in msgs}
+    assert roles <= {"user", "assistant"}    # no cards, persona or instructions
