@@ -412,7 +412,12 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # Sprint 2 chunk 2 wiring: on a session's FIRST turn, seed the world deterministically
     # ([scene:KEY] tag > keyword template match > generic_void) and place the player and
     # the target character together, so consequences and perception rows flow from turn 1.
-    if user_msg_count <= 1:
+    # "First turn" = the first time SPM sees this SESSION, not "one user message": a
+    # branch (or a chat that predates SPM) arrives carrying many user messages and was
+    # never seeded, so nobody was placed (QA step A4, 2026-10-05). Ephemeral turns
+    # (quiet/impersonate) never seed: they write nothing.
+    is_new_session = await _session_is_new(session_id, user_msg_count)
+    if is_new_session and not ephemeral:
         try:
             seed = propose_world_seed(
                 "\n".join(m.content for m in request.messages if m.role == "system" and m.content),
@@ -746,7 +751,8 @@ The text after </think> must ONLY be narrative and dialogue.
             task.add_done_callback(_background_tasks.discard)
 
             # Dispatch Lore Extraction in background
-            _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp)
+            _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp,
+                                      is_new_session=is_new_session)
 
         if inner_monologue:
             telemetry.push_thought_event(session_id, {
@@ -862,7 +868,8 @@ The text after </think> must ONLY be narrative and dialogue.
             task.add_done_callback(_background_tasks.discard)
 
             # Dispatch Lore Extraction in background
-            _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp)
+            _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp,
+                                      is_new_session=is_new_session)
 
         # Push inner monologue to Thought Monitor SSE stream
         if inner_monologue:
@@ -1041,7 +1048,8 @@ def _strip_user_persona(messages: List[ChatCompletionMessage], target_char: str)
     return [m for m in messages if not (m.role == "system" and m.content and opener.match(m.content))]
 
 
-def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_monologue: str, public_resp: str):
+def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_monologue: str, public_resp: str,
+                              is_new_session: Optional[bool] = None):
     if not _db_pool:
         return
     settings = get_settings_manager().get_settings()
@@ -1066,7 +1074,10 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
         for m in actual_messages
     ] + [assistant_turn]
     
-    if user_msg_count <= 1:
+    # Initial extraction on the session's first turn as SPM sees it (a branch carries
+    # history, so 'one user message' missed it); periodic review otherwise.
+    first_turn = is_new_session if is_new_session is not None else user_msg_count <= 1
+    if first_turn:
         task = asyncio.create_task(
             extractor.extract_initial_rules(session_id, target_char, "\n".join(f"{m['role']}: {m.get('content', '')}" for m in full_turn_history), model=ext_model)
         )
@@ -1081,6 +1092,21 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
         task.add_done_callback(_log_task_done)
+
+async def _session_is_new(session_id: str, user_msg_count: int) -> bool:
+    """True the first time SPM sees this session: it has no perception rows yet.
+    Falls back to the old 'single user message' rule if the DB is unavailable."""
+    if _db_pool is None:
+        return user_msg_count <= 1
+    try:
+        async with _db_pool.acquire() as conn:
+            seen = await conn.fetchval(
+                "SELECT 1 FROM spm_perception WHERE session_id = $1 LIMIT 1", session_id)
+        return seen is None
+    except Exception as e:
+        logger.warning(f"[SPMProxy] new-session check failed, using message count: {e}")
+        return user_msg_count <= 1
+
 
 def _embed_threshold(settings) -> float:
     """Decision 6: per-model cosine-distance cut, calibrated via the bake-off."""
