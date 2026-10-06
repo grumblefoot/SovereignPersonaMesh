@@ -1118,6 +1118,12 @@ async def memory_stats(
     return JSONResponse(content=result)
 
 def _log_task_done(task):
+    # A cancelled task is expected: the scheduler preempts background lore when chat
+    # needs the backend (decision 13). task.result() on it raises CancelledError, a
+    # BaseException that escaped this handler as a logged asyncio ERROR (QA F22).
+    if task.cancelled():
+        logger.info("[LoreExtraction] Background task cancelled (preempted by chat); it re-runs on a later turn.")
+        return
     try:
         task.result()
     except Exception as e:

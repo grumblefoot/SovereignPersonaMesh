@@ -265,3 +265,20 @@ async def test_regenerate_supersedes_queued_turn_same_session():
     holder.cancel()
     await asyncio.gather(holder, return_exceptions=True)
     assert await regen == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_task_done_logger_handles_a_preempted_task(caplog):
+    """QA F22: a preempted (cancelled) lore task made the done-callback raise."""
+    import logging
+    from proxy.api.routes import _log_task_done
+    caplog.set_level(logging.INFO)
+
+    async def forever():
+        await asyncio.sleep(3600)
+    t = asyncio.create_task(forever())
+    await asyncio.sleep(0)
+    t.cancel()
+    await asyncio.gather(t, return_exceptions=True)
+    _log_task_done(t)                       # must not raise
+    assert "preempted by chat" in caplog.text
