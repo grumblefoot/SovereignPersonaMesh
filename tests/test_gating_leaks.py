@@ -58,8 +58,10 @@ class Rig:
         async def count():
             conn = await asyncpg.connect(**TEST_DB_CONFIG)
             try:
+                # '<turn>#reply' matches every character's reply key '<turn>#reply:<char>'
                 return await conn.fetchval(
-                    "SELECT count(*) FROM spm_perception WHERE session_id=$1 AND turn_id=$2",
+                    "SELECT count(*) FROM spm_perception WHERE session_id=$1 "
+                    "AND (turn_id=$2 OR turn_id LIKE $2 || ':%')",
                     self.session_id, turn_id)
             finally:
                 await conn.close()
@@ -678,10 +680,78 @@ def test_character_moved_in_by_gm_hears_the_reply_that_moved_them(rig, monkeypat
         c = await asyncpg.connect(**TEST_DB_CONFIG)
         try:
             return await c.fetch("SELECT gating_level, perceived_text FROM spm_perception "
-                                 "WHERE session_id=$1 AND recipient_id='mei' AND turn_id LIKE '%#reply'",
+                                 "WHERE session_id=$1 AND recipient_id='mei' AND turn_id LIKE '%#reply%'",
                                  rig.session_id)
         finally:
             await c.close()
     rows = asyncio.run(mei_rows())
     assert rows and rows[0]["gating_level"] == "direct"
     assert "zq_moved_word" in rows[0]["perceived_text"]
+
+
+# ── Decision D1 (option A): directions go only to the turn's first responder ──
+
+def test_direction_reaches_first_responder_only(rig):
+    rig.seed(placements=[("user", "cellar"), ("mira", "cellar"), ("watcher", "cellar")])
+    msgs_base = [{"role": "user", "content": "**zq_direction_secret happens**"}]
+    # first responder (Mira) gets the direction
+    rig.turn(sysmsgs("Mira") + msgs_base)
+    assert "zq_direction_secret" in rig.prompt_text(-1)
+    # a different character answering the SAME turn does not
+    r = rig.client.post("/v1/chat/completions", headers={"X-SPM-Chat-ID": rig.chat_id},
+                        json={"model": "spm-sovereign-mesh", "stream": True,
+                              "messages": sysmsgs("Watcher") + rig._last_payload[len(sysmsgs()):]})
+    assert r.status_code == 200
+    assert "zq_direction_secret" not in rig.prompt_text(-1)
+    # regenerating the first responder still gets it
+    rig.turn(sysmsgs("Mira") + msgs_base, regenerate=True)
+    assert "zq_direction_secret" in rig.prompt_text(-1)
+
+
+def test_reply_prose_is_not_wrapped_as_speech(rig, monkeypatch):
+    import proxy.api.routes as routes
+    rig.seed(placements=[("user", "cellar"), ("mira", "cellar")])
+
+    async def prose(*args, **kwargs):
+        rig.prompts.append([dict(m) for m in kwargs.get("messages", [])])
+        yield '<think>p</think>Mira smiled. "Welcome," she said.'
+    monkeypatch.setattr(routes.lemonade_client, "generate_stream", prose)
+    rig.turn(sysmsgs() + [{"role": "user", "content": '"Hello."'}])
+    import asyncio, asyncpg
+    from tests._testdb import TEST_DB_CONFIG
+
+    async def row():
+        c = await asyncpg.connect(**TEST_DB_CONFIG)
+        try:
+            return await c.fetchval("SELECT perceived_text FROM spm_perception WHERE session_id=$1 "
+                                    "AND recipient_id='user' AND actor_id='mira'", rig.session_id)
+        finally:
+            await c.close()
+    assert asyncio.run(row()) == 'Mira: Mira smiled. "Welcome," she said.'
+
+
+
+# ── QA F21: two characters replying in the same turn both survive ──────────
+
+def test_second_reply_in_a_turn_does_not_erase_the_first(rig):
+    rig.seed(placements=[("user", "cellar"), ("mira", "cellar"), ("watcher", "cellar")])
+    rig.turn(sysmsgs("Mira") + [{"role": "user", "content": '"Hello, both."'}])
+    # Watcher answers the same user turn (group chat): same payload, different speaker
+    rig.client.post("/v1/chat/completions", headers={"X-SPM-Chat-ID": rig.chat_id},
+                    json={"model": "spm-sovereign-mesh", "stream": True,
+                          "messages": sysmsgs("Watcher") + rig._last_payload[len(sysmsgs()):]})
+    deadline = time.time() + 3
+    import asyncio, asyncpg
+    from tests._testdb import TEST_DB_CONFIG
+
+    async def actors():
+        c = await asyncpg.connect(**TEST_DB_CONFIG)
+        try:
+            return {r["actor_id"] for r in await c.fetch(
+                "SELECT actor_id FROM spm_perception WHERE session_id=$1 AND turn_id LIKE $2",
+                rig.session_id, f"{rig.session_id}:1#reply%")}
+        finally:
+            await c.close()
+    while time.time() < deadline and asyncio.run(actors()) != {"mira", "watcher"}:
+        rig.client.get("/health"); time.sleep(0.05)
+    assert asyncio.run(actors()) == {"mira", "watcher"}     # was: only the last responder
