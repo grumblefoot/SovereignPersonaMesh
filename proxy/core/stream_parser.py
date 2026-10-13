@@ -259,12 +259,30 @@ class MonologueStreamParser:
         r"I(?:'ll| will| must| need to| should| cannot| can't| am going to| have to)\b|"
         r"(?:Since I|Let me|Now I|Okay[,.]|Alright[,.]))", re.IGNORECASE)
 
-    def _is_planning_paragraph(self, para: str) -> bool:
-        return (bool(re.search(r"\bthe user\b", para, re.IGNORECASE))
-                or any(self._PLAN_LINE.match(line) for line in para.split("\n")))
+    # First-person task talk inside a paragraph with no dialogue: "I will move Mei to the
+    # kitchen", "I'll describe the room". In-character first person lives inside quotes.
+    _PLAN_TASK = re.compile(
+        r"\bI(?:'ll| will| must| need to| should| am going to)\s+"
+        r"(?:move|describe|write|respond|reply|narrate|keep|maintain|portray|have [A-Z]\w+|focus|avoid|not)\b")
+    # Future-tense stage direction without dialogue ("Lian will respond with a smile"): a plan.
+    _STAGE_DIRECTION = re.compile(r"^\s*(?:I|[A-Z][\w’'\-]*(?:\s[A-Z][\w’'\-]*)?)\s+will\s+\w+")
 
     @staticmethod
-    def _is_prose_paragraph(para: str) -> bool:
+    def _is_aside(para: str) -> bool:
+        p = para.strip()
+        return len(p) > 2 and p[0] in "([" and p[-1] in ")]." and p.rstrip(".")[-1] in ")]"
+
+    def _is_planning_paragraph(self, para: str) -> bool:
+        has_dialogue = any(q in para for q in ('"', '“'))
+        return (bool(re.search(r"\bthe user\b", para, re.IGNORECASE))
+                or any(self._PLAN_LINE.match(line.lstrip("([*- ")) for line in para.split("\n"))
+                or (not has_dialogue and (self._is_aside(para)
+                                          or bool(self._PLAN_TASK.search(para))
+                                          or bool(self._STAGE_DIRECTION.match(para)))))
+
+    def _is_prose_paragraph(self, para: str) -> bool:
+        if self._is_aside(para):
+            return False
         return len(para) >= 160 or any(q in para for q in ('"', '“', '*'))
 
     @staticmethod

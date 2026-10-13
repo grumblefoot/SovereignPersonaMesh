@@ -601,3 +601,34 @@ async def test_q3_legitimate_repetition_is_kept():
            "She folded it again and put it back in her sleeve, where it had lived for three winters now.")
     p, out = await _salvage(raw)
     assert out.count("Come home") == 2 and "three winters" in out
+
+
+@pytest.mark.asyncio
+async def test_q4_parenthesised_aside_and_stage_direction_are_dropped():
+    """QA 2026-10-13 Q4: a GM aside in parentheses, then a future-tense plan, then prose."""
+    raw = ('Vardus has just murmured something (indistinct) to Mei.\n'
+           '[GM_ACTION: {"type": "MOVE", "entity": "mei", "room_id": "kitchen"}]\n\n'
+           "(Since Lian asked Mei to prepare things or is implying it, and Mei is likely to retreat to "
+           "perform her duty to avoid further scrutiny, I will move Mei to the kitchen to maintain the "
+           "flow of the household roles).\n\n"
+           "Lian will respond to Vardus's murmur with a gentle, slightly indulgent smile, treating his "
+           "behavior as a quirk of a young man who is finally home, rather than the source of the tension.\n\n\n"
+           "Lian’s gaze momentarily drifted from the tea set to the space between Vardus and Mei, catching "
+           "the subtle, hushed exchange they had just shared. She did not miss the way Mei’s shoulders had "
+           "trembled, but she chose to treat the moment as a minor interruption in the proper order of things.\n\n"
+           '"More tea, Vardus?" she asked.')
+    p, out = await _salvage(raw)
+    assert out.lstrip().startswith("Lian’s gaze momentarily drifted")
+    assert "I will move" not in out and "Lian will respond" not in out
+    assert not p.is_tainted
+
+
+@pytest.mark.asyncio
+async def test_q4_in_character_first_person_and_parentheses_in_prose_survive():
+    raw = ('Scene.\n[GM_ACTION: {"type": "MOVE", "entity": "mei", "room_id": "kitchen"}]\n\n'
+           "Lian set down the pot (the old one, with the chipped lid) and looked at him for a long moment "
+           "before she spoke, weighing how much of the truth the evening could bear.\n\n"
+           '"I will make the tea myself tonight," she said. "Mei needs a moment."')
+    p, out = await _salvage(raw)
+    assert out.lstrip().startswith("Lian set down the pot (the old one")
+    assert '"I will make the tea myself tonight,"' in out
