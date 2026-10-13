@@ -367,7 +367,8 @@ class MonologueStreamParser:
             # A bare label line such as "Lian's behavior:" is a planning header, never
             # narration (leaked as the first line of a reply, QA 2026-10-05).
             if re.match(r"^\s*[\w’' .-]{1,40}['’]s\s+(?:behaviou?r|response|reaction|actions?|reply|plan|state|"
-                        r"next move|intentions?)\s*:\s*$", line, re.IGNORECASE):
+                        r"next move|intentions?|perspective|pov|point of view|turn|dialogue|narration)\s*:\s*$",
+                        line, re.IGNORECASE):
                 continue
             # Drop lines that are LLM internal prompt analysis or guidelines
             if re.search(

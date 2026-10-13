@@ -540,3 +540,16 @@ async def test_n8_short_legit_opening_line_is_kept():
     p, out = await _salvage(raw)
     assert out.lstrip().startswith("Silence.")
     assert not p.is_tainted
+
+
+@pytest.mark.asyncio
+async def test_q1_perspective_header_is_dropped():
+    """QA 2026-10-13 Q1: the model echoes "switch to the CHARACTER'S PERSPECTIVE" as a header."""
+    raw = ('Tension shifts.\n[GM_ACTION: {"type": "MOVE", "entity": "mei", "room_id": "living"}]\n\n'
+           "Lian's perspective:\n\n\n\n"
+           "Lian turned her gaze back to Mei. Her expression was not one of anger, but rather a cool, "
+           'steady disappointment that filled the quiet room.\n\n"If it is merely nonsense," Lian said.')
+    p, out = await _salvage(raw)
+    assert "perspective" not in out.lower()
+    assert out.lstrip().startswith("Lian turned her gaze")
+    assert not p.is_tainted
