@@ -462,3 +462,81 @@ async def test_clean_salvage_is_saved_planning_salvage_is_tainted():
     assert "Welcome home" in out
     assert p.is_failsafe_triggered is True       # diagnostic: salvage ran
     assert p.is_tainted is False                 # ...but the reply is saved
+
+
+# --- QA N8 (2026-10-12): planning written AFTER the last GM_ACTION leaked via the pivot ---
+
+async def _salvage(raw: str):
+    """Model output after SPM's '<think>\\n' prefill, never closed (Gemma-4 habit)."""
+    async def gen():
+        for i in range(0, len(raw), 40):
+            yield raw[i:i + 40]
+    p = MonologueStreamParser(initial_state=0)
+    out = "".join([c async for c in p.process_token_stream(gen())])
+    return p, out
+
+
+TURN8 = (
+    "The police are arriving at the Shinjuku Back Alley.\n"
+    '[GM_ACTION: {"type": "MOVE", "entity": "Police Officers", "room_id": "back_alley_shinjuku"}]\n\n'
+    "The user (Amy) is mocking the criminal as the police arrive.\n"
+    "The criminal is defeated and humiliated.\n"
+    "The delivery driver is panicking.\n"
+    "I must not speak for Amy.\n"
+    "I will describe the arrival of the police and the reaction of the environment/NPCs.\n\n\n"
+    "The wail of the siren reaches a crescendo, suddenly cutting off into a sharp, rhythmic chirp as a "
+    "police cruiser screeches to a halt just outside the alley's entrance.\n\n"
+    '"Police! Nobody move!" a voice booms from the mouth of the alley.'
+)
+
+TURN4 = (
+    "Amy (Amanda) uses her Quirk to send the crystalline man flying.\n"
+    '[GM_ACTION: {"type": "MOVE", "entity": "crystalline_thug", "room_id": "back_alley_shinjuku"}]\n'
+    "Note: The user's action \"I send him flying\" implies a use of power. I will describe the physical "
+    "impact of the man being thrown.\n\n"
+    "The user's action is a sudden display of power. I must ensure I do not describe Amy's internal "
+    "feeling, only the environmental reaction.\n\n"
+    "The man is thrown back into the alley walls.\n\n\n"
+    "The air seems to ripple with the sudden force of the movement. The man's aggressive lunge is cut "
+    "short as if he's hit an invisible, high-pressure wall, and his feet leave the ground.\n\n"
+    "With a heavy, bone-jarring *thud*, he is launched backward into a stack of metal crates."
+)
+
+
+@pytest.mark.asyncio
+async def test_n8_turn8_planning_checklist_after_gm_action_is_dropped():
+    p, out = await _salvage(TURN8)
+    assert out.lstrip().startswith("The wail of the siren")
+    assert "The user" not in out and "I must not" not in out and "I will describe" not in out
+    assert '"Police! Nobody move!"' in out
+    assert not p.is_tainted                     # a real reply was recovered: keep it
+
+
+@pytest.mark.asyncio
+async def test_n8_turn4_note_paragraphs_after_gm_action_are_dropped():
+    p, out = await _salvage(TURN4)
+    assert out.lstrip().startswith("The air seems to ripple")
+    for leak in ("Note:", "The user's action", "I must ensure", "The man is thrown back"):
+        assert leak not in out
+    assert "*thud*" in out
+
+
+@pytest.mark.asyncio
+async def test_n8_planning_only_is_withheld():
+    raw = ('Scene continues.\n[GM_ACTION: {"type": "MOVE", "entity": "user", "room_id": "x"}]\n'
+           "The user (Amy) walks to the office.\nI will describe the hallway.")
+    p, out = await _salvage(raw)
+    assert p.is_tainted
+    assert out.strip() == MonologueStreamParser.SALVAGE_NOTICE
+
+
+@pytest.mark.asyncio
+async def test_n8_short_legit_opening_line_is_kept():
+    """No planning before the prose: nothing is dropped, even a short first line."""
+    raw = ('Planning here.\n[GM_ACTION: {"type": "MOVE", "entity": "user", "room_id": "x"}]\n'
+           "Silence.\n\n"
+           "Nezu does not flinch. He takes a slow, deliberate sip of his tea, his black eyes fixed on you "
+           "with an unsettlingly calm intensity, before he finally sets the cup down.")
+    p, out = await _salvage(raw)
+    assert out.lstrip().startswith("Silence.")
+    assert not p.is_tainted

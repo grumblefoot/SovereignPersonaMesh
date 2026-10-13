@@ -13,7 +13,7 @@ import logging
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from config.hardware_tiers import get_hardware_config, HardwareTierEnum
 from proxy.core.st_parser import parse_sillytavern_context
@@ -483,6 +483,10 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # instructions to the AI: never perceived by any character, never stored, but
     # delivered to the model for THIS turn as an author's direction (QA F17).
     ooc_directions = parsed_msg.ooc_texts
+    # QA N7/N4: a character sheet is out-of-character setup. Keep it per chat (shown to
+    # a narrator every turn) and learn the player's in-story name for GM actions.
+    if parsed_msg.sheet and not ephemeral:
+        await _save_player_sheet(session_id, parsed_msg.sheet, parsed_msg.sheet_name)
     observable_actions = [a for a in parsed_actions if a.action_type != "thought"]
     # Narrated movement ("*Lian enters the room, a tea set in hand*") is visible to
     # whoever is present; only explicit [move:PLACE] tags (content = a room name)
@@ -537,6 +541,10 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     if narrator:
         logger.info(f"[SPMProxy] {target_char} is a scenario narrator (follows the player).")
         await _sync_narrator_with_player(session_id, target_char, f"{turn_id}:pre")
+    # QA N1: the card's greeting (and any alternate greeting the user swiped to) is the
+    # scene's opening. Record it as turn 0 on the first turn, so gated history keeps it.
+    if user_msg_count == 1 and not ephemeral:
+        await _record_greeting(session_id, target_char, request.messages)
 
     # OPEN-010: if the world engine is down, degrade to an ungated turn instead of a raw 500.
     # Roleplay must survive an engine outage; the turn simply has no spatial consequences.
@@ -637,6 +645,13 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     frontend_max_tokens = request.max_tokens or int(settings.get("public_output_default", 400) or 400)
 
     system_prompt = _assemble_system_prompt(request.messages, settings)
+    player_sheet, player_name = await _chat_player(session_id)
+    if narrator and player_sheet:
+        # QA N7/N14: the player's sheet is setup, not dialogue, and must not age out of
+        # the history window. Only a narrator sees it: a character in a scene would
+        # learn the player's secrets (a hidden Quirk) from it.
+        system_prompt += ("\n\n[PLAYER CHARACTER: the user's character sheet. Out of character; "
+                          "never something said aloud.]\n" + player_sheet)
 
     # RAG Memory Retrieval (filters out query_text to eliminate regeneration bleed)
     retrieved_memories = []
@@ -709,16 +724,22 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # thoughts (decision 11): without this, turn 1 leaked 'quoted thoughts' through it.
     chat_history = [{"role": m.role, "content": _redact_private_spans(m.content) if m.role == "user" else m.content}
                     for m in request.messages]
+    pinned_head = 0
     if _db_pool and settings.get("gated_history_enabled", True):
         try:
             async with _db_pool.acquire() as conn:
-                percep_rows = await gated_history(conn, session_id=session_id,
-                                                  recipient_id=target_char, limit=30)
+                # QA N14: the window is sized by the token budget below, not a fixed
+                # 30 rows; the opening rows are fetched too and pinned.
+                percep_rows = await gated_history(
+                    conn, session_id=session_id, recipient_id=target_char,
+                    limit=int(settings.get("gated_history_max_rows", 400) or 400),
+                    head=PINNED_OPENING_ROWS)
                 session_has_rows = bool(percep_rows) or bool(await conn.fetchval(
                     "SELECT 1 FROM spm_perception WHERE session_id = $1 LIMIT 1",
                     session_id))
             if session_has_rows:
                 chat_history = render_history_rows(percep_rows, target_char)
+                pinned_head = len(render_history_rows(percep_rows[:PINNED_OPENING_ROWS], target_char))
                 logger.info(f"[SPMProxy] Gated history in use for {target_char}: "
                             f"{len(chat_history)} perceived turns (raw transcript withheld).")
         except Exception as e:
@@ -730,7 +751,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     retrieved_memories, retrieved_lore, chat_history, budget_report = budget.allocate(
         settings=settings, hw_config=prompt_builder.config, model=str(request.model),
         system_text=system_prompt, memories=retrieved_memories, lore=retrieved_lore,
-        history=chat_history)
+        history=chat_history, pinned_head=pinned_head)
     if budget_report.trimmed.get("history") or budget_report.trimmed.get("memories") \
             or budget_report.trimmed.get("lore"):
         logger.info(f"[TokenBudget] {budget_report.trimmed} trimmed; used={budget_report.used}")
@@ -883,15 +904,17 @@ The text after </think> must ONLY be narrative and dialogue.
             # she never heard the question (QA F19, 2026-10-05).
             task = asyncio.create_task(_gm_then_reply(
                 parser, session_id, target_char, public_resp, turn_id,
-                turn_index=user_msg_count, persona=_extract_persona_name(request.messages),
+                turn_index=user_msg_count, persona=_extract_persona_name(request.messages), player_name=player_name or "",
                 narrator=narrator))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
             # Dispatch Lore Extraction in background
             if not parser.is_tainted:   # a withheld/tainted reply is never mined for lore
+                _initial_done = await _initial_lore_done(session_id)
                 _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp,
-                                      is_new_session=is_new_session)
+                                      is_new_session=(not _initial_done) if _initial_done is not None
+                                      else is_new_session)
 
         if inner_monologue:
             telemetry.push_thought_event(session_id, {
@@ -1002,15 +1025,17 @@ The text after </think> must ONLY be narrative and dialogue.
             # she never heard the question (QA F19, 2026-10-05).
             task = asyncio.create_task(_gm_then_reply(
                 parser, session_id, target_char, public_resp, turn_id,
-                turn_index=user_msg_count, persona=_extract_persona_name(request.messages),
+                turn_index=user_msg_count, persona=_extract_persona_name(request.messages), player_name=player_name or "",
                 narrator=narrator))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
             # Dispatch Lore Extraction in background
             if not parser.is_tainted:   # a withheld/tainted reply is never mined for lore
+                _initial_done = await _initial_lore_done(session_id)
                 _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp,
-                                      is_new_session=is_new_session)
+                                      is_new_session=(not _initial_done) if _initial_done is not None
+                                      else is_new_session)
 
         # Push inner monologue to Thought Monitor SSE stream
         if inner_monologue:
@@ -1235,9 +1260,12 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
     # history, so 'one user message' missed it); periodic review otherwise.
     first_turn = is_new_session if is_new_session is not None else user_msg_count <= 1
     if first_turn:
-        task = asyncio.create_task(
-            extractor.extract_initial_rules(session_id, target_char, "\n".join(f"{m['role']}: {m.get('content', '')}" for m in full_turn_history), model=ext_model)
-        )
+        extraction = extractor.extract_initial_rules(session_id, target_char, "\n".join(f"{m['role']}: {m.get('content', '')}" for m in full_turn_history), model=ext_model)
+
+        async def _initial():
+            await extraction
+            await _mark_initial_lore_done(session_id)   # not reached if cancelled: re-runs next turn
+        task = asyncio.create_task(_initial())
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
         task.add_done_callback(_log_task_done)
@@ -1403,6 +1431,100 @@ async def _chat_narrator_mode(session_id: str) -> str:
         return "auto"
 
 
+# Perception rows that open a scenario (greeting, first user turn, first reply): pinned
+# in the history window so the setup never ages out (QA N14, 2026-10-12).
+PINNED_OPENING_ROWS = 3
+
+
+async def _save_player_sheet(session_id: str, sheet: str, name: Optional[str]) -> None:
+    """QA N7/N4: store the user's character sheet (and its Name) for this chat."""
+    if _db_pool is None:
+        return
+    try:
+        async with _db_pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO spm_chat_settings (session_id, player_sheet, player_name, updated_at)
+                   VALUES ($1, $2, $3, NOW())
+                   ON CONFLICT (session_id) DO UPDATE SET player_sheet = EXCLUDED.player_sheet,
+                       player_name = COALESCE(EXCLUDED.player_name, spm_chat_settings.player_name),
+                       updated_at = NOW()""",
+                session_id, sheet, name)
+        logger.info(f"[SPMProxy] Player character sheet stored for {session_id}"
+                    f"{f' (name: {name})' if name else ''}.")
+    except Exception as e:
+        logger.warning(f"[SPMProxy] player sheet not stored: {e}")
+
+
+async def _chat_player(session_id: str) -> Tuple[Optional[str], Optional[str]]:
+    """(player_sheet, player_name) for this chat, or (None, None)."""
+    if _db_pool is None:
+        return None, None
+    try:
+        async with _db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT player_sheet, player_name FROM spm_chat_settings WHERE session_id = $1",
+                session_id)
+        return (row["player_sheet"], row["player_name"]) if row else (None, None)
+    except Exception as e:
+        logger.warning(f"[SPMProxy] chat player unavailable: {e}")
+        return None, None
+
+
+async def _record_greeting(session_id: str, target_char: str, messages) -> None:
+    """QA N1: the assistant message(s) before the first user message (the card's
+    greeting, or the alternate greeting the user swiped to) are recorded as turn 0:
+    the target said it, the player saw it. Re-recorded on every turn-1 attempt, so
+    swiping to another greeting replaces it."""
+    greeting = []
+    for m in messages:
+        if m.role == "user":
+            break
+        if m.role == "assistant" and m.content and m.content.strip():
+            greeting.append(m.content.strip())
+    if not greeting or _db_pool is None:
+        return
+    text = "\n\n".join(greeting)
+    try:
+        async with _db_pool.acquire() as conn:
+            await record_turn_perceptions(
+                conn, session_id=session_id, tick=0, turn_id=f"{session_id}:0",
+                actor_id=target_char, action_type="speak",
+                consequences=[
+                    {"recipient_id": target_char, "sensory_feed": text, "gating_level": "self"},
+                    {"recipient_id": "user", "sensory_feed": text, "gating_level": "direct"},
+                ])
+        logger.info(f"[SPMProxy] Greeting recorded as turn 0 for {target_char} ({len(text)} chars).")
+    except Exception as e:
+        logger.warning(f"[SPMProxy] greeting not recorded: {e}")
+
+
+async def _initial_lore_done(session_id: str) -> Optional[bool]:
+    """QA N5: has first-turn lore extraction run for this chat? None if unknown (no DB)."""
+    if _db_pool is None:
+        return None
+    try:
+        async with _db_pool.acquire() as conn:
+            return bool(await conn.fetchval(
+                "SELECT initial_lore_done FROM spm_chat_settings WHERE session_id = $1", session_id))
+    except Exception as e:
+        logger.warning(f"[SPMProxy] initial-lore state unavailable: {e}")
+        return None
+
+
+async def _mark_initial_lore_done(session_id: str) -> None:
+    if _db_pool is None:
+        return
+    try:
+        async with _db_pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO spm_chat_settings (session_id, initial_lore_done, updated_at)
+                   VALUES ($1, TRUE, NOW())
+                   ON CONFLICT (session_id) DO UPDATE SET initial_lore_done = TRUE, updated_at = NOW()""",
+                session_id)
+    except Exception as e:
+        logger.warning(f"[SPMProxy] initial-lore state not stored: {e}")
+
+
 async def _is_narrator(session_id: str, display_name: str) -> bool:
     """QA F26 (v0.4 stopgap for OPEN-016): a scenario card's narrator is a camera,
     not a body. Per-chat override wins; otherwise detect from the card name."""
@@ -1552,14 +1674,22 @@ async def _record_reply_action(session_id: str, target_char: str, public_resp: s
 
 async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_char: str,
                          public_resp: str, turn_id: str, turn_index: int, persona: str,
-                         narrator: bool = False) -> None:
+                         narrator: bool = False, player_name: str = "") -> None:
     """Apply the turn's GM actions, then record the reply as a world event, in order."""
-    try:
-        await _dispatch_gm_actions(parser, session_id, target_char,
-                                   turn_index=turn_index, persona=persona)
-    except Exception as e:  # never let a GM failure lose the reply
-        logger.error(f"[GMAction] dispatch failed for {session_id}: {e}")
-    if narrator:
+    if parser.is_tainted:
+        # A withheld reply ("not saved") must not move the world either: a regenerate
+        # may choose differently (QA N13, 2026-10-12). Lore extraction skips it too.
+        n = len(parser.extract_gm_actions())
+        if n:
+            logger.info(f"[GMAction] reply withheld; skipped {n} GM action(s) for {session_id}.")
+    else:
+        try:
+            await _dispatch_gm_actions(parser, session_id, target_char,
+                                       turn_index=turn_index, persona=persona,
+                                       player_name=player_name)
+        except Exception as e:  # never let a GM failure lose the reply
+            logger.error(f"[GMAction] dispatch failed for {session_id}: {e}")
+    if narrator and not parser.is_tainted:
         # The GM moved the player (F26: the narrator stayed behind in the old room).
         await _sync_narrator_with_player(session_id, target_char, f"{turn_id}:post")
     await _record_reply_action(session_id, target_char, public_resp, turn_id,
@@ -1567,7 +1697,7 @@ async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_
 
 
 async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str,
-                               turn_index: int = 0, persona: str = ""):
+                               turn_index: int = 0, persona: str = "", player_name: str = ""):
     """LLM-proposed world actions, gated and validated before anything hits the engine
     (OPEN-005 / SD-01). Mode off: nothing is dispatched (the stream parser already
     strips stray [GM_ACTION...] text either way). Otherwise the deterministic validator
@@ -1599,12 +1729,18 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
         known_rooms=known_rooms,
         known_entities=known_entities,
         target_char=target_char,
-        user_aliases=frozenset({persona} if persona else ()),
+        # The persona name and the player's in-story name from their sheet ("Amanda"
+        # plays "Amy": QA N4) both mean the player.
+        user_aliases=frozenset(a for a in (persona, player_name) if a),
         max_per_turn=int(settings.get("gm_actions_max_per_turn", 4)),
         rooms_in_session=room_count,
         max_rooms_per_session=int(settings.get("gm_actions_max_rooms_per_session", 40)),
     )
     for rej in batch.rejections:
+        if rej.reason == "schema" and rej.detail == "exists":
+            # Re-creating a room that exists is a harmless no-op, not a problem (QA N6).
+            logger.info(f"[GMAction] CREATE_ROOM of existing room ignored: {rej.action.get('room_id')}")
+            continue
         logger.warning(f"[GMAction] rejected ({rej.reason}): {rej.detail} — {rej.action}")
 
     turn_anchor = str(turn_index)

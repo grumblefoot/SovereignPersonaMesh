@@ -111,6 +111,53 @@ class ParsedMessage(BaseModel):
     # Never a world event or a memory, but it IS delivered to the model as an author's
     # direction for this turn (QA F17, 2026-10-05). It used to be discarded entirely.
     ooc_texts: list[str] = Field(default_factory=list)
+    # A "Name: / Age: / Quirk:" block is out-of-character setup, not speech (QA N7,
+    # 2026-10-12). Kept verbatim so the proxy can store it per chat; its Name value
+    # becomes an alias of the player for GM actions (QA N4).
+    sheet: Optional[str] = None
+    sheet_name: Optional[str] = None
+
+
+# One "Key: value" line of a character sheet: a short key (up to 6 words; testers
+# write "quirk:" as often as "Quirk:"),
+# a colon, then anything (possibly empty: "Appearance:").
+_SHEET_LINE = re.compile(r"^\s*[A-Za-z][\w'()/&,?.-]*(?:[ \t]+[\w'()/&,?.-]+){0,5}\s*:(?:\s.*)?$")
+SHEET_MIN_LINES = 3
+SHEET_DIRECTION = ("The player has shared their character sheet (see PLAYER CHARACTER). "
+                   "Use it for their character; do not treat it as something said aloud.")
+
+
+def extract_character_sheet(text: str) -> tuple[Optional[str], Optional[str], str]:
+    """Split the first run of >= 3 consecutive "Key: value" lines off a message.
+
+    Returns (sheet, name, rest). Blank lines don't break a run; a line that isn't
+    "Key: value" ends it. Dialogue such as 'Mai: "hi"' over three lines would also
+    match, which is acceptable: script-style lines are not this project's convention."""
+    if not text:
+        return None, None, text or ""
+    lines = text.split("\n")
+    start = end = None
+    count = 0
+    for i, line in enumerate(lines):
+        if _SHEET_LINE.match(line) and not line.lstrip().startswith(("[", "*", '"', "(")):
+            if start is None:
+                start = i
+            end, count = i, count + 1
+        elif line.strip() == "" and start is not None:
+            continue
+        else:
+            if count >= SHEET_MIN_LINES:
+                break
+            start = end = None
+            count = 0
+    if count < SHEET_MIN_LINES:
+        return None, None, text
+    sheet = "\n".join(lines[start:end + 1]).strip()
+    rest = "\n".join(lines[:start] + lines[end + 1:]).strip()
+    m = re.search(r"^\s*(?:Name|Character name|Full name)\s*:\s*(.+?)\s*$", sheet,
+                  re.IGNORECASE | re.MULTILINE)
+    name = m.group(1).strip().strip('"\'') if m else None
+    return sheet, (name or None), rest
 
 
 def parse_user_message(text: str) -> list[ParsedAction]:
@@ -123,6 +170,13 @@ def parse_message(text: str) -> ParsedMessage:
     result = ParsedMessage()
     if not text or not text.strip():
         return result
+    sheet, sheet_name, text = extract_character_sheet(text)
+    if sheet:
+        result.sheet, result.sheet_name = sheet, sheet_name
+        if not text.strip():
+            result.ooc = True
+            result.ooc_texts = [SHEET_DIRECTION]
+            return result
 
     actions: list[ParsedAction] = []
     ooc = False
@@ -323,6 +377,9 @@ def parse_message(text: str) -> ParsedMessage:
     result.actions = actions
     result.ooc = ooc
     result.ooc_texts = [t for t in ooc_texts if t]
+    if sheet:
+        result.ooc = True
+        result.ooc_texts.insert(0, SHEET_DIRECTION)
     return result
 
 

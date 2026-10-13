@@ -250,6 +250,36 @@ class MonologueStreamParser:
     SALVAGE_NOTICE = ("*[SPM: the model returned only planning notes, so this reply was "
                       "withheld and not saved. Regenerate to retry.]*")
 
+    # A line that is the model talking to itself about the task, not narration.
+    _PLAN_LINE = re.compile(
+        r"^\s*(?:(?:Notes?|Plan|Goal|Reminder|Constraints?)\s*:|"
+        r"(?:the user|the user's|user's|the player)\b|"
+        r"I(?:'ll| will| must| need to| should| cannot| can't| am going to| have to)\b|"
+        r"(?:Since I|Let me|Now I|Okay[,.]|Alright[,.]))", re.IGNORECASE)
+
+    def _is_planning_paragraph(self, para: str) -> bool:
+        return (bool(re.search(r"\bthe user\b", para, re.IGNORECASE))
+                or any(self._PLAN_LINE.match(line) for line in para.split("\n")))
+
+    @staticmethod
+    def _is_prose_paragraph(para: str) -> bool:
+        return len(para) >= 160 or any(q in para for q in ('"', '“', '*'))
+
+    def _drop_leading_planning(self, text: str) -> str:
+        """The model often writes GM actions first and keeps planning after them, so the
+        last-GM_ACTION pivot hands over "Note: The user's action... I will describe..."
+        followed by the real prose (QA N8, 2026-10-12). Drop the paragraphs before the
+        first prose paragraph, but only when one of them is planning and prose follows:
+        a short legitimate opening line is kept."""
+        paras = [p for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
+        for i, para in enumerate(paras):
+            if not self._is_planning_paragraph(para) and self._is_prose_paragraph(para):
+                if i and any(self._is_planning_paragraph(p) for p in paras[:i]):
+                    logger.info(f"[StreamParser] Dropped {i} leading planning paragraph(s) from salvaged reply.")
+                    return "\n\n".join(paras[i:])
+                return text
+        return text
+
     def _guard_salvage(self, text: str) -> str:
         """Salvage paths only (the model never closed its private block): if what is
         left is the model talking about the WRITING TASK ("Since I cannot speak for
@@ -259,8 +289,13 @@ class MonologueStreamParser:
         first person ("I will make the tea.") is kept."""
         if not text:
             return text
+        text = self._drop_leading_planning(text)
         first = text.strip().split("\n\n", 1)[0]
-        if self._PLANNING_START.match(first) and self._META_VOCAB.search(first):
+        # "the user" / a leading "Note:" never appears in narration (QA N8): withhold
+        # too, without requiring the old planning-style opening.
+        if ((self._PLANNING_START.match(first) and self._META_VOCAB.search(first))
+                or re.search(r"\bthe user\b", first, re.IGNORECASE)
+                or re.match(r"^\s*Notes?\s*:", first, re.IGNORECASE)):
             self.is_failsafe_triggered = True
             self.is_tainted = True
             logger.warning("[StreamParser] Salvaged text was planning, not a reply; withheld.")

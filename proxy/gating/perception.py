@@ -73,16 +73,20 @@ async def prune_later_turns(conn, *, session_id: str, turn_no: int) -> int:
 
 
 async def gated_history(conn, *, session_id: str, recipient_id: str,
-                        limit: int = 30) -> List[Dict[str, Any]]:
+                        limit: int = 30, head: int = 0) -> List[Dict[str, Any]]:
     """The last `limit` perception rows for one character, oldest first.
 
     direct   -> the perceived text verbatim
     degraded -> the (already muffled) perceived text
     blackout -> an empty row the prompt builder renders as a gap marker, never content.
+
+    head > 0 also returns the character's first `head` rows when they fall outside the
+    window (the scenario's opening: greeting and first exchange, QA N14), so the caller
+    can pin them; the result stays oldest first and duplicate-free.
     """
     rows = await conn.fetch(
         """
-        SELECT tick, turn_id, actor_id, action_type, gating_level, perceived_text,
+        SELECT id, tick, turn_id, actor_id, action_type, gating_level, perceived_text,
                distance_ft
         FROM spm_perception
         WHERE session_id = $1 AND recipient_id = $2
@@ -91,7 +95,22 @@ async def gated_history(conn, *, session_id: str, recipient_id: str,
         """,
         session_id, recipient_id, limit,
     )
-    return [dict(r) for r in reversed(rows)]
+    out = [dict(r) for r in reversed(rows)]
+    if head > 0 and len(rows) == limit:
+        first = await conn.fetch(
+            """
+            SELECT id, tick, turn_id, actor_id, action_type, gating_level, perceived_text,
+                   distance_ft
+            FROM spm_perception
+            WHERE session_id = $1 AND recipient_id = $2
+            ORDER BY tick ASC, id ASC
+            LIMIT $3
+            """,
+            session_id, recipient_id, head,
+        )
+        have = {r["id"] for r in out}
+        out = [dict(r) for r in first if r["id"] not in have] + out
+    return out
 
 
 GAP_MARKER = "[Time passes. You perceive nothing of what happens.]"

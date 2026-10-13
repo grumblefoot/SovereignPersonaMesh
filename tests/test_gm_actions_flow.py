@@ -117,3 +117,36 @@ async def test_gm_validation_blocks_unknown_entity_and_room(monkeypatch):
         mock_snap.side_effect = snap
         await _dispatch_gm_actions(parser, session_id="s", target_char="Player1")
         assert mock_move.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_n13_withheld_reply_dispatches_no_gm_actions(monkeypatch):
+    """QA N13 (2026-10-12): a planning-only reply was withheld ("not saved"), yet its
+    CREATE_ROOM + MOVE still ran and the narrator followed. Tainted turn: no GM, no sync."""
+    import proxy.api.routes as routes
+    from proxy.core.stream_parser import MonologueStreamParser
+    calls = []
+
+    async def fake_dispatch(*a, **k):
+        calls.append("dispatch")
+
+    async def fake_sync(*a, **k):
+        calls.append("sync")
+
+    async def fake_record(*a, tainted=False, **k):
+        calls.append(("record", tainted))
+
+    monkeypatch.setattr(routes, "_dispatch_gm_actions", fake_dispatch)
+    monkeypatch.setattr(routes, "_sync_narrator_with_player", fake_sync)
+    monkeypatch.setattr(routes, "_record_reply_action", fake_record)
+
+    p = MonologueStreamParser(initial_state=0)
+    p._monologue_sections.append('[GM_ACTION: {"type": "MOVE", "entity": "user", "room_id": "office"}]')
+    p.is_tainted = True
+    await routes._gm_then_reply(p, "s", "narr", "", "s:1", turn_index=1, persona="", narrator=True)
+    assert calls == [("record", True)]
+
+    calls.clear()
+    p.is_tainted = False
+    await routes._gm_then_reply(p, "s", "narr", "reply", "s:1", turn_index=1, persona="", narrator=True)
+    assert calls == ["dispatch", "sync", ("record", False)]

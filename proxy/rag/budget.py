@@ -133,6 +133,7 @@ def allocate(
     memories: List[Dict[str, Any]],
     lore: Dict[str, List[Dict[str, Any]]],
     history: List[Dict[str, str]],
+    pinned_head: int = 0,
 ):
     """Fit memories, lore and history into the window (plan §4). Returns
     (memories', lore', history', report).
@@ -145,7 +146,8 @@ def allocate(
     Trim order: memories (lowest-ranked first — the lists arrive best-first),
     lore triggers (invariants survive longest), history oldest-first in whole
     user/assistant pairs, with monologue stripped from older assistant turns
-    before any pair is dropped.
+    before any pair is dropped. The first `pinned_head` history messages (the
+    scenario's opening: greeting and first exchange) are never dropped (QA N14).
     """
     report = BudgetReport(window=context_window(settings, hw_config))
     window_eff = report.window - max(64, int(report.window * 0.05))
@@ -211,10 +213,11 @@ def allocate(
                     break
     # 2) drop whole turns from the old end (keeping the latest user turn)
     dropped = 0
-    while kept_hist and hist_tokens() > hist_budget:
-        if len(kept_hist) == 1 and kept_hist[0] is latest_user:
+    pin = max(0, min(pinned_head, len(kept_hist) - 1))
+    while len(kept_hist) > pin and hist_tokens() > hist_budget:
+        if kept_hist[pin] is latest_user:
             break
-        kept_hist.pop(0)
+        kept_hist.pop(pin)
         dropped += 1
     if latest_user is not None and latest_user not in kept_hist:
         kept_hist.append(latest_user)           # the latest user turn is never trimmed
