@@ -553,3 +553,51 @@ async def test_q1_perspective_header_is_dropped():
     assert "perspective" not in out.lower()
     assert out.lstrip().startswith("Lian turned her gaze")
     assert not p.is_tainted
+
+
+LIAN_DRAFT_FINAL = (
+    'Scene.\n[GM_ACTION: {"type": "MOVE", "entity": "mei", "room_id": "living"}]\n\n'
+    "Lian notices the heavy silence and the way Mei has retreated into herself. Lian's priority is to "
+    "steer the conversation away from the melancholy of the past. She wants to ensure Vardus feels like "
+    "the master of the house.\n\n"
+    "Lian turns her back to the heavy air Mei has created, refocusing her entire being on Vardus. She "
+    "leans in slightly, her movement graceful and intentional.\n\n"
+    '"The tea is a bit light, perhaps," Lian says softly. "I should prepare some small delicacies."\n\n'
+    "She glances briefly toward the kitchen, her mind already working on what would please him most.\n\n\n"
+    "Lian turned her back to the heavy air Mei had created, refocusing her entire being on Vardus. She "
+    "leaned in slightly, her movement graceful and intentional.\n\n"
+    '"The tea is a bit light, perhaps," she said softly. "I should prepare some small delicacies."\n\n'
+    "She glanced briefly toward the kitchen, her mind already working on what would please him most."
+)
+
+
+@pytest.mark.asyncio
+async def test_q3_draft_then_final_keeps_only_the_final():
+    p, out = await _salvage(LIAN_DRAFT_FINAL)
+    assert out.count("toward the kitchen") == 1
+    assert out.lstrip().startswith("Lian turned her back")          # the past-tense final
+    assert "priority is to" not in out and "Lian turns" not in out
+    assert not p.is_tainted
+
+
+@pytest.mark.asyncio
+async def test_q3_priority_is_to_paragraph_is_planning():
+    raw = ('Scene.\n[GM_ACTION: {"type": "MOVE", "entity": "mei", "room_id": "living"}]\n\n'
+           "Lian's priority is to keep the evening pleasant for her guest.\n\n"
+           "Lian set the pot down and smiled at Vardus, the steam curling between them as she searched "
+           "for something light to say, something that would carry them past the silence Mei had left "
+           'in the room and back to the easy warmth of a good evening.\n\n"More tea?" she asked.')
+    p, out = await _salvage(raw)
+    assert out.lstrip().startswith("Lian set the pot down")
+
+
+@pytest.mark.asyncio
+async def test_q3_legitimate_repetition_is_kept():
+    """A refrain repeated once in ordinary prose is not a draft: the copies are short and few."""
+    raw = ('Scene.\n[GM_ACTION: {"type": "MOVE", "entity": "mei", "room_id": "living"}]\n\n'
+           "Mei looked out at the rain for a long while, counting the drops on the glass as if each one "
+           "carried a message from somewhere far away and warmer than this room.\n\n"
+           '"Come home," the letter had said. "Come home."\n\n'
+           "She folded it again and put it back in her sleeve, where it had lived for three winters now.")
+    p, out = await _salvage(raw)
+    assert out.count("Come home") == 2 and "three winters" in out

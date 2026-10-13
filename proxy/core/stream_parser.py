@@ -4,6 +4,7 @@ Parses monologue thoughts, writing monologue to private memory buffer, and strea
 Includes fail-safe passthrough (>8192 tokens / malformed tags / unexpected EOS auto-close).
 """
 
+import difflib
 import logging
 import re
 import json
@@ -254,6 +255,7 @@ class MonologueStreamParser:
     _PLAN_LINE = re.compile(
         r"^\s*(?:(?:Notes?|Plan|Goal|Reminder|Constraints?)\s*:|"
         r"(?:the user|the user's|user's|the player)\b|"
+        r"(?:[A-Z][\w’']+['’]s|Her|His|Their)\s+(?:priority|goal|aim|objective|plan|intention)\s+is\s+to\b|"
         r"I(?:'ll| will| must| need to| should| cannot| can't| am going to| have to)\b|"
         r"(?:Since I|Let me|Now I|Okay[,.]|Alright[,.]))", re.IGNORECASE)
 
@@ -264,6 +266,25 @@ class MonologueStreamParser:
     @staticmethod
     def _is_prose_paragraph(para: str) -> bool:
         return len(para) >= 160 or any(q in para for q in ('"', '“', '*'))
+
+    @staticmethod
+    def _keep_final_draft(text: str) -> str:
+        """Inside an unclosed scratchpad the model often writes a draft, then the final reply
+        (present tense, then past tense). The pivot hands over both (QA 2026-10-13 Q3: the
+        user saw Lian's reply twice). If the text ends with a near-copy of an earlier run of
+        paragraphs, that earlier run and everything before it were drafting: keep the copy."""
+        paras = [p for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
+        n = len(paras)
+        norm = [re.sub(r"\W+", " ", p.lower()).strip() for p in paras]
+        for k in range(n // 2, 0, -1):
+            tail = norm[n - k:]
+            for i in range(0, n - 2 * k + 1):
+                ratios = [difflib.SequenceMatcher(None, norm[i + j], tail[j]).ratio() for j in range(k)]
+                if sum(ratios) / k >= 0.75 and all(r >= 0.5 for r in ratios):
+                    logger.info(f"[StreamParser] Salvaged reply contained a draft and a final version; "
+                                f"kept the final {k} paragraph(s), dropped {n - k}.")
+                    return "\n\n".join(paras[n - k:])
+        return text
 
     def _drop_leading_planning(self, text: str) -> str:
         """The model often writes GM actions first and keeps planning after them, so the
@@ -289,7 +310,7 @@ class MonologueStreamParser:
         first person ("I will make the tea.") is kept."""
         if not text:
             return text
-        text = self._drop_leading_planning(text)
+        text = self._drop_leading_planning(self._keep_final_draft(text))
         first = text.strip().split("\n\n", 1)[0]
         # "the user" / a leading "Note:" never appears in narration (QA N8): withhold
         # too, without requiring the old planning-style opening.
