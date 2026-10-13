@@ -875,3 +875,27 @@ def test_q11_late_joiner_on_the_same_turn_still_hears_the_player(rig):
     rig.turn(sysmsgs("Mei") + [{"role": "user", "content": f'"{PH(1102)}"'}])
     rig.turn(sysmsgs("Lian"))                                  # joins, same turn
     assert PH(1102) in rig.prompt_text(-1)
+
+
+def test_q11_edited_message_on_the_same_turn_is_perceived_afresh(rig):
+    """Editing (or deleting and re-sending) the last message keeps its turn number; the
+    old version's perception must not be reused for the new words."""
+    import asyncio, asyncpg
+    from tests._testdb import TEST_DB_CONFIG
+    rig.seed(placements=[("user", "cellar"), ("lian", "cellar"), ("mei", "cellar")])
+    rig.turn(sysmsgs("Lian") + [{"role": "user", "content": f'"{PH(1103)}"'}])
+    rig.turn(sysmsgs("Mei"))                                   # Mei answers the same turn
+    rig.history = []                                           # the user edits message 1
+    rig.turn(sysmsgs("Lian") + [{"role": "user", "content": f'"{PH(1104)}"'}])
+
+    async def lian_row():
+        conn = await asyncpg.connect(**TEST_DB_CONFIG)
+        try:
+            return await conn.fetchval(
+                "SELECT perceived_text FROM spm_perception WHERE session_id=$1 AND turn_id=$2 "
+                "AND actor_id='user' AND recipient_id='lian'", rig.session_id, f"{rig.session_id}:1")
+        finally:
+            await conn.close()
+    text = asyncio.run(lian_row())
+    assert PH(1104) in text and PH(1103) not in text
+    assert PH(1104) in rig.prompt_text(-1)

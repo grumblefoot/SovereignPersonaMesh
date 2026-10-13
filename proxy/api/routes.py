@@ -558,7 +558,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # "heard" Vardus's words. If another character already answered this turn, reuse the
     # recorded perception instead.
     recorded = None if (ephemeral or direction_only) else \
-        await _recorded_player_action(session_id, turn_id, target_char)
+        await _recorded_player_action(session_id, turn_id, target_char, observable_text)
     try:
         if ephemeral or direction_only:
             # No in-world action: ephemeral turns write nothing; a direction-only
@@ -1362,8 +1362,12 @@ class _AlreadyRecorded(Exception):
     """The player's action for this turn was already perceived (QA Q11)."""
 
 
-async def _recorded_player_action(session_id: str, turn_id: str,
-                                  target_char: str) -> Optional[Dict[str, Any]]:
+def _norm_text(t: str) -> str:
+    return re.sub(r"\W+", " ", (t or "").lower()).strip()
+
+
+async def _recorded_player_action(session_id: str, turn_id: str, target_char: str,
+                                  observable_text: str = "") -> Optional[Dict[str, Any]]:
     """QA Q11. If ANOTHER character already replied to this turn, the player's action has
     been perceived, with the positions at the moment it was said.
 
@@ -1388,6 +1392,15 @@ async def _recorded_player_action(session_id: str, turn_id: str,
         logger.warning(f"[SPMProxy] recorded-action lookup failed, re-submitting: {e}")
         return None
     if not rows:
+        return None
+    # The same turn number with a DIFFERENT message (edited, or deleted and re-sent) is a new
+    # action: never reuse the old version's perception. Rows that carry text must contain
+    # this message; if only blackout rows exist, there is nothing to compare, so reuse.
+    said = _norm_text(observable_text)[:60]
+    texts = [_norm_text(r["perceived_text"]) for r in rows if r["perceived_text"]]
+    if said and texts and not any(said in t for t in texts):
+        logger.info(f"[SPMProxy] Turn {turn_id} has a new message (edited or re-sent); "
+                    f"perceiving it afresh.")
         return None
     return {
         "reused": True,
