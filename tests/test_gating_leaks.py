@@ -834,3 +834,44 @@ def test_header_user_turns_parses_only_real_counts():
     assert _header_user_turns(mk(None)) is None
     assert _header_user_turns(mk("{{spmUserTurns}}")) is None   # extension missing
     assert _header_user_turns(mk("")) is None
+
+
+# ── QA Q11 (2026-10-13): one perception of the player's action per turn ──
+
+def test_q11_character_moved_in_mid_turn_does_not_hear_what_was_already_said(rig):
+    """Lian answers; a GM move then brings Mei into the room; Mei answers the SAME turn.
+    Mei was upstairs when the player spoke, so she must not get the words."""
+    rig.seed(placements=[("user", "cellar"), ("lian", "cellar"), ("mei", "tavern_upstairs")])
+    rig.turn(sysmsgs("Lian") + [{"role": "user", "content": f'"{PH(1101)}"'}])
+    assert PH(1101) in rig.prompt_text(-1)                    # Lian heard it
+    r = rig.engine.post("/api/v1/world/move", json={
+        "character_id": "mei", "room_id": "cellar", "session_id": rig.session_id,
+        "template_key": "", "origin": "gm"})
+    assert r.status_code == 200, r.text
+    n = len(rig.prompts)
+    rig.turn(sysmsgs("Mei"))                                   # same turn, second responder
+    if len(rig.prompts) > n:
+        assert PH(1101) not in rig.prompt_text(-1)             # no re-gating after the move
+    import asyncio, asyncpg
+    from tests._testdb import TEST_DB_CONFIG
+
+    async def mei_row():
+        conn = await asyncpg.connect(**TEST_DB_CONFIG)
+        try:
+            return await conn.fetchrow(
+                "SELECT gating_level, perceived_text FROM spm_perception WHERE session_id=$1 "
+                "AND turn_id=$2 AND actor_id='user' AND recipient_id='mei'",
+                rig.session_id, f"{rig.session_id}:1")
+        finally:
+            await conn.close()
+    row = asyncio.run(mei_row())
+    assert row is not None and PH(1101) not in (row["perceived_text"] or "")
+
+
+def test_q11_late_joiner_on_the_same_turn_still_hears_the_player(rig):
+    """QA F10 must survive Q11: a group member who joins on the same turn is placed with
+    the player and gets her own perception, without rewriting the others' rows."""
+    rig.seed(placements=[("user", "cellar"), ("mei", "cellar")])
+    rig.turn(sysmsgs("Mei") + [{"role": "user", "content": f'"{PH(1102)}"'}])
+    rig.turn(sysmsgs("Lian"))                                  # joins, same turn
+    assert PH(1102) in rig.prompt_text(-1)

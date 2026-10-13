@@ -14,25 +14,33 @@ logger = logging.getLogger(__name__)
 async def record_turn_perceptions(conn, *, session_id: str, tick: int,
                                   turn_id: Optional[str], actor_id: str,
                                   action_type: str,
-                                  consequences: List[Dict[str, Any]]) -> int:
+                                  consequences: List[Dict[str, Any]],
+                                  only_recipient: Optional[str] = None) -> int:
     """Insert one perception row per consequence recipient. Returns rows written.
 
     Blackout rows ARE recorded (with empty perceived_text): "X perceived nothing of this
     turn" is itself the fact the gated-history builder needs.
 
     Idempotent per turn: existing rows for (session_id, turn_id) are replaced, so a
-    regenerate rewrites its turn instead of duplicating it (leak suite scenario 13)."""
+    regenerate rewrites its turn instead of duplicating it (leak suite scenario 13).
+
+    only_recipient: add/replace that one recipient's row and leave the turn's other rows
+    alone (a character who joined after the player acted, QA Q11)."""
     rows = 0
     # One transaction: a failure mid-way must not leave the turn half-recorded (or,
     # worse, deleted-but-not-reinserted on a regenerate) — callers swallow exceptions.
     async with conn.transaction():
-        if turn_id is not None:
+        if turn_id is not None and only_recipient:
+            await conn.execute(
+                "DELETE FROM spm_perception WHERE session_id = $1 AND turn_id = $2 "
+                "AND recipient_id = $3", session_id, turn_id, only_recipient)
+        elif turn_id is not None:
             await conn.execute(
                 "DELETE FROM spm_perception WHERE session_id = $1 AND turn_id = $2",
                 session_id, turn_id)
         for c in consequences:
             recipient = c.get("recipient_id")
-            if not recipient:
+            if not recipient or (only_recipient and recipient != only_recipient):
                 continue
             await conn.execute(
                 """

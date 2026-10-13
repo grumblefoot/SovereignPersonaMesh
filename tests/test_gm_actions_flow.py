@@ -150,3 +150,45 @@ async def test_n13_withheld_reply_dispatches_no_gm_actions(monkeypatch):
     p.is_tainted = False
     await routes._gm_then_reply(p, "s", "narr", "reply", "s:1", turn_index=1, persona="", narrator=True)
     assert calls == ["dispatch", "sync", ("record", False)]
+
+
+@pytest.mark.asyncio
+async def test_q10_offscene_move_needs_the_story_to_mention_the_character(monkeypatch):
+    """QA Q10 (2026-10-13): Lian's turn moved Mei in from the kitchen with no narrative
+    cause. A move of a character who is elsewhere is applied only when the player's
+    message or the reply names them; moves within the scene are unaffected."""
+    import proxy.api.routes as routes
+    from proxy.core.stream_parser import MonologueStreamParser
+    snap = {"rooms": [{"room_id": r} for r in ("living", "kitchen", "garden")],
+            "occupants": [{"entity_id": "user", "room_id": "living"},
+                          {"entity_id": "lian", "room_id": "living"},
+                          {"entity_id": "mei", "room_id": "kitchen"}]}
+    moved = []
+
+    async def fake_snapshot(**kw):
+        return snap
+
+    async def fake_move(**kw):
+        moved.append(kw["character_id"])
+
+    monkeypatch.setattr(routes.evennia_client, "get_snapshot", fake_snapshot)
+    monkeypatch.setattr(routes.evennia_client, "move_character", fake_move)
+    monkeypatch.setattr(routes, "resolve_gm_actions_mode", lambda s: "full")
+
+    def parser():
+        p = MonologueStreamParser(initial_state=0)
+        p._monologue_sections.append(
+            '[GM_ACTION: {"type": "MOVE", "entity": "lian", "room_id": "garden"}]\n'
+            '[GM_ACTION: {"type": "MOVE", "entity": "user", "room_id": "garden"}]\n'
+            '[GM_ACTION: {"type": "MOVE", "entity": "mei", "room_id": "garden"}]\n'
+            '[GM_ACTION: {"type": "NONE"}]')
+        return p
+
+    await routes._dispatch_gm_actions(parser(), "s", "lian", turn_index=1, persona="Vardus",
+                                      story_text='"Would you show me the garden?" Lian took his arm.')
+    assert sorted(moved) == ["lian", "user"]          # Mei stays in the kitchen
+
+    moved.clear()
+    await routes._dispatch_gm_actions(parser(), "s", "lian", turn_index=2, persona="Vardus",
+                                      story_text="Behind them, Mei slipped out of the kitchen to listen.")
+    assert sorted(moved) == ["lian", "mei", "user"]   # motivated: the reply names her

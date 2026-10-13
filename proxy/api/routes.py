@@ -552,11 +552,20 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
 
     # OPEN-010: if the world engine is down, degrade to an ungated turn instead of a raw 500.
     # Roleplay must survive an engine outage; the turn simply has no spatial consequences.
+    # QA Q11: in a group turn, the player's action is perceived once, when it is said.
+    # A later responder used to re-submit it, and the rows were re-computed with the
+    # positions AFTER the first responder's GM moves: Mei, moved in from the kitchen,
+    # "heard" Vardus's words. If another character already answered this turn, reuse the
+    # recorded perception instead.
+    recorded = None if (ephemeral or direction_only) else \
+        await _recorded_player_action(session_id, turn_id, target_char)
     try:
         if ephemeral or direction_only:
             # No in-world action: ephemeral turns write nothing; a direction-only
             # message is the author talking to the AI, not the user's character acting.
             raise _EphemeralTurn()
+        if recorded is not None and recorded["target_has_row"]:
+            raise _AlreadyRecorded()
         world_res = await evennia_client.submit_action(
             character_id="user",
             action_type=primary_action,
@@ -578,6 +587,10 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                 logger.info(f"[SPMProxy] User move to '{room_slug}' not applied: {mv_exc}")
     except _EphemeralTurn:
         world_res = {"consequences": []}
+    except _AlreadyRecorded:
+        world_res = recorded
+        logger.info(f"[SPMProxy] Player action for {turn_id} already perceived; reusing the "
+                    f"recorded perception for {target_char} (no re-gating after GM moves).")
     except Exception as e:
         logger.error(f"[SPMProxy] World engine unavailable; continuing ungated for session {session_id}: {e}")
         world_res = {"consequences": [], "engine_unavailable": True}
@@ -590,7 +603,13 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
 
     # Sprint 2 chunk 3: record what every recipient perceived (post-gating) — the
     # per-character gated history is rebuilt from these rows, not the raw transcript.
-    if _db_pool and world_res.get("consequences"):
+    if _db_pool and world_res.get("consequences") and not world_res.get("reused"):
+        # A character with no row yet (joined mid-turn, QA F10) gets ONLY their own row
+        # added; everyone else keeps what they perceived when the player acted (Q11).
+        only_target = recorded is not None and not recorded["target_has_row"]
+        if only_target:
+            logger.info(f"[SPMProxy] {target_char} joined turn {turn_id} late; recording only "
+                        f"their perception of the player's action.")
         try:
             async with _db_pool.acquire() as conn:
                 await record_turn_perceptions(
@@ -598,6 +617,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                     tick=int(world_res.get("action_tick", 0)),
                     turn_id=turn_id, actor_id="user", action_type=primary_action,
                     consequences=world_res["consequences"],
+                    only_recipient=target_char if only_target else None,
                 )
         except Exception as e:
             logger.warning(f"[SPMProxy] Perception recording skipped: {e}")
@@ -909,6 +929,7 @@ The text after </think> must ONLY be narrative and dialogue.
             task = asyncio.create_task(_gm_then_reply(
                 parser, session_id, target_char, public_resp, turn_id,
                 turn_index=user_msg_count, persona=_extract_persona_name(request.messages), player_name=player_name or "",
+                user_text=observable_text,
                 narrator=narrator))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
@@ -1039,6 +1060,7 @@ The text after </think> must ONLY be narrative and dialogue.
             task = asyncio.create_task(_gm_then_reply(
                 parser, session_id, target_char, public_resp, turn_id,
                 turn_index=user_msg_count, persona=_extract_persona_name(request.messages), player_name=player_name or "",
+                user_text=observable_text,
                 narrator=narrator))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
@@ -1334,6 +1356,47 @@ async def _known_rooms_block(session_id: str, target_char: str, gm_mode: str = "
 # Remembered so that regenerating the first responder still gets the direction even
 # after another character has replied in the same turn.
 _direction_owner: Dict[tuple, str] = {}
+
+
+class _AlreadyRecorded(Exception):
+    """The player's action for this turn was already perceived (QA Q11)."""
+
+
+async def _recorded_player_action(session_id: str, turn_id: str,
+                                  target_char: str) -> Optional[Dict[str, Any]]:
+    """QA Q11. If ANOTHER character already replied to this turn, the player's action has
+    been perceived, with the positions at the moment it was said.
+
+    Returns {consequences, action_tick, reused, target_has_row}, or None to submit the
+    action normally (first responder, a regenerate of the only responder, or no data)."""
+    if _db_pool is None:
+        return None
+    try:
+        async with _db_pool.acquire() as conn:
+            other = await conn.fetchval(
+                "SELECT 1 FROM spm_perception WHERE session_id = $1 AND turn_id LIKE $2 "
+                "AND actor_id <> $3 LIMIT 1",
+                session_id, f"{turn_id}#reply:%", target_char)
+            if other is not True and other != 1:
+                return None
+            rows = await conn.fetch(
+                "SELECT tick, recipient_id, gating_level, perceived_text, distance_ft "
+                "FROM spm_perception WHERE session_id = $1 AND turn_id = $2 AND actor_id = 'user' "
+                "ORDER BY id", session_id, turn_id)
+        rows = [dict(r) for r in rows] if isinstance(rows, list) else []
+    except Exception as e:
+        logger.warning(f"[SPMProxy] recorded-action lookup failed, re-submitting: {e}")
+        return None
+    if not rows:
+        return None
+    return {
+        "reused": True,
+        "action_tick": rows[0]["tick"],
+        "target_has_row": any(r["recipient_id"] == target_char for r in rows),
+        "consequences": [{"recipient_id": r["recipient_id"], "gating_level": r["gating_level"],
+                          "sensory_feed": r["perceived_text"] or "", "distance_ft": r["distance_ft"]}
+                         for r in rows],
+    }
 
 
 async def _turn_answered_by_other(session_id: str, turn_id: str, target_char: str) -> bool:
@@ -1715,7 +1778,8 @@ async def _record_reply_action(session_id: str, target_char: str, public_resp: s
 
 async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_char: str,
                          public_resp: str, turn_id: str, turn_index: int, persona: str,
-                         narrator: bool = False, player_name: str = "") -> None:
+                         narrator: bool = False, player_name: str = "",
+                         user_text: str = "") -> None:
     """Apply the turn's GM actions, then record the reply as a world event, in order."""
     if parser.is_tainted:
         # A withheld reply ("not saved") must not move the world either: a regenerate
@@ -1727,7 +1791,8 @@ async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_
         try:
             await _dispatch_gm_actions(parser, session_id, target_char,
                                        turn_index=turn_index, persona=persona,
-                                       player_name=player_name)
+                                       player_name=player_name,
+                                       story_text=f"{user_text}\n{public_resp}")
         except Exception as e:  # never let a GM failure lose the reply
             logger.error(f"[GMAction] dispatch failed for {session_id}: {e}")
     if narrator and not parser.is_tainted:
@@ -1738,7 +1803,8 @@ async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_
 
 
 async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str,
-                               turn_index: int = 0, persona: str = "", player_name: str = ""):
+                               turn_index: int = 0, persona: str = "", player_name: str = "",
+                               story_text: str = ""):
     """LLM-proposed world actions, gated and validated before anything hits the engine
     (OPEN-005 / SD-01). Mode off: nothing is dispatched (the stream parser already
     strips stray [GM_ACTION...] text either way). Otherwise the deterministic validator
@@ -1759,6 +1825,7 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
         snap = await evennia_client.get_snapshot(session_id=session_id, template_key="")
         known_rooms = {r["room_id"] for r in snap.get("rooms", [])}
         known_entities = {o["entity_id"] for o in snap.get("occupants", [])}
+        where = {o["entity_id"]: o.get("room_id") for o in snap.get("occupants", [])}
         room_count = len(known_rooms)
     except Exception as e:
         logger.error(f"[GMAction] world snapshot unavailable; dropping {len(actions)} action(s): {e}")
@@ -1778,14 +1845,35 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
         max_rooms_per_session=int(settings.get("gm_actions_max_rooms_per_session", 40)),
     )
     for rej in batch.rejections:
+        if str(rej.action.get("type", "")).upper() in ("NONE", "NOOP", "NO_OP"):
+            continue                       # the model saying "no action" (QA Q8)
         if rej.reason == "schema" and rej.detail == "exists":
             # Re-creating a room that exists is a harmless no-op, not a problem (QA N6).
             logger.info(f"[GMAction] CREATE_ROOM of existing room ignored: {rej.action.get('room_id')}")
             continue
         logger.warning(f"[GMAction] rejected ({rej.reason}): {rej.detail} — {rej.action}")
 
+    # QA Q10: the GM may move a character who is ELSEWHERE only when the story says so:
+    # the character is named in the player's message or in this reply ("Mei lingers by the
+    # door, listening"). An unexplained move teleported Mei from the kitchen into a scene
+    # she had no part in. The GM only sees its own room's occupants, so it was guessing.
+    speaker_room = where.get(target_char)
+    story = (story_text or "").lower()
+    accepted = []
+    for action in batch.accepted:
+        if (isinstance(action, gm_validation.MoveAction)
+                and action.entity not in ("user", target_char)
+                and where.get(action.entity) not in (None, speaker_room, action.room_id)):
+            name = action.entity.replace("_", " ").lower()
+            if not re.search(rf"\b{re.escape(name)}\b", story):
+                logger.warning(f"[GMAction] rejected (unmotivated): {action.entity} is in "
+                               f"'{where.get(action.entity)}' and the story doesn't mention them "
+                               f"— {action.model_dump()}")
+                continue
+        accepted.append(action)
+
     turn_anchor = str(turn_index)
-    for action in batch.accepted:          # CREATE first, then MOVE (validator order)
+    for action in accepted:                # CREATE first, then MOVE (validator order)
         key = gm_validation.idempotency_key(session_id, turn_anchor, action)
         logger.info(f"[GMAction] Dispatching validated GM Action: {action.model_dump()}")
         try:
