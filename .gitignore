@@ -32,9 +32,10 @@ ENV/
 pgdata/
 *.log
 
-# Environment variables
+# Environment variables and local settings
 .env
 !.env.example
+config/config.local.json
 
 # IDE & OS
 .idea/

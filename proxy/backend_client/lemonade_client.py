@@ -6,6 +6,7 @@ Supports streaming Server-Sent Events (SSE) and continuous batching / prompt cac
 import json
 import logging
 import os
+import re
 import time
 import httpx
 from typing import AsyncGenerator, Dict, Any, Optional, List, Tuple
@@ -26,6 +27,19 @@ LEGACY_MODEL_IDS = {
 }
 MODELS_CACHE_SECONDS = 30.0
 
+# Tokens that describe a build, not a model: dropped when comparing ids across servers
+# (Lemonade "Gemma-4-26B-A4B-it-GGUF" vs LM Studio "google/gemma-4-26b-a4b-qat").
+_BUILD_TOKENS = {"gguf", "it", "instruct", "chat", "qat", "awq", "gptq", "mlx", "onnx", "safetensors"}
+_QUANT_TOKEN = re.compile(r"^(?:i?q\d[\w]*|f16|bf16|fp16|fp8|int\d|\d+bit)$")   # "26b" is a size, kept
+
+
+def _normalise_model_id(model_id: str) -> str:
+    """'google/Gemma-4-26B-A4B-it-GGUF' -> 'gemma-4-26b-a4b'."""
+    name = model_id.lower().rsplit("/", 1)[-1]
+    tokens = [t for t in re.split(r"[^a-z0-9.]+", name) if t]
+    kept = [t for t in tokens if t not in _BUILD_TOKENS and not _QUANT_TOKEN.match(t)]
+    return "-".join(kept)
+
 
 class LLMBackendError(RuntimeError):
     """The LLM backend could not produce a reply (unreachable or non-200)."""
@@ -33,10 +47,29 @@ class LLMBackendError(RuntimeError):
 
 class LemonadeLLMClient:
     def __init__(self, base_url: Optional[str] = None):
-        # Resolve the default at call time (not definition time) so tests can redirect DEFAULT_BASE_URL.
-        self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
+        # Without an explicit URL the client follows the BACKEND_LLM_URL setting (env or
+        # config.json) at call time, so the backend can live on another machine and be
+        # changed without a restart. It used to be hard-wired to localhost:13305.
+        self._explicit_base_url = base_url.rstrip("/") if base_url else None
         self._client = None
         self._models_cache: Optional[Tuple[float, List[str]]] = None
+        self._models_cache_url: Optional[str] = None
+
+    @property
+    def base_url(self) -> str:
+        if self._explicit_base_url:
+            return self._explicit_base_url
+        try:
+            from config.manager import get_settings_manager
+            configured = str(get_settings_manager().get_settings().get("BACKEND_LLM_URL") or "").strip()
+        except Exception:
+            configured = ""
+        # Resolve the default at call time (not definition time) so tests can redirect DEFAULT_BASE_URL.
+        return (configured or DEFAULT_BASE_URL).rstrip("/")
+
+    @base_url.setter
+    def base_url(self, value: Optional[str]) -> None:
+        self._explicit_base_url = value.rstrip("/") if value else None
 
 
     @property
@@ -51,9 +84,12 @@ class LemonadeLLMClient:
     async def _chat_model_ids(self) -> Optional[List[str]]:
         """Chat-capable model ids from Lemonade, cached briefly (it was fetched on every turn)."""
         now = time.monotonic()
-        if self._models_cache is not None and now - self._models_cache[0] < MODELS_CACHE_SECONDS:
+        base = self.base_url
+        if (self._models_cache is not None and self._models_cache_url == base
+                and now - self._models_cache[0] < MODELS_CACHE_SECONDS):
             return self._models_cache[1]
-        resp = await self.client.get(f"{self.base_url}/models")
+        self._models_cache_url = base
+        resp = await self.client.get(f"{base}/models")
         if resp.status_code != 200:
             return None
         ids = []
@@ -94,6 +130,18 @@ class LemonadeLLMClient:
         matches = [av for av in available if req_lower in av.lower()]
         if len(matches) == 1:
             return matches[0]
+        # Same model, another server's naming: compare with vendor prefix, build and
+        # quantisation tags removed (LM Studio 'google/gemma-4-26b-a4b-qat' for
+        # Lemonade's 'Gemma-4-26B-A4B-it-GGUF'). Equality first, then unique containment.
+        req_norm = _normalise_model_id(requested)
+        if req_norm:
+            by_norm = {av: _normalise_model_id(av) for av in available}
+            matches = [av for av, n in by_norm.items() if n == req_norm]
+            if len(matches) != 1:
+                matches = [av for av, n in by_norm.items() if n and (req_norm in n or n in req_norm)]
+            if len(matches) == 1:
+                logger.info(f"[LemonadeClient] Model '{requested_model}' resolved to '{matches[0]}' by normalised name.")
+                return matches[0]
         logger.warning(f"[LemonadeClient] Model '{requested_model}' not found among chat models; passing it through unchanged.")
         return requested
 

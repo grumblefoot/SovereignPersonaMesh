@@ -12,7 +12,9 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_PATH = os.path.join(
+# SPM_CONFIG_PATH lets a deployment keep its settings outside the repo file. Resolved
+# once at import (proxy/main.py loads .env first); tests redirect _CONFIG_PATH itself.
+_CONFIG_PATH = os.getenv("SPM_CONFIG_PATH") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "config",
     "config.json"

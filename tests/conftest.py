@@ -74,7 +74,12 @@ def isolated_backends(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def isolated_settings(tmp_path, monkeypatch):
-    """Point the settings manager at a temp config.json so tests never write the live config/config.json."""
+    """Point the settings manager at a temp config.json so tests never write the live config/config.json.
+    A developer's .env (loaded when proxy.main is imported) must not leak into tests either:
+    on 2026-10-13 it redirected the settings file and the suite overwrote the live local config."""
+    for var in ("SPM_CONFIG_PATH", "BACKEND_LLM_URL", "BACKEND_API_KEY", "EMBEDDING_URL",
+                "EMBEDDING_MODEL", "SPM_DEFAULT_MODEL"):   # EMBEDDING_PROVIDER: isolated_embeddings owns it
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(config_manager, "_CONFIG_PATH", str(tmp_path / "config.json"))
     config_manager.reset_settings_manager()
     yield

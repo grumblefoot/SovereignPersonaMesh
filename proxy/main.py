@@ -11,6 +11,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from dotenv import load_dotenv
 
+# Before the SPM imports: several modules read the environment at import time
+# (SPM_DEFAULT_MODEL, SPM_CONFIG_PATH), so .env must already be loaded here.
+load_dotenv()
+
 from proxy.api.routes import router as api_router
 from config.hardware_tiers import get_hardware_config
 from proxy.core.logger import setup_spm_logging
@@ -20,7 +24,6 @@ from proxy.api.admin_routes import router as admin_router, AdminState
 from config.hardware_tiers import get_hardware_config
 from contextlib import asynccontextmanager
 
-load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,

@@ -184,5 +184,5 @@ if __name__ == "__main__":
         "password": os.getenv("POSTGRES_PASSWORD", "spm_secure_password"),
         "database": os.getenv("POSTGRES_DB", "litellm_postgres"),
     }
-    worker = MemoryConsolidationWorker(db_conf, os.getenv("LLM_BACKEND_URL", "http://localhost:13305/v1"))
+    worker = MemoryConsolidationWorker(db_conf, os.getenv("BACKEND_LLM_URL") or os.getenv("LLM_BACKEND_URL") or "http://localhost:13305/v1")
     asyncio.run(worker.run())

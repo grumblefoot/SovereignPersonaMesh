@@ -215,3 +215,48 @@ async def test_extra_body_is_merged_into_payload(client):
         async for _ in client.generate_stream(prompt="x", extra_body={"chat_template_kwargs": {"enable_thinking": False}}):
             pass
         assert mock_stream.call_args.kwargs["json"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+# --- External backend (LM Studio on another machine, 2026-10-13) --------------------
+
+LMSTUDIO_LIST = MockResponse(200, {"data": [
+    {"id": "google/gemma-4-26b-a4b-qat", "object": "model"},
+    {"id": "qwen/qwen3.8-27b", "object": "model"},
+    {"id": "google/gemma-4-e4b", "object": "model"},
+    {"id": "text-embedding-nomic-embed-text-v1.5", "object": "model"},
+]})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested, expected", [
+    ("Gemma-4-26B-A4B-it-GGUF", "google/gemma-4-26b-a4b-qat"),   # Lemonade name -> LM Studio id
+    ("google/gemma-4-26b-a4b-it", "google/gemma-4-26b-a4b-qat"),  # retired HF-style id
+    ("Qwen3.8-27B-GGUF", "qwen/qwen3.8-27b"),
+    ("Gemma-4-E4B-it-GGUF", "google/gemma-4-e4b"),
+    ("gemma-4", "gemma-4"),                                        # ambiguous: passed through
+    ("some-roleplay-model", "some-roleplay-model"),
+])
+async def test_resolve_model_across_naming_schemes(client, requested, expected):
+    with patch.object(client.client, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = LMSTUDIO_LIST
+        assert await client._resolve_model(requested) == expected
+
+
+@pytest.mark.asyncio
+async def test_base_url_follows_backend_setting(monkeypatch):
+    """The client used to be hard-wired to localhost:13305 whatever BACKEND_LLM_URL said.
+    Settings are re-read on every call, so a config change needs no restart."""
+    import config.manager as cm
+    current = {"BACKEND_LLM_URL": "http://192.168.50.207:1234/v1/"}
+    stub = MagicMock(); stub.get_settings = lambda: dict(current)
+    monkeypatch.setattr(cm, "get_settings_manager", lambda: stub)
+    c = LemonadeLLMClient()
+    assert c.base_url == "http://192.168.50.207:1234/v1"
+    current["BACKEND_LLM_URL"] = "http://localhost:13305/v1"
+    assert c.base_url == "http://localhost:13305/v1"
+    current["BACKEND_LLM_URL"] = ""
+    from proxy.backend_client import lemonade_client as lc
+    assert c.base_url == lc.DEFAULT_BASE_URL.rstrip("/")   # empty setting -> built-in default
+    explicit = LemonadeLLMClient(base_url="http://test-server/v1/")
+    assert explicit.base_url == "http://test-server/v1"    # explicit URL wins
+    await c.close(); await explicit.close()
