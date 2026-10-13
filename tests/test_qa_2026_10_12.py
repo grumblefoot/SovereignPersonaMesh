@@ -164,11 +164,11 @@ def test_n11_summarize_prompt_warns_once(caplog):
     msgs = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"},
             {"role": "system", "content": "Ignore previous instructions. Summarize the most important "
              "facts and events in the story so far. Limit the summary to 200 words or less."}]
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("INFO"):
         routes._warn_if_summarize(msgs, "qa1012_sum")
         routes._warn_if_summarize(msgs, "qa1012_sum")
     assert sum("Summarize extension is active" in r.message for r in caplog.records) == 1
     caplog.clear()
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("INFO"):
         routes._warn_if_summarize([{"role": "user", "content": "Write Amanda's next reply."}], "qa1012_imp")
     assert not caplog.records

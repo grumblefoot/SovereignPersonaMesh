@@ -72,8 +72,9 @@ Start your LLM server first, then:
    X-SPM-User-Turns: "{{spmUserTurns}}"
    ```
 
-4. Turn off SillyTavern's **Summarize** extension. SPM keeps its own memories, and Summarize
-   builds its summary from the full chat, which would tell characters about scenes they never saw.
+4. Optional: turn off SillyTavern's **Summarize** extension. SPM keeps its own memories and
+   already strips SillyTavern's Summary and Author's Note blocks from character prompts (they
+   can't be filtered per character), so Summarize only costs extra model time.
 
 Details and troubleshooting: [docs/st_extension_setup.md](docs/st_extension_setup.md).
 

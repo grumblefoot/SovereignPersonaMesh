@@ -1372,17 +1372,16 @@ _summarize_warned: set = set()
 
 
 def _warn_if_summarize(messages: List[Dict[str, Any]], session_id: str) -> None:
-    """QA N11: ST's Summarize extension summarises the RAW chat and injects the result into
-    every later prompt, for every character: a side channel around gating (in a group
-    chat, characters learn scenes they never perceived). SPM keeps its own memories, so
-    the owner decision is: document "turn Summarize off" and warn once per chat."""
+    """QA N11: note once per chat that ST's Summarize extension is active. Its summary is
+    NOT a leak: the injected [Summary: ...] block is stripped from character prompts
+    (decision 12, _SHARED_NOTE_REGEX). It only costs a background model call."""
     last = next((m["content"] for m in reversed(messages) if m.get("role") != "assistant"), "")
     if session_id in _summarize_warned or not _SUMMARIZE_PROMPT.search(last[-600:]):
         return
     _summarize_warned.add(session_id)
-    logger.warning(f"[SPMProxy] SillyTavern's Summarize extension is active for {session_id}. "
-                   "Its summary is built from the raw chat and bypasses SPM's gating; "
-                   "disable it when using SPM (SPM keeps its own memories).")
+    logger.info(f"[SPMProxy] SillyTavern's Summarize extension is active for {session_id}. "
+                "Its summary block is stripped from character prompts (decision 12); each "
+                "summary costs a background model call. SPM keeps its own memories.")
 
 
 async def _ephemeral_passthrough(request: "ChatCompletionRequest", session_id: str):

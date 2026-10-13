@@ -20,7 +20,9 @@ Limitations you may run into with the current release. Reports and fixes are wel
 - **Going back in a chat** (deleting messages, or swiping back to another opening) makes SPM
   forget the abandoned turns, but rooms and positions in the world engine are not rolled back.
   For a different opening, start a new chat. This needs the `X-SPM-User-Turns` header.
-- **SillyTavern's Summarize extension** bypasses SPM's perception rules: turn it off.
+- **SillyTavern's Summary and Author's Note** are removed from character prompts, because they
+  can't be filtered per character. Turn on `st_passthrough_shared_notes` for chats with no
+  secrets if you want them kept.
 
 ## Group chats and scenario cards
 

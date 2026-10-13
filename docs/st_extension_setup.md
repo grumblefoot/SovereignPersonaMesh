@@ -39,9 +39,10 @@ In SillyTavern, open **API Connections → Chat Completion → Custom (OpenAI-co
 
    The quotes matter: they keep an empty macro an empty string instead of a YAML `null`.
 
-3. Turn off the **Summarize** extension. Its summary is built from the full chat and added to
-   every prompt, which would tell characters about scenes they never perceived. SPM keeps its
-   own memories, and logs a warning if it sees a summary request.
+3. Optional: turn off the **Summarize** extension. SPM keeps its own memories and strips
+   SillyTavern's Summary and Author's Note blocks from character prompts (they are shared text
+   that can't be filtered per character; the `st_passthrough_shared_notes` setting keeps them).
+   With Summarize on, each summary is an extra background model call.
 
 ## Verifying it works
 
