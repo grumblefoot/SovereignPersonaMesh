@@ -431,6 +431,10 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     ephemeral = gen_type in ("quiet", "impersonate")
     if ephemeral:
         logger.info(f"[SPMProxy] Ephemeral generation ({gen_type}): nothing will be persisted.")
+    else:
+        # Which ST action produced this turn (normal, swipe, regenerate, continue): needed to
+        # read aborted/retried turns in the logs (QA N2, 2026-10-12).
+        logger.info(f"[SPMProxy] Generation type: {gen_type or 'unknown'} (session {session_id}).")
 
     # Quiet/impersonate are SillyTavern's own utility generations (summaries, writing
     # the USER's next message). They get NO character framing: wrapping them in the
@@ -981,9 +985,18 @@ The text after </think> must ONLY be narrative and dialogue.
                 "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}]
             }) + "\n\n"
 
+        streamed = 0
         try:
             async for public_chunk in parser.process_token_stream(raw_stream):
+                streamed += len(public_chunk)
                 yield _chunk(public_chunk)
+        except (asyncio.CancelledError, GeneratorExit):
+            # The client (ST) went away mid-turn. Nothing below runs: no reply, memory, GM
+            # or lore. Say so, with timing, so aborts are diagnosable (QA N2, 2026-10-12).
+            logger.warning(f"[SPMProxy] Client disconnected from turn {turn_id} after "
+                           f"{time.time() - t0:.1f}s ({streamed} public chars sent); "
+                           f"the reply was not saved.")
+            raise
         except TurnSuperseded as e:
             # A newer request for this session replaced this queued turn (regenerate);
             # the client has already abandoned this stream. End it quietly, save nothing.
@@ -1181,6 +1194,10 @@ async def memory_stats(
     )
     return JSONResponse(content=result)
 
+# Sessions whose periodic lore review was cancelled (preempted); re-run on the next turn.
+_lore_review_pending: set = set()
+
+
 def _log_task_done(task):
     # A cancelled task is expected: the scheduler preempts background lore when chat
     # needs the backend (decision 13). task.result() on it raises CancelledError, a
@@ -1269,7 +1286,9 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
         task.add_done_callback(_log_task_done)
-    elif user_msg_count > 1 and (user_msg_count - 1) % cadence == 0:
+    elif user_msg_count > 1 and ((user_msg_count - 1) % cadence == 0
+                                 or session_id in _lore_review_pending):
+        _lore_review_pending.discard(session_id)
         recent = full_turn_history[-(cadence * 2):]
         task = asyncio.create_task(
             extractor.periodic_review_rules(session_id, target_char, recent, model=ext_model)
@@ -1277,6 +1296,9 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
         task.add_done_callback(_log_task_done)
+        # A review preempted by the next chat turn used to be lost until the next cadence
+        # turn; now it re-runs on the very next turn (QA N12, 2026-10-12).
+        task.add_done_callback(lambda t: t.cancelled() and _lore_review_pending.add(session_id))
 
 async def _known_rooms_block(session_id: str, target_char: str, gm_mode: str = "full") -> str:
     """Existing rooms for the GM, so it reuses ids instead of inventing duplicates
@@ -1344,11 +1366,31 @@ def _author_direction_block(directions: List[str]) -> str:
             + lines)
 
 
+_SUMMARIZE_PROMPT = re.compile(r"\bsummar(?:y|ize|ise)\b.*\b(?:story|chat|events|facts)\b",
+                               re.IGNORECASE | re.DOTALL)
+_summarize_warned: set = set()
+
+
+def _warn_if_summarize(messages: List[Dict[str, Any]], session_id: str) -> None:
+    """QA N11: ST's Summarize extension summarises the RAW chat and injects the result into
+    every later prompt, for every character: a side channel around gating (in a group
+    chat, characters learn scenes they never perceived). SPM keeps its own memories, so
+    the owner decision is: document "turn Summarize off" and warn once per chat."""
+    last = next((m["content"] for m in reversed(messages) if m.get("role") != "assistant"), "")
+    if session_id in _summarize_warned or not _SUMMARIZE_PROMPT.search(last[-600:]):
+        return
+    _summarize_warned.add(session_id)
+    logger.warning(f"[SPMProxy] SillyTavern's Summarize extension is active for {session_id}. "
+                   "Its summary is built from the raw chat and bypasses SPM's gating; "
+                   "disable it when using SPM (SPM keeps its own memories).")
+
+
 async def _ephemeral_passthrough(request: "ChatCompletionRequest", session_id: str):
     """Quiet/impersonate: SillyTavern's prompt as-is to the backend; nothing persisted.
-    Still scheduled (P0 chat lane), still budget-clamped, and reasoning is stripped."""
+    Still scheduled (utility lane, QA N12), still budget-clamped, and reasoning is stripped."""
     settings = get_settings_manager().get_settings()
     messages = [{"role": m.role, "content": m.content} for m in request.messages if m.content]
+    _warn_if_summarize(messages, session_id)
     # SillyTavern's Response Length is the ceiling here (it is the user's own
     # utility call); the window clamp still applies on top.
     ceiling = request.max_tokens or settings.get("backend_max_tokens", 2048)
@@ -1359,7 +1401,7 @@ async def _ephemeral_passthrough(request: "ChatCompletionRequest", session_id: s
         return lemonade_client.generate_stream(
             messages=messages, model=request.model,
             temperature=request.temperature or 0.7, max_tokens=max_tokens,
-            stop=None, job_kind="chat", session_id=session_id)
+            stop=None, job_kind="utility", session_id=session_id)
 
     if request.stream is False:
         parser = MonologueStreamParser(max_public_tokens=request.max_tokens or 10_000, initial_state=1)

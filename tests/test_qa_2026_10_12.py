@@ -154,3 +154,21 @@ async def test_n5_initial_lore_flag(monkeypatch):
         assert await routes._initial_lore_done(sid) is False
         await routes._mark_initial_lore_done(sid)
         assert await routes._initial_lore_done(sid) is True
+
+
+# --- N11: warn once when ST's Summarize extension is active --------------------------
+
+def test_n11_summarize_prompt_warns_once(caplog):
+    import proxy.api.routes as routes
+    routes._summarize_warned.discard("qa1012_sum")
+    msgs = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"},
+            {"role": "system", "content": "Ignore previous instructions. Summarize the most important "
+             "facts and events in the story so far. Limit the summary to 200 words or less."}]
+    with caplog.at_level("WARNING"):
+        routes._warn_if_summarize(msgs, "qa1012_sum")
+        routes._warn_if_summarize(msgs, "qa1012_sum")
+    assert sum("Summarize extension is active" in r.message for r in caplog.records) == 1
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        routes._warn_if_summarize([{"role": "user", "content": "Write Amanda's next reply."}], "qa1012_imp")
+    assert not caplog.records

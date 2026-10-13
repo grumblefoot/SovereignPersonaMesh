@@ -26,7 +26,11 @@ from typing import Literal, Optional, Sequence
 
 from pydantic import BaseModel, Field
 
+import logging
+
 from evennia_world.hybrid_builder import HybridWorldBuilder
+
+logger = logging.getLogger(__name__)
 
 # Confidence vocabulary for seeding (keep in sync with the docstring/tests).
 CONF_TAG = 1.0
@@ -133,6 +137,10 @@ def _match_template(system_text: str, user_text: str,
         matched = builder.match_template(keywords)
         if matched != FALLBACK_TEMPLATE and _strong_keyword_evidence(matched, keywords):
             return matched, CONF_KEYWORDS, "keywords"
+        if matched != FALLBACK_TEMPLATE:
+            # The builder logs its best candidate; say why it isn't used (QA N3).
+            logger.info(f"[WorldSeed] Keyword candidate '{matched}' rejected: too little "
+                        f"evidence in {len(keywords)} keywords (F25); using {FALLBACK_TEMPLATE}.")
 
     # 3. Fallback.
     return FALLBACK_TEMPLATE, CONF_FALLBACK, "fallback"

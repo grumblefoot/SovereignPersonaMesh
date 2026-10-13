@@ -65,7 +65,7 @@ class HybridWorldBuilder:
             return "generic_void"
 
         logger.info(
-            f"[HybridWorldBuilder] Matched template={best_key} "
+            f"[HybridWorldBuilder] Best keyword candidate template={best_key} "
             f"score={best_score:.2f} for keywords={keywords}"
         )
         return best_key

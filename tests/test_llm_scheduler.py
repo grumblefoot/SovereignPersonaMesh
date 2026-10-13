@@ -282,3 +282,38 @@ async def test_task_done_logger_handles_a_preempted_task(caplog):
     await asyncio.gather(t, return_exceptions=True)
     _log_task_done(t)                       # must not raise
     assert "preempted by chat" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_utility_never_supersedes_the_sessions_running_turn():
+    """QA N12 (2026-10-12): ST's quiet Summarize request ran as 'chat' for the same
+    session, so arriving mid-turn it would cancel the user's real reply as a regenerate."""
+    backend, sched, client = make()
+    turn = asyncio.create_task(_hold_slot(client, kind="chat", session="sX", tag="v1"))
+    await _slot_taken(backend, "v1")
+    backend.gate("summary").set()
+    summary = asyncio.create_task(run_job(client, tag="summary", kind="utility", session="sX"))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert sched.counters["superseded"] == 0 and sched.counters["preempted"] == 0
+    assert not turn.done() and not summary.done()
+    turn.cancel()
+    await asyncio.gather(turn, return_exceptions=True)
+    assert await summary == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_utility_does_not_preempt_running_lore():
+    """QA N12: the summary request evicted SPM's periodic lore review."""
+    backend, sched, client = make()
+    lore = asyncio.create_task(_hold_slot(client, kind="lore", session="sX", tag="lore"))
+    await _slot_taken(backend, "lore")
+    backend.gate("summary").set()
+    summary = asyncio.create_task(run_job(client, tag="summary", kind="utility", session="sX"))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert sched.counters["preempted"] == 0
+    assert not lore.done()
+    lore.cancel()
+    await asyncio.gather(lore, return_exceptions=True)
+    assert await summary == ["a", "b"]
