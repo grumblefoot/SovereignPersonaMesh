@@ -1,262 +1,37 @@
-# Sovereign Persona Mesh (SPM) — Known Issues & Feature Backlog
+# Known issues
 
-**Last Updated:** 2026-10-03  
-**Status:** Defects found in the 2026-10-03 re-assessment are fixed (see [§ 2026-10-03 re-assessment](#-2026-10-03-re-assessment)). Spec gaps and security items remain **open**; see [docs/STATE_ASSESSMENT_2026-10-03.md](docs/STATE_ASSESSMENT_2026-10-03.md).
+Limitations you may run into with the current release. Reports and fixes are welcome.
 
-> IDs BUG-008 to BUG-011 were each used twice (August dashboard fixes and September items). The September items are renumbered BUG-012 to BUG-015 below.  
+## Security
 
----
+- **No authentication.** The proxy, its admin dashboard (including factory reset, shutdown and
+  settings) and the world engine accept requests from anyone who can reach them. They listen on
+  all interfaces with CORS open, and the dashboard's thought stream shows characters' private
+  reasoning. Run SPM only on a trusted machine or network.
 
-## 🐛 Defect Resolution & Feature Log
+## Chat behaviour
 
-### 1. [BUG-001] Session Identifier Hardcoded to Fallback (`st_user_example_assistant`)
-- **Status:** 🟢 RESOLVED (`proxy/api/routes.py`)
-- **Resolution:** Upgraded `_extract_target_char()` with regex character card parsing (`[Arvenia's Personality=...]`, `[Character: Arvenia]`, etc.). Session ID dynamically resolves to `st_user_arvenia` upon new conversation start.
+- **Occasional cut-off turns.** Now and then a turn ends a few seconds in with no reply, and
+  regenerating works. SPM logs these as `Client disconnected from turn …`; the cause is still
+  being investigated.
+- **Withheld replies.** When the model writes only its planning notes, SPM withholds the reply
+  and shows `[SPM: the model returned only planning notes…]`. That notice stays in the
+  SillyTavern chat as a message; delete it or regenerate.
+- **Going back in a chat** (deleting messages, or swiping back to another opening) makes SPM
+  forget the abandoned turns, but rooms and positions in the world engine are not rolled back.
+  For a different opening, start a new chat. This needs the `X-SPM-User-Turns` header.
+- **SillyTavern's Summarize extension** bypasses SPM's perception rules: turn it off.
 
----
+## Group chats and scenario cards
 
-### 2. [BUG-002] Thought Viewer SSE Stream Does Not Auto-Update Live Messages
-- **Status:** 🟢 RESOLVED (`proxy/ui/index.html`)
-- **Resolution:** Implemented SSE auto-reconnect on error, auto-scroll to bottom of stream box (`scrollTop = scrollHeight`), and real-time DOM rendering without manual page refreshes.
+- **Group chats:** you can't yet direct a scene to a room you are not in; narration is always
+  your action at your location; a character joining a group is placed with you rather than where
+  the story puts them.
+- **Scenario cards** (one card voicing a whole world): the narrator follows you, but characters
+  inside the scenario (NPCs) are not tracked by SPM yet, so they all share the narrator's
+  knowledge.
 
----
+## Background work
 
-### 3. [BUG-003] Thought Viewer Incorrectly Names Monologue Stream (`INNER MONOLOGUE [EXAMPLE_ASSISTANT]`)
-- **Status:** 🟢 RESOLVED (`proxy/ui/index.html` & `proxy/core/telemetry.py`)
-- **Resolution:** Stream headers dynamically label active character names (e.g. `💭 INNER MONOLOGUE [ARVENIA]`) based on extracted character metadata.
-
----
-
-### 4. [BUG-004] Vibe Profiler Gauges Are Static During Stream Generation
-- **Status:** 🟢 RESOLVED (`proxy/ui/index.html`)
-- **Resolution:** Added real-time text analyzer (`updateVibeProfiler()`) computing Dialogue/Action word ratio, verbosity baseline, and perspective classification (First Person vs Third Person).
-
----
-
-### 5. [BUG-005] Spatial Gating Map Container Fails to Render
-- **Status:** 🟢 RESOLVED (`proxy/ui/index.html`)
-- **Resolution:** Implemented `fetchSpatialMap()` polling world engine state to render room layout grid (`Dungeon Cellar`, `Tavern Common`), character locations (`[Arvenia]`, `[User]`), and acoustic gating badge (`DIRECT`).
-
----
-
-### 6. [FEAT-006] Multi-Session Subtab Support in Thought Viewer
-- **Status:** 🟢 IMPLEMENTED (`proxy/ui/index.html`)
-- **Resolution:** Added interactive Session Selector filter dropdown in Thought Viewer (`All Sessions` vs specific session/character IDs).
-
----
-
-### 7. [BUG-007] RAG Score Inspector Fails to Refresh Dynamically
-- **Status:** 🟢 RESOLVED (`proxy/ui/index.html`)
-- **Resolution:** Added `updateRAGInspector()` rendering formula breakdown `(1 - cos) * e^(-λt) * (1 + imp/10)` and live calculated scores.
-
----
-
-### 8. [BUG-008] Data Management "Execute Factory Reset" Button Ineffective
-- **Status:** 🟢 RESOLVED (`proxy/main.py` & `proxy/api/admin_routes.py`)
-- **Resolution:** Added asyncpg connection pool initialization on startup event in `proxy/main.py`, injecting `_admin_db_pool` into `admin_routes.py`. `DELETE /admin/api/v1/factory_reset` truncates all tables and returns HTTP 200 OK success.
-
----
-
-### 9. [BUG-009] Spatial Gating Map Not Resetting to Empty State
-- **Status:** 🟢 RESOLVED (`proxy/core/telemetry.py`, `proxy/rag/import_worker.py`, `proxy/ui/index.html`)
-- **Resolution:** Updated telemetry and UI renderer to display an empty state placeholder (`🗺️ No spatial locations discovered yet...`) with an `UNBOUND` badge on reset, dynamically populating nodes as chat turns execute or batch imports process.
-
----
-
-### 10. [BUG-010] Thought Stream UI Persists Events After Factory Reset
-- **Status:** 🟢 RESOLVED (`proxy/core/telemetry.py` & `proxy/ui/index.html`)
-- **Resolution:** Added `{"event": "reset"}` SSE broadcast on factory reset. Browser JS listens for reset events, clearing in-memory thought arrays and resetting DOM containers.
-
----
-
-### 11. [BUG-011] Monologue Internal Thoughts & Malformed Tags Bleed into Canon Chat
-- **Status:** 🟢 RESOLVED (`proxy/core/stream_parser.py`)
-- **Resolution:** Implemented `OPEN_TAG_REGEX` and `CLOSE_TAG_REGEX` regex pattern matchers handling malformed XML tags (`` `<ctrl94   ``), missing closing brackets (`</ctrl94Arvenia`), prompt directive echoes (`"You MUST begin your response...`), and line-buffered markdown scratchpad filtering (`*   *Thought:*`, `Check:`, `*(Self-Correction)*`).
-
----
-
-## 📋 Remediation Status Matrix
-
-| Priority | Issue ID | Component | Status | Verification |
-|---|---|---|---|---|
-| P0 | BUG-001 | Proxy Session Resolution | 🟢 FIXED | Verified `st_user_arvenia` |
-| P0 | BUG-002 | Admin Dashboard SSE Stream | 🟢 FIXED | Live SSE auto-scroll |
-| P0 | BUG-003 | Telemetry Character Tagging | 🟢 FIXED | Dynamic `[ARVENIA]` headers |
-| P0 | BUG-011 | Monologue Stream Parser | 🟢 FIXED | 100% clean canon output |
-| P1 | BUG-008 | Admin API Factory Reset | 🟢 FIXED | HTTP 200 OK table truncation |
-| P1 | BUG-009 | Spatial Gating Map Reset | 🟢 FIXED | Empty placeholder + dynamic nodes |
-| P1 | BUG-010 | Thought Stream SSE Reset | 🟢 FIXED | Auto-flush on reset |
-| P1 | BUG-004 | Vibe Profiler Gauges | 🟢 FIXED | Live word/ratio analyzer |
-| P1 | BUG-005 | Spatial Gating Map | 🟢 FIXED | Active room grid visualizer |
-| P1 | BUG-007 | RAG Inspector Telemetry | 🟢 FIXED | Live formula breakdown |
-| P2 | FEAT-006| Web Admin Session Filter | 🟢 FIXED | Session selector dropdown |
-
----
-
-## 🔮 Design Discussions & Future Work
-
-### [DESIGN-001] "Metagaming" & Telepathy / Internal Thought Filtering
-**Status:** 🟡 NOT STARTED (design only).
-
-**Problem:** Currently, SillyTavern sends user actions, spoken dialogue, and *internal thoughts* (usually formatted with asterisks) in a single plaintext block. Because this entire block is processed as the `sensory_feed`, characters (even non-telepathic ones) can "read" the user's thoughts and react to them, breaking RP immersion.
-
-**Challenges:**
-1. **Formatting is Unpredictable:** Regex filters are fragile because users employ vastly different formatting styles (or no formatting at all) for actions vs. thoughts.
-2. **Performance Constraints (SLA):** Adding a second LLM in the critical path (User -> Scrubber LLM -> SPM -> Main LLM) to clean the text would double the Time-to-First-Token (TTFT) and violate the <5ms proxy SLA, especially on edge hardware.
-
-**Proposed Architecture (Asynchronous Background Scrubber):**
-- To preserve TTFT, the SPM immediately forwards the *raw* user text to the Main LLM for the active turn (allowing slight metagaming in the immediate response, which is often acceptable or unnoticed).
-- **Concurrently**, an asynchronous background task (similar to the `ImportWorker`) dispatches the raw text to a tiny, fast model (e.g., `gemma-2-2b` or smaller) via the backend.
-- The scrubber model's prompt: *"Extract only observable physical actions and spoken words. Remove all internal thoughts."*
-- **Result:** Future memory retrievals for this event will contain *only* the physical actions, preventing the character from remembering or acting upon the user's internal thoughts in future turns.
-
----
-
-### [DESIGN-002] State of the World Updates & Auto-Populating GM Rules
-**Status:** 🟢 IMPLEMENTED (lore extractor, pending-rules approval panel and cadence settings in the admin UI). Fixed for reasoning models on 2026-10-03 (BUG-024). Still open: lore rules are per character, not per session, so they carry across chats (OPEN-007).
-
-**Problem:** Currently, GM rules (`invariants` and `game_over` conditions) must be manually defined via SQL or the Admin UI. This creates friction for users wanting zero-config setup for imported chats or new characters. Furthermore, static rules prevent the scenario from organically evolving (e.g., if an invariant states a character is in a castle, but they later leave, the GM will falsely flag violations).
-
-**Proposed Architecture (Human-in-the-Loop Auto-Extraction):**
-1. **Initial Extraction (Background Task):** When a new chat or import begins, an asynchronous background task runs the character card and/or chat history through the LLM with an extraction prompt to generate candidate `invariants` and `game_over` rules.
-2. **Admin Dashboard Approval:** To prevent "poisoning the well" with hallucinated invariants, extracted rules are set to `pending` and presented in the SPM Admin UI for the user to approve, edit, or reject before they become active.
-3. **Periodic State of the World Reviews:** To allow characters and the narrative to grow (e.g., character arcs like Bilbo or Sun Wukong), Hermes or a background LLM task periodically reviews the recent chat history (e.g., every 15 turns). It proposes updates to the active invariants to reflect the evolving world state, ensuring the GM remains a dynamic referee.
-
-### Issue: LLM GM_Action Bleedthrough (Parser Vulnerability)
-**Date:** 2026-09-07
-**Status:** 🟢 RESOLVED (`proxy/core/stream_parser.py` & `proxy/api/routes.py`). Reopened and fixed again 2026-10-03 as BUG-021 (actions written *after* `</think>` with Qwen3.8-27B).
-**Description:**
-The LLM frequently ignores closing tags (`</think>`) and transition markers (`[SCENE START]`, `---`) when finishing its scratchpad. Because our `MonologueStreamParser` rigidly waits for a closing tag to switch states, it remained in the monologue state until EOF. This triggered a fail-safe that dumped the entire buffer, causing raw `[GM_ACTION]` JSON tags to bleed into the frontend chat interface. Furthermore, the LLM sometimes wrote planning notes (e.g., "I need to describe...") after the closing tag.
-
-**Resolution (Surgical Pivot Parser & Dual-Layer Filtering):**
-1. **Surgical Pivot Parser:** Implemented an EOF fallback in `stream_parser.py`. If the stream finishes without closing `</think>`, it scans the buffer for the *last* `[GM_ACTION]` tag, designating everything before it as monologue, and yielding only text after the pivot.
-2. **Prompt Directive Tuning:** Stricter rules in `proxy/api/routes.py` enforcing no planning outside `<think>` tags.
-3. **Aggressive Regex Heuristics:** Expanded `_strip_monologue_bleed()` to catch "I need to", "The user is", and "Room Details". 
-
----
-
-### Issue: Low Unit Test Coverage (Risk of Regression)
-**Date:** 2026-09-07
-**Status:** 🟢 RESOLVED (TDD Sprint)
-**Description:**
-The SPM project needed higher test coverage to prevent regressions and safely allow refactoring, particularly across edge cases in `routes.py`, `stream_parser.py`, and `telemetry.py`. The baseline coverage was insufficient for an enterprise-grade agent orchestration engine.
-**Resolution (Test Driven Development Push):**
-1. **Targeted Coverage Expansion:** Added comprehensive unit tests targeting missing branches in `evennia_world/app.py`, `proxy/api/routes.py`, `proxy/core/stream_parser.py`, `proxy/core/telemetry.py`, and `proxy/backend_client/lemonade_client.py`.
-2. **Mocking External Dependencies:** Leveraged `AsyncMock` and FastAPI `TestClient` to test edge cases, error fallbacks, and 404/500 HTTP failures in the backend clients.
-3. **90% Coverage Target Reached:** 313 unit/integration tests now execute and pass across the repo. Test coverage successfully increased to exactly 90% (2283 statements).
-
----
-
-### Issue: Sleep Cycle Consolidation Integration Test Gap
-**Date:** 2026-09-07
-**Status:** 🟢 RESOLVED 2026-10-03 (BUG-018/019/020): failure-path DB tests added, and the request format was verified against live Lemonade. The fallback string described below no longer exists; a failed summary now writes and deletes nothing.
-**Description:**
-Despite achieving 90% test coverage and having unit tests for `scripts/sleep_cycle.py`, a silent regression occurred in production. The `MemoryConsolidationWorker` incorrectly appended an extra `/v1/` to the LLM backend URL, causing a 404 HTTP error. Because the exception handler defaulted to a hardcoded fallback string, generic fallback memories were persisted as `is_core_memory = TRUE` in the PostgreSQL database.
-**Resolution / Next Steps:**
-1. **Fix Deployed:** The URL concatenation logic was patched (V0.4.1).
-2. **Action Item:** Design a robust End-to-End integration test for the sleep cycle that runs against a live or perfectly mocked Lemonade Server endpoint to catch routing layer errors, rather than blindly mocking the `httpx.AsyncClient` which masked this 404 URL pathing bug.
-
----
-
-### [DESIGN-003] Global Strings Refactor (Hardcoded String Elimination)
-**Date:** 2026-09-07
-**Status:** 🟡 PARTIAL. `core/resource_manager.py` and the `res/strings` files exist; SQL, lore-extractor and sleep-cycle strings have moved. Prompts and errors in `proxy/api/routes.py` remain inline. Needs re-scoping.
-**Description:**
-The SPM codebase currently relies on a massive amount of hardcoded strings scattered throughout the proxy routing, prompts, and world engine (e.g., `proxy/api/routes.py`, `proxy/rag/prompt_builder.py`, `evennia_world/app.py`, `scripts/sleep_cycle.py`). This creates a brittle architecture where changing a prompt rule, logging format, or error message requires digging through core logic, increasing the risk of parser bugs or regressions.
-**Proposed Architecture (Resource Manager):**
-1. **Centralized Assets:** Move all user-facing text, LLM prompts, fallback messages, and API error strings into a centralized `res/strings/` JSON/YAML resource directory.
-2. **String Manager:** Implement a `ResourceManager` to load these at runtime and expose them via dot-notation (e.g., `strings.prompts.sleep_cycle_template`, `strings.errors.unauthorized`).
-3. **Rollout:** Since the repository has hit 90% test coverage, it is now mathematically safe to execute this large-scale refactor with a safety net protecting the business logic.
-
----
-
-### [BUG-012] GM Lore Extraction Over-Targets User Persona (was the second BUG-008)
-- **Status:** 🟢 RESOLVED 2026-10-03 (`62254e4`). `_strip_user_persona` in `routes.py` drops ST's persona system message before extraction (user name read from the main prompt). Verified live: 7 rules for "Mira Vale", none about the user.
-- **Description:** SillyTavern bundles the User Persona into the `system` role alongside the Character Card and Scenario. Consequently, `LoreExtractionWorker` processes the User Persona as part of the GM context and occasionally extracts rules regarding the User.
-- **Current Workaround:** Updated `INITIAL_RULES_PROMPT` to explicitly instruct the LLM to ignore the User/Player persona.
-- **Proposed Fix:** Implement a Regex parser in `routes.py` to physically filter out the `[User's Persona]` block from `request.messages` before passing it to the extraction LLM.
-
----
-
-### [BUG-013] [ACTIVE LORE] Bleedthrough From Previous Sessions (was the second BUG-009)
-- **Status:** 🟢 MITIGATED (`proxy/api/admin_routes.py`). Factory reset clears lore. The root cause (lore tables have no `session_id`) is OPEN-007.
-- **Description:** Starting a "fresh chat" in SillyTavern does not clear the SPM database. The `csa_lore_rules` table retains previously 'active' rules, causing old "hardcoded" lore to bleed into new chats.
-- **Resolution:** Updated the `/factory_reset` endpoint to dynamically discover and `TRUNCATE` all `csa_lore_rules_%` tables alongside `csa_memory_%` tables. Users can now click Factory Reset in the Admin UI to safely wipe all character lore and start completely fresh.
-
----
-
-### [BUG-014] No Rule Extraction on Fresh Chat (Turn 1) (was the second BUG-010)
-- **Status:** 🟢 RESOLVED (`proxy/rag/lore_extractor.py`). With reasoning models it still produced nothing until BUG-024 (2026-10-03).
-- **Description:** The LoreExtractionWorker fails to generate new overarching scenario rules on Turn 1 of a fresh chat, despite having the full character card and scenario in the system prompt.
-- **Resolution:** Completely overhauled the `INITIAL_RULES_PROMPT`. Added explicit targeting for "Core Identity" elements (Character Goals, Motivations, Deep Personality Traits, and Scenario Parameters) and provided strict examples so the LLM knows exactly what to look for when initializing a new character, even if no conversational context has occurred yet.
-
----
-
-### [BUG-015] Spatial Gating Map Defaults to 4-Room `dungeon_cellar` (was the second BUG-011)
-- **Status:** 🟢 RESOLVED by `08d6bd2` (the world now starts from the empty `dynamic` template; rooms come from `GM_ACTION: CREATE_ROOM`). Spec note: LLM-created rooms conflict with PRD 11.1.1 (template-only world building). See OPEN-005.
-- **Description:** The spatial gating matrix initializes 4 locations and places the user in 'The Cellar' by default, ignoring the actual context of the first interaction.
-- **Proposed Fix:** Modify `_ensure_world` in `evennia_world/app.py` to dynamically resolve the initial template based on the first interaction's context, rather than hardcoding `template_key="dungeon_cellar"`.
-
----
-
-### [OPS-001] SPM depends on the spm-demo-mvp demo (make SPM standalone)
-- **Status:** 🟢 RESOLVED 2026-10-03 (`d36cfe4`) for steps 1-4: `start_spm.sh`, `scripts/run_e2e_test.py` and `spm-sleep-cycle.service` use `.venv` (the full suite passes on it), the service runs as `python -m scripts.sleep_cycle`, and the model ids point at Lemonade GGUF builds. **Step 5 (retire `spm-demo-mvp` and the demo docs) is left to the owner;** nothing in SPM uses it any more.
-- **Description:** `spm-demo-mvp` was the proof-of-concept demo built before the SRD. It isn't meant to be part of SPM, but SPM still runs on it in two places:
-  - `~/.local/bin/start_spm.sh` (also symlinked as `../start_spm.sh`) sets `VENV_PYTHON=.../spm-demo-mvp/venv/bin/python` to start the proxy and the Evennia world engine.
-  - `scripts/run_e2e_test.py` (lines 34 and 37) runs `../spm-demo-mvp/venv/bin/python` and `pytest`.
-  - Related: `spm-sleep-cycle.service` (user timer, daily 03:00) runs system `python3`, which has no `asyncpg`, so every run fails (last failure 2026-09-25 10:45, `ModuleNotFoundError`).
-- **Proposed Fix:**
-  1. Use SPM's own `.venv` (Python 3.14.5). It already has every package in `requirements.txt` (checked 2026-09-26).
-  2. Repoint `start_spm.sh`, `scripts/run_e2e_test.py` and the `spm-sleep-cycle.service` `ExecStart` to `.venv/bin/python`.
-  3. Get SPM working again against Lemonade 11.9. The Gemma models it requests (`LLM_MODEL_NAME` / `CONSOLIDATION_MODEL_NAME`) failed with `slots_pinned_error` on 2026-09-25 while Flash-Next was pinned (since fixed: nothing is pinned any more), and the old `google/gemma-4-*` ids no longer exist. Repoint them to Lemonade's GGUF Gemma ids (e.g. `Gemma-4-26B-A4B-it-GGUF` for chat, `Gemma-4-E4B-it-GGUF` for consolidation), not `hermes-coder`. The old `google/gemma-4-*` vLLM checkpoints are being deleted (owner decision 2026-09-26). Since 2026-09-26 nothing is pinned: Lemonade swaps LLMs on demand, so a request for a Gemma model simply evicts Flash-Next and loads Gemma (~6 s for E4B), and Hermes' next `hermes-coder` request swaps back (~15 s). No manual unload needed. See the status banner in `playbook.md`.
-  4. Run the proxy, the Evennia engine and the e2e test with `spm-demo-mvp` moved out of the way, then commit.
-  5. Only then retire `spm-demo-mvp` (5.1 GB venv) and the demo docs `~/Desktop/Experiments/Hermes/PLAYBOOK_SPM.md` and `SPM_DEMO_SUMMARY.md`.
-
----
-
-## 🩺 2026-10-03 re-assessment
-
-The project was paused from about 2026-09-09. A full re-assessment (code, live stack, PRD/SRD) is in [docs/STATE_ASSESSMENT_2026-10-03.md](docs/STATE_ASSESSMENT_2026-10-03.md). Each fix below has regression tests. Suite: **431 passed, 1 skipped** against a throwaway `spm_test` database.
-
-### Fixed
-
-| ID | Issue | Commit |
-|---|---|---|
-| BUG-016 | Test suite wrote the live `config/config.json` (`BACKEND_LLM_URL` → `:9999`), created rooms in the live Evennia and sent real requests to Lemonade | `7c4cc4c` |
-| BUG-017 | Test suite used the live `litellm_postgres`: `test_factory_reset_wipes_all_state` **truncated every character's memories on each run**, and `test_run_processes_all_tables` planted "I processed a record." core memories. `init_db.sql` also failed on a fresh database (nested `format()`) | `9959e28` |
-| BUG-018 | Sleep cycle stored a canned fallback as a permanent core memory on failure, then deleted unsummarised logs | `86e635e` |
-| BUG-019 | Consolidated core memories were unreachable (wrong `session_id`, no embedding) | `86e635e` |
-| BUG-020 | Sleep cycle service failed nightly (system python, `No module named 'core'`, retired model id, Gemma reasoning used up the 256-token budget, prompt echo) | `d36cfe4` |
-| BUG-021 | `[GM_ACTION]` lines and planning text written after `</think>` leaked to SillyTavern; duplicate dispatch gave `409 Conflict` | `93acb5b` |
-| SEC-001 | SQL injection: message `name` formatted into table names | `9fa3a70` |
-| BUG-022 | Multi-word character names ("Mira Vale") produced invalid table names, so no memories were stored | `9fa3a70` |
-| BUG-023 | Model resolution fell back to `available[0]` (an image model, or `hermes-coder`); retired `google/gemma-4-*` defaults | `d72f523` |
-| BUG-024 | Lore extraction kept reasoning prose before the JSON, so reasoning models extracted 0 rules (and took ~2.5 min) | `15537b4` |
-| BUG-025 | The LLM-outage fallback invented an in-character reply and saved it as memory (it also produced the playbook's "1.9 ms TTFT") | `c03bb13` |
-| BUG-026 | Blackout bypass always said "*Luna hears…*" | `c03bb13` |
-| OPS-002 | Proxy ran with `reload=True` in production (hung on edits while the dashboard was open); rotating log handler never attached | `e04955d` |
-| BUG-027 | 128 GB Strix Halo (MemTotal 124.4 GiB) detected as PERFORMANCE tier | `33a38ff` |
-| OPS-003 | Deprecated FastAPI `on_event` hooks | `f6b6a44` |
-
-### Open (owner decisions needed; details and rationale in the assessment §5)
-
-| ID | P | Item |
-|---|---|---|
-| OPEN-001 | Deferred | **Owner decision 2026-10-03: return to this later; not a priority while SPM is dev-only on the homelab network.** **No authentication** on admin routes (factory reset, shutdown, config, lore) or the Evennia reset; `CORS *`; `0.0.0.0` binds; the thought SSE exposes private monologues to the network. |
-| OPEN-002 | P0 | Plan: [docs/plans/embeddings.md](docs/plans/embeddings.md). **Embedder is a random-vector stub** (`scripts/onnx_embedder.py`), so RAG recall and lore triggers don't work. Choose a model and dimension (3584 rules out HNSW). |
-| OPEN-003 | P0 | Plan: [docs/plans/gating.md](docs/plans/gating.md). **Sensory gating is inert by default**: actor is always `user`/`speak`, the raw last-15 history goes to the LLM, there is no whisper/move detection, and the ambient-log filter is unused. |
-| OPEN-004 | — | 🟢 CLOSED (Sprints 2-4): `proxy/core/llm_scheduler.py` serialises every LLM call — strict priority (chat > embed > lore > sleep), coalescing, caps/deadlines, slot-held-for-stream, chat preempts background, regenerate supersedes its session's turn (decision 13), and the sleep cycle now runs through the P3 lane inside the proxy (decision 15). Telemetry: `GET /admin/api/v1/scheduler`. Remaining (optional): model-affinity batching, circuit breaker. |
-| OPEN-005 | — | 🟢 CLOSED (Sprint 3): kept, constrained, optional — see [docs/SPEC_DEVIATIONS.md](docs/SPEC_DEVIATIONS.md) SD-01. `gm_actions_mode` (`off`/`move_only`/`full`) gates the prompt directive and dispatch; proposals pass a deterministic validator (`proxy/core/gm_actions.py`) before touching the engine. |
-| OPEN-006 | P0 | Part of the gating plan. Spatial matrix drift: degraded extends to 20 ft (spec 15); closed doors and metal partitions don't black out; adjacency reads the global world, not the session's. |
-| OPEN-007 | — | 🟢 CLOSED (Sprint 4, `7ccc7ce`): lore rules carry `session_id`/`scope`; extraction stamps the chat, retrieval filters to (this chat OR canon), admin can promote a rule to canon, session delete removes the chat's rules. Legacy rows live in the `legacy_global` chat bucket. |
-| OPEN-008 | — | 🟢 CLOSED (Sprint 4, P0-P2+UI): `proxy/rag/budget.py` — max_tokens clamped to the window (`backend_max_tokens` is now a ceiling), PRD-split allocator trims memories/lore/history (card and latest user turn never trimmed; oversized card refuses visibly, SD-03), per-model estimates calibrated from streamed usage, admin UI fields. Remaining (future): cost accounting/caps for paid APIs, rolling summaries (P4), remote tokenize endpoints. |
-| OPEN-009 | P2 | Tick is global, increments on every action (including regenerations) and isn't reloaded at startup, contradicting the playbook's "user-message clock". |
-| OPEN-010 | P2 | Evennia down → raw HTTP 500 from the chat route (give it the same treatment as the LLM-outage fix). |
-| OPEN-011 | P3 | Streamed replies can start with blank lines; dead code (`_gather_public_response`, vibe-profiler style card, unused ST parser import). |
-| OPEN-012 | ✅ Done | Live database reset 2026-10-03 with owner approval (dropped and rebuilt from `scripts/init_db.sql`; backups in `~/Desktop/Experiments/SillyTavern/db-backups/`). |
-| OPEN-013 | P1 | World engine: real Evennia vs the FastAPI stand-in. Evaluation: [docs/plans/world_engine.md](docs/plans/world_engine.md). |
-| OPEN-014 | v0.5 | Group scenes: no way to direct the scene to a room the user is not in; narration is always the user's action at the user's location; characters joining a group are placed with the user rather than where the story puts them; the 1:1 skip rule can silence a group member who perceived something else; `[move:Actor->PLACE]` moves the user, not the actor. Spec: [docs/plans/group_scenes_v0.5.md](docs/plans/group_scenes_v0.5.md). |
-| OPEN-015 | P3 | Ambient-log bypass filter is never called (re-checked 2026-10-06; first noted in the 2026-10-03 assessment). `ObserverInferenceGatingFilter` (`proxy/core/sensory_filter.py`) is imported in `proxy/api/routes.py` but never invoked. When a character's turn is skipped as out of earshot ("*X hears only muffled sounds…*"), gating plan §7 says SPM should commit an ambient memory row for them with no inference; today it commits none. Impact is limited: the perception log still records the blackout, and gated history shows a gap marker, but the character's long-term memory has no trace of that stretch. Decision 2026-10-06: don't wire the templated filter; replace it in v0.5 with a lazy elapsed-context line at re-entry (zero extra model calls) and remove the dead import. Design: [docs/plans/offscreen_life_and_world_processes.md](docs/plans/offscreen_life_and_world_processes.md). |
-| OPEN-016 | v0.5 | Scenario cards (one card voicing many characters, often with a large lorebook) are modelled as a single embodied character. NPCs inside the scenario have no position, perception or memory, so gating can't separate them (QA O3); the narrator is placed in a room and can be left behind when the player moves (QA F26; needs a v0.4 mitigation). Design need: [docs/plans/scenario_cards_v0.5.md](docs/plans/scenario_cards_v0.5.md). |
-| OPEN-017 | P2 | **Turns cut off by the client ~0.2–1.2 s after the model starts generating** (QA N2, 2026-10-12: 6 of ~25 attempts, all retried successfully). Not a human Stop: the disconnect tracks prefill end (3–7.5 s). No SPM error. Diagnostics added (client-disconnect and generation-type log lines); next: reproduce with a test chat, compare which socket closes first, capture ST's browser console. Details: [docs/QA_SESSION_2026-10-12_mha_tester.md](docs/QA_SESSION_2026-10-12_mha_tester.md). |
-| OPEN-018 | P3 | The SPM "reply withheld" notice is streamed as chat text, so it stays in ST's chat as an assistant message (QA N15). Consider an ST-visible error instead. |
+- **Memory consolidation** (the "sleep cycle") runs inside the proxy at 04:00, so only when
+  the proxy is running at that time.

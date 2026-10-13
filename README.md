@@ -1,59 +1,121 @@
 # Sovereign Persona Mesh (SPM)
 
-The **Sovereign Persona Mesh (SPM)** is an edge-computing, multi-agent roleplay orchestration system designed to eliminate "omniscient character" syndrome. By introducing strict spatial gating, private memory isolation, and deterministic routing, SPM ensures that characters can only perceive what their physical sensory organs can access.
+SPM is a proxy that sits between [SillyTavern](https://github.com/SillyTavern/SillyTavern) and a
+local LLM server and stops characters from being omniscient. Each character only knows what it
+could actually perceive: a world engine tracks where everyone is, conversations are gated by
+distance and walls, and every character keeps its own private memories.
 
-> **Status (2026-10-03):** working end to end after a re-assessment; several design gaps remain open (no authentication, stub embedder, inert-by-default gating). Read [docs/STATE_ASSESSMENT_2026-10-03.md](docs/STATE_ASSESSMENT_2026-10-03.md) and [known_issues.md](known_issues.md) before relying on it.
+## How it works
 
-## Architecture Overview
+- **SPM proxy (port 5050):** an OpenAI-compatible endpoint for SillyTavern. For each turn it
+  works out who perceived what, builds the character's prompt from *their* history and
+  memories (not the raw transcript), strips the model's private reasoning from the reply, and
+  applies world changes the model proposes (new rooms, characters moving), after validation.
+- **World engine (port 4005):** a small FastAPI service holding rooms, positions, doors and
+  walls for each chat.
+- **PostgreSQL + pgvector (port 5432):** per-character memories, perception logs and lore rules.
+- **Your LLM server:** any OpenAI-compatible server. Developed against
+  [Lemonade Server](https://github.com/lemonade-sdk/lemonade) on port 13305.
+- **Admin dashboard:** `http://localhost:5050/admin` (memories, world map, lore rules,
+  settings).
 
-- **SPM FastAPI Router Proxy (Port 5050)**: OpenAI-compatible API emulator for SillyTavern. Intercepts chat completions, executes spatial routing, and strips inner monologues (`<think>`/`<thinking>`; originally `<ctrl94>`). Talks to **Lemonade Server** on port 13305; `spm-sovereign-mesh` maps to `Gemma-4-26B-A4B-it-GGUF` (`SPM_DEFAULT_MODEL`). A sequential GPU queue exists but is not yet wired in (OPEN-004).
-- **World State Engine (Port 4005)**: Headless FastAPI REST service (an in-memory stand-in for Evennia; Evennia itself is not used) tracking objective physical ground truth, character coordinates, doors/walls, and acoustic decay.
-- **PostgreSQL / pgvector Container (`spm-postgres`, database `litellm_postgres`)**: Private episodic memory per character (`csa_memory_{character_id}`) with Game AI decay scoring. Note: the embedder is currently a stub, so vector recall is not meaningful yet (OPEN-002).
-- **Nightly Sleep Cycle (3:00 AM systemd timer)**: Consolidates volatile logs older than 24 h, per session and day, into single-sentence core memory nodes (`is_core_memory=TRUE`) using `Gemma-4-E4B-it-GGUF`. A failed summary writes and deletes nothing.
+## Requirements
 
-## Quick Start
+- Python 3.13 or newer.
+- Podman or Docker, for PostgreSQL with pgvector.
+- An OpenAI-compatible LLM server with:
+  - a chat model; the default is `Gemma-4-26B-A4B-it-GGUF` (set `SPM_DEFAULT_MODEL` to change it);
+  - an embedding model; the default is `Qwen3-Embedding-0.6B-GGUF-Q8_0`.
+- SillyTavern 1.19 or newer.
 
-All commands run from this directory with SPM's own virtualenv (`.venv`; Python 3.13+, tested on 3.13 and 3.14). Runtime: `pip install -r requirements.txt` (six packages). Tests: `pip install -r requirements-dev.txt`.
+## Setup
 
-### 1. Database
+### 1. Python environment
+
 ```bash
-podman start spm-postgres            # first time: podman-compose -f config/docker-compose.yml up -d
-# new database: psql ... -f scripts/init_db.sql
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt        # add requirements-dev.txt to run the tests
+cp .env.example .env                             # then edit it: LLM URL, model, database password
 ```
 
-### 2. LLM backend
-Lemonade Server on port 13305 (`systemctl --user start lemond`; see `~/Desktop/lemonade_playbook.md`).
+### 2. Database
 
-### 3. Run the world engine and proxy
 ```bash
-~/.local/bin/start_spm.sh            # or, by hand:
-.venv/bin/python -m evennia_world.app
-.venv/bin/python -m proxy.main       # SPM_RELOAD=1 for auto-reload while developing
-```
-Point SillyTavern (Chat Completion → Custom) at `http://localhost:5050/v1`.
-
-### 4. Tests
-```bash
-.venv/bin/python -m pytest tests/    # rebuilds a throwaway spm_test DB; never touches the live DB or services
+podman-compose -f config/docker-compose.yml up -d   # or: docker compose -f config/docker-compose.yml up -d
 ```
 
-### 5. Nightly sleep cycle
+The container runs `scripts/init_db.sql` on first start. To upgrade an existing database, apply
+the files in `scripts/migrations/` with `.venv/bin/python scripts/apply_migrations.py`
+(it records what it applied, so running it again is safe).
+
+### 3. Start SPM
+
+Start your LLM server first, then:
+
 ```bash
-./scripts/setup_systemd_timer.sh     # installs spm-sleep-cycle.{service,timer} using .venv
+.venv/bin/python -m evennia_world.app &   # world engine, port 4005
+.venv/bin/python -m proxy.main            # SPM proxy, port 5050
 ```
 
-## Hardware Fallback Tiers
+### 4. Connect SillyTavern
 
-- **Sovereign Tier (Default)**: AMD Strix Halo 128GB Unified (Balanced 96GB GTT Profile).
-- **Performance Tier**: Discrete GPU VRAM >= 16GB / Host RAM >= 32GB.
-- **Experimental Tier**: Low resource 16GB shared memory.
+1. Copy `st_extension/SPM-Chat-ID/` into `<SillyTavern>/data/<user>/extensions/` and reload the
+   SillyTavern tab.
+2. In **API Connections → Chat Completion → Custom (OpenAI-compatible)**, set the URL to
+   `http://localhost:5050/v1`.
+3. In **Additional Headers** ("Include Headers"), paste:
 
-## License & Credits
+   ```yaml
+   X-SPM-Chat-ID: "{{spmChatId}}"
+   X-SPM-Parent-Chat: "{{spmParentChat}}"
+   X-SPM-Gen-Type: "{{spmGenType}}"
+   X-SPM-User-Turns: "{{spmUserTurns}}"
+   ```
 
-This project is open-source software made freely available under the terms of the [MIT License](LICENSE). 
+4. Turn off SillyTavern's **Summarize** extension. SPM keeps its own memories, and Summarize
+   builds its summary from the full chat, which would tell characters about scenes they never saw.
 
-For details on our AI-assisted development workflow and acknowledgments, please see [CREDITS.md](CREDITS.md).
+Details and troubleshooting: [docs/st_extension_setup.md](docs/st_extension_setup.md).
 
-## Known Issues & Backlog
+## Writing conventions
 
-See [known_issues.md](known_issues.md) for the active defect log, session tracking issues, dashboard UI fixes, and upcoming feature roadmap.
+SPM reads your messages with these conventions (they are hints; anything else is treated as
+speech):
+
+| You write | SPM treats it as |
+|---|---|
+| `"Hello there"` | speech, heard by whoever is close enough |
+| `*walks to the kitchen*` | an action; movement updates the world |
+| `'I don't trust him'` | a private thought: never heard by anyone |
+| `**Lian enters with tea**`, `((...))`, `[OOC: ...]` | a direction to the AI, not part of the scene |
+| `[whisper:Mai] ...`, `[move:kitchen]`, `[shout] ...` | explicit tags, which win over everything else |
+| a block of `Name: / Age: / ...` lines | your character sheet: kept as setup, never spoken |
+
+Scenario cards (one card voicing a whole world, e.g. "... RPG World") are detected from the card
+name and treated as a narrator that follows you. You can force this on or off per chat in the
+admin dashboard.
+
+## Tests
+
+```bash
+.venv/bin/python -m pytest tests/ -q
+```
+
+The suite builds a throwaway `spm_test` database in the same PostgreSQL server and never
+touches your live data or running services.
+
+## Hardware tiers
+
+`SPM_HARDWARE_TIER` sets the context window and defaults:
+
+- **SOVEREIGN** (default): large unified-memory machines (e.g. 128 GB).
+- **PERFORMANCE:** a discrete GPU with at least 16 GB VRAM and 32 GB RAM.
+- **EXPERIMENTAL:** about 16 GB of shared memory.
+
+## Known issues
+
+See [known_issues.md](known_issues.md).
+
+## License and credits
+
+MIT License: see [LICENSE](LICENSE). Credits: [CREDITS.md](CREDITS.md).

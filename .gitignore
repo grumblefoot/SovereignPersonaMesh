@@ -42,5 +42,23 @@ pgdata/
 .DS_Store
 *.swp
 
-# Local Knowledge & Subagent Handoff
+# Dev notes and agent workflows: private, kept locally only (owner decision 2026-10-12).
+# Public docs are README.md, known_issues.md, CREDITS.md, release notes and docs/st_extension_setup.md.
+AGENTS.md
+playbook.md
+handoff.md
 hermesDev.md
+known_issues_internal.md
+docs/plans/
+docs/QA_SESSION_*.md
+docs/ASSESSMENT_*.md
+docs/STATE_ASSESSMENT_*.md
+docs/SPEC_DEVIATIONS.md
+
+# Test and coverage artefacts, one-off maintenance scripts, runtime data
+.coverage
+coverage_html/
+e2e_sla_metrics.json
+migrate_tags.py
+modify_strings.py
+storage/
