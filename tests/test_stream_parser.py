@@ -632,3 +632,53 @@ async def test_q4_in_character_first_person_and_parentheses_in_prose_survive():
     p, out = await _salvage(raw)
     assert out.lstrip().startswith("Lian set down the pot (the old one")
     assert '"I will make the tea myself tonight,"' in out
+
+
+SERAPHINA = (
+    'The user is testing the character with an out-of-character or nonsensical question ("What\'s the '
+    'password for the cellar?"). There is no "cellar" in the known rooms. I must address this within the '
+    "roleplay.\n\n\n"
+    "*Seraphina tilts her head slightly, a look of genuine confusion clouding her warm, amber eyes. She "
+    "lets go of your hand, her expression softening into one of gentle concern.* \"A cellar? And a "
+    'password?" *She repeats the words softly, as if tasting them.*'
+)
+
+
+@pytest.mark.asyncio
+async def test_q5_reply_opening_with_an_action_survives_salvage():
+    """QA 2026-10-13 Q5: lines starting with *action* were treated as bullets and deleted."""
+    p, out = await _salvage(SERAPHINA)
+    assert out.lstrip().startswith("*Seraphina tilts her head slightly")
+    assert '"A cellar? And a password?"' in out
+    assert "The user is testing" not in out
+    assert not p.is_tainted
+
+
+@pytest.mark.asyncio
+async def test_q5_action_lines_survive_on_the_normal_path_too():
+    async def gen():
+        yield "<think>plan</think>\n"
+        yield '*Seraphina smiles.* "Welcome back."\n'
+        yield "*She sets the kettle on the fire.*\n"
+    p = MonologueStreamParser(initial_state=1)
+    out = "".join([c async for c in p.process_token_stream(gen())])
+    assert "*Seraphina smiles.*" in out and "*She sets the kettle on the fire.*" in out
+
+
+@pytest.mark.asyncio
+async def test_q5_star_space_bullets_are_still_planning():
+    raw = ('Scene.\n[GM_ACTION: {"type": "MOVE", "entity": "user", "room_id": "x"}]\n'
+           "* Goal: keep the guest calm\n* Plan: offer tea\n\n"
+           "Lian set the pot down and smiled, the steam curling between them as she searched for something "
+           "light to say, something to carry them past the silence that had settled over the room.")
+    p, out = await _salvage(raw)
+    assert "Goal:" not in out and "Plan:" not in out
+    assert out.lstrip().startswith("Lian set the pot down")
+
+
+@pytest.mark.asyncio
+async def test_q5_empty_salvage_is_withheld_with_a_notice():
+    raw = "1. Check lore\n2. Plan the reply\n- Note: keep it short"
+    p, out = await _salvage(raw)
+    assert p.is_tainted
+    assert out.strip() == MonologueStreamParser.SALVAGE_NOTICE

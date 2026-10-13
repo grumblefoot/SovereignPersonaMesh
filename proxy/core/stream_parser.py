@@ -75,9 +75,11 @@ CLOSE_TAG_REGEX = re.compile(
     r'</details>?|'
     r'<\|end_thought\|>|<\|end_of_thought\|>|<\|end_monologue\|>|</\|thought\|>|</\|monologue\|>|'
     r'\[/Thought\]|\[/Monologue\]|\[/Thinking\]|\[/Inner Monologue\]|\[/Thought Process\]|\[/Reasoning\]|'
-    r'\[Public\]|\[Public Response\]|\[Public Dialogue\]|\[Dialogue\]|\[Response\]|\[Plan\]|'
-    r'\*+(?:Public|Public Response|Public Dialogue|Dialogue|Response|Narration|Canon Response|Plan):\*+|'
-    r'(?:\*|\b)(?:Public|Public Response|Public Dialogue|Dialogue|Response|Narration|Canon Response|Plan):\s*|'
+    # "Plan" is NOT a close marker: a "Plan:" line inside the scratchpad is planning, and
+    # treating it as the start of the public reply sent the plan to the user (QA Q5).
+    r'\[Public\]|\[Public Response\]|\[Public Dialogue\]|\[Dialogue\]|\[Response\]|'
+    r'\*+(?:Public|Public Response|Public Dialogue|Dialogue|Response|Narration|Canon Response):\*+|'
+    r'(?:\*|\b)(?:Public|Public Response|Public Dialogue|Dialogue|Response|Narration|Canon Response):\s*|'
     r'\[SCENE START\]|\[SCENE\]|\[NARRATION\]|\[RP\]|\[CHARACTER\]|\[PERSPECTIVE\]|'
     r'(?:^|\n)---+\s*(?:\n|$)'
     r')',
@@ -89,7 +91,10 @@ PARTIAL_TAG_REGEX = re.compile(r'(?:</?|</?\||\[)[a-zA-Z0-9_:|\-\s]{0,25}$')
 MONOLOGUE_HEADER_REGEX = re.compile(
     r'^\s*(?:'
     r'>\s*|'
-    r'[\*\-_•]\s*|'
+    # A bullet is "- ", "• ", "_ " or "* " (marker then space). "*Seraphina tilts her head*"
+    # is an action in the "speech" *action* convention and must survive (QA Q5, 2026-10-13:
+    # every line opening with an action was deleted, leaving an empty reply).
+    r'(?:[\-_•]|\*(?=\s))\s*|'
     r'\d+[\.\)]\s*|'
     r'\([^\)]*(?:Thought|Monologue|Thinking|Self-Correction|Check|Drafting|Persona|Plan|Analysis)[^\)]*\)|'
     r'\[[^\]]*(?:Thought|Monologue|Thinking|Self-Correction|Check|Drafting|Persona|Plan|Analysis)[^\]]*\]|'
@@ -362,9 +367,17 @@ class MonologueStreamParser:
                 text = after_last.strip()
 
         # If text contains an explicit 'Plan:' or section divider, extract narrative content after it
-        m_plan = re.search(r'\[?(?:Plan|Strategy|Analysis|Draft|Notes|Planning|Internal Monologue)[^\]]*\]?:?\s*', text, re.IGNORECASE)
+        # Only a heading at the start of a line counts ("Plan:", "* Plan: offer tea",
+        # "[Analysis]"), and its whole paragraph is planning. It used to match the word
+        # anywhere and keep the rest of the line (QA Q5: "offer tea" leaked).
+        m_plan = None
+        for m_plan in re.finditer(
+                r'^[ \t]*(?:[\*\-•][ \t]+)?\[?(?:Plan|Strategy|Analysis|Draft|Notes|Planning|Internal Monologue)\b[^\]\n]*\]?:',
+                text, re.IGNORECASE | re.MULTILINE):
+            pass
         if m_plan:
-            after_plan = text[m_plan.end():].strip()
+            m_end = re.search(r'\n\s*\n', text[m_plan.end():])
+            after_plan = text[m_plan.end() + m_end.end():].strip() if m_end else ""
             if after_plan:
                 text = after_plan
 
@@ -630,6 +643,14 @@ class MonologueStreamParser:
                                     if clean_pub:
                                         self.public_response_buffer += clean_pub
                                         yield clean_pub
+                    if not self.public_response_buffer:
+                        # Salvage found nothing to show from a non-empty scratchpad. Never send
+                        # a silent empty reply (QA Q5, 2026-10-13): say so, and don't save it.
+                        logger.warning("[StreamParser] Salvage produced no reply text; withheld.")
+                        self.is_failsafe_triggered = True
+                        self.is_tainted = True
+                        self.public_response_buffer = self.SALVAGE_NOTICE
+                        yield self.SALVAGE_NOTICE
                 self.inner_monologue_buffer = ""
                 self.state = 1
                 logger.info(f"[StreamParser] EOS reached in monologue mode. Monologue captured.")
