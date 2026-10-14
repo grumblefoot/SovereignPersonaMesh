@@ -249,8 +249,3 @@ def cmd_status(repo_root: Path) -> int:
         all_up = all_up and up
         print(f"{name:<7} pid={pid if pid is not None else '-'}\t{'up' if up else 'down'}\t{url}/health")
     return 0 if all_up else 3
-
-
-def cmd_init(_repo_root: Path) -> int:
-    print("init (database setup) is not yet implemented — coming in brief P3b.")
-    return 2

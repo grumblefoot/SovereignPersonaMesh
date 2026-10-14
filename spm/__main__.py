@@ -6,6 +6,7 @@ import argparse
 import sys
 
 from . import run
+from . import db as db_init
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -21,7 +22,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("stop", help="stop the services started by `spm start`")
     sub.add_parser("status", help="show PID and health of each service")
-    sub.add_parser("init", help="set up the database (not yet implemented)")
+    p_init = sub.add_parser("init", help="create and prepare the database")
+    p_init.add_argument("--existing", action="store_true",
+                        help="the database already holds SPM data: apply pending "
+                             "migrations only, never re-run init_db.sql")
     return parser
 
 
@@ -35,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "status":
         return run.cmd_status(repo_root)
     if args.command == "init":
-        return run.cmd_init(repo_root)
+        return db_init.cmd_init(repo_root, existing=args.existing)
     return 2  # unreachable: argparse enforces the subcommand
 
 

@@ -221,14 +221,6 @@ def test_windows_uses_detached_creation_flags(repo, patch_popen, monkeypatch):
         assert "start_new_session" not in p.kwargs
 
 
-# ── init stub ────────────────────────────────────────────────────────────
-
-
-def test_init_stub_exits_2(repo, capsys):
-    assert spm_run.cmd_init(repo) == 2
-    assert "not yet" in capsys.readouterr().out.lower()
-
-
 # ── sanity: the module's own constants match the services ────────────────
 
 

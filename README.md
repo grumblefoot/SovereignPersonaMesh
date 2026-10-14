@@ -48,6 +48,24 @@ The container runs `scripts/init_db.sql` on first start. To upgrade an existing 
 the files in `scripts/migrations/` with `.venv/bin/python scripts/apply_migrations.py`
 (it records what it applied, so running it again is safe).
 
+**Without Docker** (PostgreSQL already installed on your machine):
+
+1. Install PostgreSQL 16 with the pgvector extension (e.g. `postgresql16-server` plus
+   `pgvector_16` on Fedora/RHEL, `postgresql-16-pgvector` on Debian/Ubuntu).
+2. Create a user that may create databases:
+   ```sql
+   CREATE ROLE spm_user LOGIN PASSWORD 'change-me' CREATEDB;
+   ```
+3. Make sure the user can run `CREATE EXTENSION vector` in the SPM database — either the
+   user owns the database / has the needed rights, or a superuser runs
+   `CREATE EXTENSION vector;` once inside it.
+4. Set `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD` and
+   `POSTGRES_DB` in `.env`, then:
+   ```bash
+   python -m spm init          # creates the database and the schema
+   python -m spm init --existing   # an existing SPM database: apply migrations only
+   ```
+
 ### 3. Start SPM
 
 Start your LLM server first, then:
