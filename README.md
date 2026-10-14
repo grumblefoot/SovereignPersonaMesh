@@ -53,6 +53,19 @@ the files in `scripts/migrations/` with `.venv/bin/python scripts/apply_migratio
 Start your LLM server first, then:
 
 ```bash
+python -m spm start      # world engine (port 4005) + SPM proxy (port 5050)
+python -m spm status     # PID + health of each service
+python -m spm stop       # stop both
+```
+
+(`.venv/bin/python` on Linux/macOS, `.venv\Scripts\python` on Windows; run it from the repo
+root.) `start` detaches both services, waits for their health endpoints, writes their PIDs to
+`run/spm.pids` and appends their output to `logs/`. `start --foreground` stays attached and
+stops both on Ctrl+C — that is what a container runs.
+
+Or, by hand:
+
+```bash
 .venv/bin/python -m evennia_world.app &   # world engine, port 4005
 .venv/bin/python -m proxy.main            # SPM proxy, port 5050
 ```

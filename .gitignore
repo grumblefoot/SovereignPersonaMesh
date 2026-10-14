@@ -63,3 +63,7 @@ e2e_sla_metrics.json
 migrate_tags.py
 modify_strings.py
 storage/
+
+# Runtime output of the `spm` launcher (python -m spm start)
+logs/
+run/
