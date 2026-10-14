@@ -242,3 +242,19 @@ def test_health_ok_requests_the_health_endpoint(monkeypatch):
     assert run.health_ok("http://127.0.0.1:4005")
     assert run.health_ok("http://127.0.0.1:5050/")
     assert seen == ["http://127.0.0.1:4005/health", "http://127.0.0.1:5050/health"]
+
+
+def test_container_rewrites_loopback_model_urls(tmp_path, monkeypatch):
+    import spm.run as run
+    (tmp_path / ".env").write_text("BACKEND_LLM_URL=http://127.0.0.1:13305/v1\n"
+                                   "EMBEDDING_URL=http://localhost:13305/v1\n", encoding="utf-8")
+    for k in ("BACKEND_LLM_URL", "EMBEDDING_URL"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("SPM_IN_CONTAINER", "1")
+    env = run.child_env(tmp_path)
+    assert env["BACKEND_LLM_URL"] == "http://host.docker.internal:13305/v1"
+    assert env["EMBEDDING_URL"] == "http://host.docker.internal:13305/v1"
+    monkeypatch.setenv("BACKEND_LLM_URL", "http://192.168.50.9:1234/v1")
+    assert run.child_env(tmp_path)["BACKEND_LLM_URL"] == "http://192.168.50.9:1234/v1"
+    monkeypatch.delenv("SPM_IN_CONTAINER")
+    assert run.child_env(tmp_path)["EMBEDDING_URL"] == "http://localhost:13305/v1"

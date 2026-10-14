@@ -122,6 +122,27 @@ no login, so do this only on a trusted network. Containers set both to `0.0.0.0`
 
 Details and troubleshooting: [docs/st_extension_setup.md](docs/st_extension_setup.md).
 
+## Run with Docker
+
+The compose bundle runs the whole of SPM itself (database plus the proxy and world engine):
+
+```bash
+docker compose -f config/docker-compose.yml up -d --build
+```
+
+- The model server must listen on the **host**, not inside the container: Lemonade, LM Studio
+  with "Serve on Local Network", or `llama-server --host 0.0.0.0`.
+- If it is not reachable at `host.docker.internal:13305`, set `BACKEND_LLM_URL` in `.env`
+  (e.g. `BACKEND_LLM_URL=http://192.168.1.10:1234/v1`). A `localhost` or `127.0.0.1` URL in
+  `.env` (for the model server or `EMBEDDING_URL`) is rewritten to `host.docker.internal`
+  inside the container, so the same `.env` works with and without Docker.
+- Podman works too (`podman compose ...`); the healthcheck is ignored there unless images are
+  built in Docker format.
+- On first boot the container runs `spm init` to create and prepare the database; settings
+  saved from the admin dashboard persist on a named volume across rebuilds.
+- Admin dashboard: `http://127.0.0.1:5050/admin`
+- SillyTavern URL: `http://127.0.0.1:5050/v1`
+
 ## Writing conventions
 
 SPM reads your messages with these conventions (they are hints; anything else is treated as

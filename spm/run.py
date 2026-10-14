@@ -16,6 +16,8 @@ import sys
 import time
 from pathlib import Path
 
+import re
+
 import httpx
 from dotenv import dotenv_values
 
@@ -55,7 +57,24 @@ def child_env(repo_root: Path) -> dict:
     for key, value in dotenv_values(repo_root / ".env").items():
         if value is not None and key not in env:
             env[key] = value
+    if env.get("SPM_IN_CONTAINER") == "1":
+        _container_hosts(env)
     return env
+
+
+_LOOPBACK = re.compile(r"^(https?://)(localhost|127\.0\.0\.1)([:/]|$)")
+
+
+def _container_hosts(env: dict) -> None:
+    """Inside a container, localhost is the container itself: a model or embeddings
+    server on the host is host.docker.internal (compose maps it to the host gateway).
+    A host .env written for a bare-metal run says 127.0.0.1 (Claude's review of P5)."""
+    for key in ("BACKEND_LLM_URL", "EMBEDDING_URL"):
+        value = env.get(key) or ""
+        new = _LOOPBACK.sub(r"\1host.docker.internal\3", value)
+        if new != value:
+            print(f"[spm] {key}: {value} -> {new} (container)")
+            env[key] = new
 
 
 def _port(env: dict, var: str, default: int) -> int:

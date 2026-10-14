@@ -1,0 +1,11 @@
+.venv
+logs
+run
+qa-logs
+coverage_html
+__pycache__
+.git
+docs/plans
+*.log
+config/config.local.json
+.env
