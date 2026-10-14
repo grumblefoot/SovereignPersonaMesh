@@ -409,7 +409,11 @@
         const res = await fetch('/admin/api/v1/shutdown', { method: 'POST' });
         const data = await res.json();
         alert(data.message || "Services are shutting down.");
-        document.body.innerHTML = "<h2 style='text-align:center;margin-top:20%;color:white;'>SPM Services Shutdown Complete. You may close this window.</h2>";
+        // 'docker': SPM keeps running inside the bundle — keep the page, the
+        // message above says how to stop it. Only a real shutdown replaces it.
+        if (data.status === "success") {
+          document.body.innerHTML = "<h2 style='text-align:center;margin-top:20%;color:white;'>SPM Services Shutdown Complete. You may close this window.</h2>";
+        }
       } catch (e) {
         alert("Shutdown request sent.");
       }

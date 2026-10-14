@@ -4,13 +4,15 @@ Provides headless endpoints for action evaluation, spatial state queries, and ti
 Uses HybridWorldBuilder for dynamic world state and SpatialConstraintsMatrix for deterministic gating.
 """
 
+import os
+import signal
 import time
 import json
 import uuid
 import asyncio
 import logging
 from collections import OrderedDict
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from typing import Dict, Any, List, Optional, Tuple
 from pydantic import BaseModel, Field
 import asyncpg
@@ -961,6 +963,28 @@ async def reset_world_state(session_id: Optional[str] = None):
     app_state.mutation_log.clear()
 
     return {"status": "success", "message": "In-memory world state cache cleared"}
+
+
+@app.post("/api/v1/world/admin/shutdown")
+async def shutdown_engine(request: Request, background_tasks: BackgroundTasks):
+    """Quit this engine process — only from a loopback client (brief L1).
+
+    Responds first, then ~0.5 s later ends its own process with SIGTERM
+    (on Windows os.kill(SIGTERM) is TerminateProcess; fine). No pkill:
+    the old proxy-side shutdown killed every matching process on the
+    machine and does nothing at all on Windows.
+    """
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1"):
+        raise HTTPException(status_code=403, detail="loopback clients only")
+
+    async def _terminate():
+        await asyncio.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    background_tasks.add_task(_terminate)
+    return {"success": True}
+
 
 # ── A2: snapshot + stateful barriers ────────────────────────────────────
 

@@ -323,24 +323,51 @@ async def factory_reset():
 
 @router.post("/shutdown")
 async def shutdown_system():
-    """Cleanly shut down the SPM proxy and Evennia game services."""
-    import os, signal, asyncio, subprocess
+    """Quit this SPM install — never with a machine-wide process-name kill (brief L1).
+
+    The old implementation killed by process-name pattern: on Windows there is
+    no such tool (the button did nothing) and on Linux it killed every
+    matching process on the machine, not only this SPM. It also stopped the
+    spm-postgres container unconditionally. Now each process ends itself.
+    """
+    import os, signal, asyncio
     logger.warning("[AdminAPI] Received shutdown request. Shutting down services...")
 
-    # Run a background task to cleanly exit after responding
+    if os.environ.get("SPM_IN_CONTAINER") == "1":
+        # Inside the Docker bundle a self-kill just restarts the container and
+        # strands the database container. Point at the bundle's stop instead.
+        return JSONResponse(content={
+            "status": "docker",
+            "message": ("SPM runs in Docker. Stop SPM and its database together with "
+                        "scripts\\docker\\stop.cmd (Windows) or scripts/docker/stop.sh "
+                        "(Linux/macOS), or the Stop button of the 'spm' group in "
+                        "Docker Desktop. Your data is kept.")})
+
+    # Engine URL from the existing, configured evennia client (its base_url ends
+    # in /api/v1, so the new engine shutdown endpoint hangs off it directly).
+    from proxy.api.routes import evennia_client
+    engine_shutdown_url = f"{evennia_client.base_url}/world/admin/shutdown"
+    from pathlib import Path
+    pid_file = Path(__file__).resolve().parents[2] / "run" / "spm.pids"
+
     async def _shutdown():
         await asyncio.sleep(1)
-        # Stop Postgres Docker container
-        subprocess.run(['docker', 'stop', 'spm-postgres'], check=False)
-        # Send SIGTERM to evennia_world.app
-        subprocess.run(['pkill', '-TERM', '-f', r'python -m evennia_world.app'], check=False)
-        # Send SIGTERM to proxy.main (kills master process)
-        subprocess.run(['pkill', '-TERM', '-f', r'python -m proxy.main'], check=False)
-        # Also kill any orphaned Uvicorn multiprocessing workers
-        subprocess.run(['pkill', '-TERM', '-f', r'multiprocessing.spawn'], check=False)
+        try:  # ask the engine to end itself; a dead engine is not our problem
+            resp = await evennia_client.client.post(engine_shutdown_url, timeout=5.0)
+            resp.raise_for_status()
+        except Exception as e:
+            logger.warning(f"[AdminAPI] Engine shutdown request failed: {e}")
+        import spm.run
+        spm.run.stop_db_container(dict(os.environ))
+        try:
+            if pid_file.exists():
+                pid_file.unlink()
+        except OSError as e:
+            logger.warning(f"[AdminAPI] Could not remove {pid_file}: {e}")
+        os.kill(os.getpid(), signal.SIGTERM)
 
     asyncio.create_task(_shutdown())
-    
+
     return JSONResponse(content={
         "status": "success",
         "message": "Shutting down SPM and Game services gracefully."

@@ -60,6 +60,10 @@ DIRECT = [
      "Database password (matches config/docker-compose.yml).", "Database"),
     ("SPM_WORLD_DB", "1",
      "World engine persistence: 0 runs the engine memory-only (no pool).", "Database"),
+    ("SPM_DB_CONTAINER", "",
+     "Name of a local Docker/Podman database container that `spm start` starts and "
+     "`spm stop` stops, e.g. spm-postgres. Leave empty if you run PostgreSQL yourself.",
+     "Database"),
     ("CONSOLIDATION_MODEL_NAME", "Gemma-4-E4B-it-GGUF",
      "Model used by the sleep-cycle memory consolidation.", "Behaviour"),
     ("SPM_CONFIG_PATH", "",
