@@ -53,7 +53,8 @@ def messages_for(rooms: List[Dict[str, str]], where: Dict[str, str], player: str
         "about a place, wanting to go, being told to go, or looking around is not a move. Quote "
         "the narration, not dialogue.\n"
         "- evidence: copy the exact words (5-15 words) from the player's message or the reply that "
-        "show the move or the new place. No quote, no action.\n"
+        "show the person going (walks into, steps out, arrives at, makes her way to). Where someone "
+        "already stands is not a move. No quote, no action.\n"
         "- entity is who moves: 'user' for the player, the ids above for others. Every MOVE "
         "needs an entity, e.g. {\"type\": \"MOVE\", \"entity\": \"user\", \"room_id\": "
         "\"kitchen\", \"evidence\": \"I walk into the kitchen and sit down\"}. For CREATE_ROOM "
@@ -76,6 +77,26 @@ def _norm(t: str) -> str:
 _FIELDS = {"MOVE": {"type", "entity", "room_id"}, "CREATE_ROOM": {"type", "room_id", "name", "desc"}}
 
 
+# A move's quote must say someone goes somewhere. Quotes that only say where someone is
+# ("the figure standing at the mouth of the alley", "pause her movements in the kitchen") made
+# 26 of 63 no-move turns move someone in the offline GM check (2026-10-13). A missed move costs
+# less than a false one, which splits the scene and muffles everyone.
+_P = r"(?:my|his|her|their|your|our|the)"
+_MOTION = re.compile(
+    r"\b(?:enter\w*|walk\w*|step(?:s|ped|ping)?|strid\w*|strode|wander\w*|stroll\w*|"
+    r"climb\w*|arriv\w*|exit(?:s|ed|ing)?|rush\w*|hurr\w*|sprint\w*|march\w*|travel\w*|"
+    r"ascend\w*|descend\w*|emerg\w*|stumbl\w*|sneak\w*|snuck|dash\w*|disappear\w*|"
+    r"vanish\w*|teleport\w*|escort\w*|"
+    rf"(?:make|makes|made|making) {_P} way|find(?:s)? (?:yourself|myself|himself|herself|themselves)|"
+    r"(?:go|goes|going|gone|went|head|heads|headed|heading|run|runs|ran|running|move|moves|moved|"
+    r"moving|come|comes|came|coming|return|returns|returned|returning|back) "
+    r"(?:to|into|in|inside|outside|out|back|home|through|toward|towards|down|up|over|away|across|for)\b|"
+    r"(?:leave|leaves|leaving|left) (?:the|for|through|his|her|their|my|your)\b|"
+    r"(?:reach|reaches|reached|reaching) (?:the|a|an)\b|"
+    r"(?:follow|follows|followed|following) (?:him|her|them|you|me|us|behind)\b|"
+    r"(?:lead|leads|led|leading) (?:him|her|them|you|me|us|the way)\b|"
+    r"cross(?:es|ed|ing)? (?:the|into)\b|now (?:in|inside|at)\b)", re.IGNORECASE)
+
 _QUOTED = re.compile(r'"[^"\n]{1,600}"|\u201c[^\u201d\n]{1,600}\u201d')
 
 
@@ -89,6 +110,8 @@ def grounded(actions: List[Dict[str, Any]], *texts: str) -> List[Dict[str, Any]]
 
     def ok(a):
         ev = _norm(str(a.get("evidence") or ""))
+        if a.get("type") == "MOVE" and not _MOTION.search(ev):
+            return False
         return len(ev.split()) >= 3 and ev in hay
 
     moves_into = {a.get("room_id") for a in actions if a.get("type") == "MOVE" and ok(a)}

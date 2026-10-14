@@ -194,3 +194,10 @@ def test_gm_grounded_ignores_evidence_inside_dialogue():
     acts = [{"type": "MOVE", "entity": "mei", "room_id": "guest_room", "evidence": "Go to the guest room"},
             {"type": "MOVE", "entity": "lian", "room_id": "kitchen", "evidence": "Lian walks back into the kitchen"}]
     assert gm_planner.grounded(acts, reply) == [{"type": "MOVE", "entity": "lian", "room_id": "kitchen"}]
+
+
+def test_gm_grounded_move_needs_a_quote_that_shows_movement():
+    text = "The figure standing at the mouth of the alley watches. Then she walks into the alley."
+    acts = [{"type": "MOVE", "entity": "user", "room_id": "street", "evidence": "The figure standing at the mouth of the alley"},
+            {"type": "MOVE", "entity": "user", "room_id": "alley", "evidence": "she walks into the alley"}]
+    assert gm_planner.grounded(acts, text) == [{"type": "MOVE", "entity": "user", "room_id": "alley"}]
