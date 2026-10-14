@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -134,6 +136,74 @@ def _tail(path: Path, n: int = 20) -> str:
     return "\n".join(lines[-n:])
 
 
+# ── Optional database container (brief L1) ──────────────────────────────
+# SPM_DB_CONTAINER names a local Docker/Podman container that `spm start`
+# starts and `spm stop` stops. Empty (default) = do nothing: people who run
+# PostgreSQL themselves, and the Docker bundle (compose manages its own DB),
+# are untouched.
+
+def _container_cli() -> str | None:
+    """First container CLI on PATH: docker, then podman; None if neither."""
+    for cli in ("docker", "podman"):
+        if shutil.which(cli):
+            return cli
+    return None
+
+
+def _db_container_action(action: str, env: dict) -> bool:
+    """Run `<cli> <action> <name>` for SPM_DB_CONTAINER. Prints what happened;
+    never raises. Returns True only when the container was actually handled."""
+    name = (env.get("SPM_DB_CONTAINER") or "").strip()
+    if not name:
+        return False
+    cli = _container_cli()
+    if cli is None:
+        print(f"[spm] SPM_DB_CONTAINER={name} but neither docker nor podman is "
+              f"installed; not {action} the database container.", file=sys.stderr)
+        return False
+    try:
+        res = subprocess.run([cli, action, name], capture_output=True, text=True,
+                             timeout=60)
+    except Exception as e:  # CLI missing mid-run, timeout, permissions: never raise
+        print(f"[spm] {cli} {action} {name} failed: {e}", file=sys.stderr)
+        return False
+    if res.returncode == 0:
+        print(f"[spm] {cli} {action} {name}: ok")
+        return True
+    err = (res.stderr or res.stdout or "").strip().splitlines()
+    print(f"[spm] {cli} {action} {name} failed (exit {res.returncode}): "
+          f"{err[-1] if err else 'no output'}", file=sys.stderr)
+    return False
+
+
+def start_db_container(env: dict) -> bool:
+    """Start the configured database container (no-op unless SPM_DB_CONTAINER)."""
+    return _db_container_action("start", env)
+
+
+def stop_db_container(env: dict) -> bool:
+    """Stop the configured database container (no-op unless SPM_DB_CONTAINER)."""
+    return _db_container_action("stop", env)
+
+
+def _wait_db_port(env: dict, timeout_s: float, poll_s: float = 0.5) -> bool:
+    """Wait for a TCP connection to POSTGRES_HOST:POSTGRES_PORT to succeed."""
+    host = env.get("POSTGRES_HOST") or "localhost"
+    try:
+        port = int(env.get("POSTGRES_PORT") or 5432)
+    except ValueError:
+        port = 5432
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            with socket.create_connection((host, port), timeout=1.0):
+                return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(max(poll_s, 0.05))
+
+
 def _kill(pid: int) -> None:
     # SIGTERM on POSIX; on Windows os.kill(SIGTERM) is TerminateProcess —
     # an immediate, NON-graceful kill (no shutdown handlers run).
@@ -173,6 +243,14 @@ def cmd_start(repo_root: Path, foreground: bool = False,
     if health_ok(engine_url) and health_ok(proxy_url):
         print("SPM is already running (both services answer /health).")
         return 0
+
+    # Optional managed database container (brief L1): start it first and give
+    # Postgres up to 30 s to accept connections before spawning the engine.
+    if start_db_container(env):
+        print("Waiting for the database port...")
+        if not _wait_db_port(env, 30.0):
+            print("WARNING: database port not reachable after 30s; starting anyway.",
+                  file=sys.stderr)
 
     procs: dict[str, subprocess.Popen] = {}
     services = [
@@ -251,6 +329,10 @@ def cmd_stop(repo_root: Path, wait_s: float = STOP_WAIT_S,
             print(f"WARNING: {name} (pid {pid}) still answers {url}/health "
                   f"after {wait_s:.0f}s.", file=sys.stderr)
     pid_file.unlink(missing_ok=True)
+    # Both services are down: now it is safe to stop the managed DB container
+    # (no-op unless SPM_DB_CONTAINER is set). The --foreground exit path does
+    # NOT stop it — inside Docker, compose manages its own database.
+    stop_db_container(env)
     print("SPM stopped.")
     return 0
 

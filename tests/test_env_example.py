@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 GEN = ROOT / "scripts" / "gen_env_example.py"
 ENV_EXAMPLE = ROOT / ".env.example"
-SEARCH_DIRS = ["proxy", "evennia_world", "core", "config", "scripts"]
+SEARCH_DIRS = ["proxy", "evennia_world", "core", "config", "scripts", "spm"]
 
 _VAR_LINE = re.compile(r"^([A-Z][A-Z0-9_]*)=")
 

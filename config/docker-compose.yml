@@ -2,12 +2,18 @@
 # Run: docker compose -f config/docker-compose.yml up -d --build
 # Compose v2 format: no `version:` key.
 
+# Fixed project name: Docker Desktop shows one "spm" group and containers are
+# named spm-postgres-1 / spm-spm-1 whatever folder the repo is checked out in.
+name: spm
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
     # No container_name on purpose: a fixed name would collide with an existing
     # spm-postgres / litellm_postgres container (as on the owner's machine).
     restart: unless-stopped
+    # A database needs time to finish writing before it is killed.
+    stop_grace_period: 30s
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-litellm_postgres}
       POSTGRES_USER: ${POSTGRES_USER:-spm_user}
@@ -31,6 +37,7 @@ services:
       context: ..
       dockerfile: config/Containerfile
     restart: unless-stopped
+    stop_grace_period: 20s
     depends_on:
       postgres:
         condition: service_healthy

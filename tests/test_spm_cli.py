@@ -221,6 +221,97 @@ def test_windows_uses_detached_creation_flags(repo, patch_popen, monkeypatch):
         assert "start_new_session" not in p.kwargs
 
 
+# ── optional database container (brief L1) ──────────────────────────────
+
+
+class FakeRun:
+    """Stands in for subprocess.run: records argv, canned result."""
+
+    def __init__(self, returncode=0, error=None):
+        self.calls = []
+        self.returncode = returncode
+        self.error = error
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append((cmd, kwargs))
+        if self.error:
+            raise self.error
+        return type("R", (), {"returncode": self.returncode,
+                              "stdout": "", "stderr": "boom"})()
+
+
+def test_container_cli_prefers_docker_then_podman(monkeypatch):
+    monkeypatch.setattr(spm_run.shutil, "which", lambda c: c if c == "docker" else None)
+    assert spm_run._container_cli() == "docker"
+    monkeypatch.setattr(spm_run.shutil, "which", lambda c: c if c == "podman" else None)
+    assert spm_run._container_cli() == "podman"
+    monkeypatch.setattr(spm_run.shutil, "which", lambda c: None)
+    assert spm_run._container_cli() is None
+
+
+def test_db_container_empty_env_is_noop(monkeypatch):
+    fake = FakeRun()
+    monkeypatch.setattr(spm_run.subprocess, "run", fake)
+    assert spm_run.start_db_container({}) is False
+    assert spm_run.stop_db_container({}) is False
+    assert fake.calls == []
+
+
+def test_start_runs_cli_start_before_spawning_engine(repo, patch_popen, monkeypatch):
+    monkeypatch.setattr(spm_run, "health_ok", _health_urls())
+    monkeypatch.setattr(spm_run, "_wait_db_port", lambda env, t: True)
+    monkeypatch.setenv("SPM_DB_CONTAINER", "spm-postgres")
+    fake = FakeRun()
+    monkeypatch.setattr(spm_run.subprocess, "run", fake)
+    assert spm_run.cmd_start(repo, poll_s=0.01) == 0
+    assert [c[0] for c in fake.calls] == [["docker", "start", "spm-postgres"]]
+    assert fake.calls[0][1]["timeout"] == 60
+    # the container ran before any service was spawned
+    assert len(patch_popen.instances) == 2
+
+
+def test_start_without_db_container_never_calls_cli(repo, patch_popen, monkeypatch):
+    monkeypatch.setattr(spm_run, "health_ok", _health_urls())
+    monkeypatch.delenv("SPM_DB_CONTAINER", raising=False)
+    fake = FakeRun()
+    monkeypatch.setattr(spm_run.subprocess, "run", fake)
+    assert spm_run.cmd_start(repo, poll_s=0.01) == 0
+    assert fake.calls == []
+
+
+def test_stop_runs_cli_stop_after_services(repo, monkeypatch, capsys):
+    pid_file = repo / "run" / "spm.pids"
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text(json.dumps({"engine": 111, "proxy": 222}), encoding="utf-8")
+    monkeypatch.setattr(spm_run, "_kill", lambda pid: None)
+    monkeypatch.setattr(spm_run, "health_ok", lambda url: False)
+    monkeypatch.setenv("SPM_DB_CONTAINER", "spm-postgres")
+    fake = FakeRun()
+    monkeypatch.setattr(spm_run.subprocess, "run", fake)
+    assert spm_run.cmd_stop(repo, poll_s=0.01) == 0
+    assert [c[0] for c in fake.calls] == [["docker", "stop", "spm-postgres"]]
+    assert not pid_file.exists()
+    assert "SPM stopped." in capsys.readouterr().out
+
+
+def test_db_container_cli_failure_never_raises(monkeypatch, capsys):
+    # CLI blows up mid-call (missing binary, timeout, permissions)
+    monkeypatch.setattr(spm_run.shutil, "which", lambda c: "docker")
+    fake = FakeRun(error=OSError("docker: is the daemon running?"))
+    monkeypatch.setattr(spm_run.subprocess, "run", fake)
+    assert spm_run.start_db_container({"SPM_DB_CONTAINER": "spm-postgres"}) is False
+    assert "daemon running" in capsys.readouterr().err
+    # CLI answers non-zero: reported, still no raise
+    fake2 = FakeRun(returncode=1)
+    monkeypatch.setattr(spm_run.subprocess, "run", fake2)
+    assert spm_run.stop_db_container({"SPM_DB_CONTAINER": "spm-postgres"}) is False
+    assert "boom" in capsys.readouterr().err
+    # no container CLI installed at all
+    monkeypatch.setattr(spm_run.shutil, "which", lambda c: None)
+    assert spm_run.start_db_container({"SPM_DB_CONTAINER": "spm-postgres"}) is False
+    assert "neither docker nor podman" in capsys.readouterr().err
+
+
 # ── sanity: the module's own constants match the services ────────────────
 
 

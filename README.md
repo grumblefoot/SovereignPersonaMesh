@@ -124,11 +124,26 @@ Details and troubleshooting: [docs/st_extension_setup.md](docs/st_extension_setu
 
 ## Run with Docker
 
-The compose bundle runs the whole of SPM itself (database plus the proxy and world engine):
+The compose bundle runs the whole of SPM itself (database plus the proxy and world engine).
+Ready-made scripts live in `scripts/docker/` — double-click the `.cmd` files on Windows, run the
+`.sh` files on Linux/macOS. Each one finds `config/docker-compose.yml` on its own, so they work
+from any directory:
 
-```bash
-docker compose -f config/docker-compose.yml up -d --build
-```
+| Do this            | Windows              | Linux/macOS              | Raw compose command                                    |
+|--------------------|----------------------|--------------------------|--------------------------------------------------------|
+| Start              | `start.cmd`          | `scripts/docker/start.sh` | `docker compose -f config/docker-compose.yml up -d`     |
+| Stop               | `stop.cmd`           | `scripts/docker/stop.sh`  | `docker compose -f config/docker-compose.yml stop`      |
+| See what is running| `status.cmd`         | `scripts/docker/status.sh`| `docker compose -f config/docker-compose.yml ps`        |
+| Follow the logs    | `logs.cmd`           | `scripts/docker/logs.sh`  | `docker compose -f config/docker-compose.yml logs -f --tail 100 spm` |
+| Update to latest   | `update.cmd`         | `scripts/docker/update.sh`| `git pull && docker compose -f config/docker-compose.yml up -d --build` |
+
+Stopping keeps all your data (memories, chats, settings live on named volumes), and Docker
+Desktop's Stop/Start buttons on the "spm" group do the same thing as the scripts. The admin
+dashboard's **Quit** button also explains how to stop the bundle.
+
+> **Warning:** `docker compose -f config/docker-compose.yml down -v` **deletes all memories,
+> chats and settings** (the `-v` removes the data volumes). Use it only to start over from
+> scratch.
 
 - The model server must listen on the **host**, not inside the container: Lemonade, LM Studio
   with "Serve on Local Network", or `llama-server --host 0.0.0.0`.
@@ -136,8 +151,8 @@ docker compose -f config/docker-compose.yml up -d --build
   (e.g. `BACKEND_LLM_URL=http://192.168.1.10:1234/v1`). A `localhost` or `127.0.0.1` URL in
   `.env` (for the model server or `EMBEDDING_URL`) is rewritten to `host.docker.internal`
   inside the container, so the same `.env` works with and without Docker.
-- Podman works too (`podman compose ...`); the healthcheck is ignored there unless images are
-  built in Docker format.
+- Podman works too (`podman compose ...`, and the `.sh` scripts pick it up automatically); the
+  healthcheck is ignored there unless images are built in Docker format.
 - On first boot the container runs `spm init` to create and prepare the database; settings
   saved from the admin dashboard persist on a named volume across rebuilds.
 - Admin dashboard: `http://127.0.0.1:5050/admin`
