@@ -67,6 +67,8 @@ def _rule_dict(row: Any, *, full: bool = False) -> Dict[str, Any]:
     if full:
         rule["status"] = row["status"]
         rule["source"] = row["source"]
+        ts = row["created_at"] if "created_at" in row.keys() else None
+        rule["created_at"] = ts.isoformat() if ts else None
     if "cosine_distance" in row.keys():
         rule["cosine_distance"] = row["cosine_distance"]
     return rule
@@ -167,7 +169,7 @@ async def list_rules(
         _validate_status(status)
     rows = await conn.fetch(
         """
-        SELECT id, rule_text, rule_type, level, character_id, status, source
+        SELECT id, rule_text, rule_type, level, character_id, status, source, created_at
         FROM spm_chat_rules
         WHERE session_id = $1
           AND ($2::varchar IS NULL OR level = $2)
