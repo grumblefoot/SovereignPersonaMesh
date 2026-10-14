@@ -515,9 +515,11 @@ async def test_n8_turn8_planning_checklist_after_gm_action_is_dropped():
 @pytest.mark.asyncio
 async def test_n8_turn4_note_paragraphs_after_gm_action_are_dropped():
     p, out = await _salvage(TURN4)
-    assert out.lstrip().startswith("The air seems to ripple")
-    for leak in ("Note:", "The user's action", "I must ensure", "The man is thrown back"):
+    assert "The air seems to ripple" in out
+    for leak in ("Note:", "The user's action", "I must ensure"):
         assert leak not in out
+    # Hermes review H1: a short sentence that reads as narration is kept, not deleted.
+    assert "The man is thrown back into the alley walls." in out
     assert "*thud*" in out
 
 
@@ -550,6 +552,7 @@ async def test_q1_perspective_header_is_dropped():
            "Lian turned her gaze back to Mei. Her expression was not one of anger, but rather a cool, "
            'steady disappointment that filled the quiet room.\n\n"If it is merely nonsense," Lian said.')
     p, out = await _salvage(raw)
+    assert out.strip()                                   # not an empty or withheld reply
     assert "perspective" not in out.lower()
     assert out.lstrip().startswith("Lian turned her gaze")
     assert not p.is_tainted
@@ -581,14 +584,17 @@ async def test_q3_draft_then_final_keeps_only_the_final():
 
 
 @pytest.mark.asyncio
-async def test_q3_priority_is_to_paragraph_is_planning():
+async def test_q3_priority_narration_is_kept():
+    """Hermes review H6: "X's priority is to …" is ordinary narration as often as planning;
+    the rule that dropped it was removed."""
     raw = ('Scene.\n[GM_ACTION: {"type": "MOVE", "entity": "mei", "room_id": "living"}]\n\n'
            "Lian's priority is to keep the evening pleasant for her guest.\n\n"
            "Lian set the pot down and smiled at Vardus, the steam curling between them as she searched "
            "for something light to say, something that would carry them past the silence Mei had left "
            'in the room and back to the easy warmth of a good evening.\n\n"More tea?" she asked.')
     p, out = await _salvage(raw)
-    assert out.lstrip().startswith("Lian set the pot down")
+    assert out.lstrip().startswith("Lian's priority is to keep the evening pleasant")
+    assert "Lian set the pot down" in out
 
 
 @pytest.mark.asyncio
@@ -682,3 +688,91 @@ async def test_q5_empty_salvage_is_withheld_with_a_notice():
     p, out = await _salvage(raw)
     assert p.is_tainted
     assert out.strip() == MonologueStreamParser.SALVAGE_NOTICE
+
+
+
+GM_PREFIX = 'Scene.\n[GM_ACTION: {"type": "MOVE", "entity": "mei", "room_id": "x"}]\n\n'
+
+
+# --- Hermes validator pass A (2026-10-13): regression tests from the review's inputs ---
+
+async def _normal(raw: str):
+    """A closed <think> block, then the reply streamed token-sized."""
+    async def gen():
+        yield "<think>plan</think>\n"
+        for i in range(0, len(raw), 7):
+            yield raw[i:i + 7]
+    p = MonologueStreamParser(initial_state=1)
+    out = "".join([c async for c in p.process_token_stream(gen())])
+    return p, out
+
+
+@pytest.mark.asyncio
+async def test_h2_plan_inside_dialogue_does_not_truncate_the_reply():
+    raw = '"The plan: I will describe the route at dawn," she said.\n\nShe folded the map and handed it to him.'
+    p, out = await _normal(raw)
+    assert out.strip() == raw
+
+
+@pytest.mark.asyncio
+async def test_h2_public_and_response_mid_sentence_are_kept():
+    raw = '"This is public: everyone in the village knows it," Lian said. "My response: no."'
+    p, out = await _normal(raw)
+    assert out.strip() == raw
+
+
+@pytest.mark.asyncio
+async def test_h2_line_start_thought_header_still_opens_the_scratchpad():
+    """Line-sized chunks. Known limit (pre-existing): a header split across two tokens
+    ("Thought" + ":") isn't recognised at the line start; the header line itself is still
+    dropped by the line filter. Structural fix: native reasoning (backend_matrix.md)."""
+    async def gen():
+        for piece in ("<think>plan</think>\n", "Mei bowed.\n", "Thought: she is hiding the letter.\n",
+                      "</think>\n", '"Welcome home," she said.'):
+            yield piece
+    p = MonologueStreamParser(initial_state=1)
+    out = "".join([c async for c in p.process_token_stream(gen())])
+    assert "hiding the letter" not in out and '"Welcome home," she said.' in out
+
+
+@pytest.mark.asyncio
+async def test_h1_short_narration_before_an_aside_is_kept():
+    raw = (GM_PREFIX + "Lian set the pot down, and the steam rose between them like a small grey ghost "
+           "nobody named.\n\n(She had waited all winter for this.)\n\n"
+           '"Sit down," she said, and the evening began again.')
+    p, out = await _salvage(raw)
+    assert out.lstrip().startswith("Lian set the pot down")
+    assert '"Sit down," she said' in out
+
+
+@pytest.mark.asyncio
+async def test_h3_single_refrain_does_not_collapse_the_reply():
+    raw = (GM_PREFIX + "The bells rang across the valley as the sun went down over the old stone bridge.\n\n"
+           "Mei counted the strokes, as she had every evening since her father left for the coast.\n\n"
+           "The bells rang across the valley as the sun went down over the old stone bridge.")
+    p, out = await _salvage(raw)
+    assert "Mei counted the strokes" in out
+
+
+@pytest.mark.asyncio
+async def test_h4_in_world_numbered_list_is_not_withheld():
+    raw = "1. For the market: bread, salt, a candle.\n2. For Mother: nothing at all.\n3. For myself: the nine o'clock train."
+    p, out = await _salvage(raw)
+    assert not p.is_tainted
+    assert "For the market" in out and "nine o'clock train" in out
+
+
+@pytest.mark.asyncio
+async def test_h5_in_world_note_later_in_the_reply_is_kept():
+    raw = (GM_PREFIX + "Mei unfolded the scrap of paper with trembling fingers, turning it toward the lamp "
+           "so the faded ink would show.\n\nPlan: meet me at the pier before first light.\n\n"
+           "Mei read it twice, then folded it into her sleeve.")
+    p, out = await _salvage(raw)
+    assert out.lstrip().startswith("Mei unfolded the scrap of paper")
+    assert "Mei read it twice" in out
+
+
+def test_h8_withheld_notice_survives_get_final_buffers():
+    p = MonologueStreamParser(initial_state=0)
+    p.public_response_buffer = MonologueStreamParser.SALVAGE_NOTICE
+    assert p.get_final_buffers()[1] == MonologueStreamParser.SALVAGE_NOTICE

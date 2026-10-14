@@ -49,7 +49,9 @@ OPEN_TAG_REGEX = re.compile(
     r'<\|thought\|>|<\|start_thought\|>|<\|channel:thought\|>|<\|monologue\|>|<\|think\|>|<\|reasoning\|>|'
     r'\[Thought\]|\[Monologue\]|\[Thinking\]|\[Inner Monologue\]|\[Thought Process\]|\[Reasoning\]|'
     r'\*+(?:Thought|Monologue|Thinking|Check|Self-Correction|Drafting|Thought Process|Internal Monologue|Reasoning|Plan|Analysis|Strategy):\*+|'
-    r'(?:\*|\b)(?:Thought|Monologue|Thinking|Check|Self-Correction|Drafting|Thought Process|Internal Monologue|Reasoning|Plan|Analysis|Strategy):\s*|'
+    # Bare "Plan:" / "Thought:" only at the start of a line: mid-sentence they are dialogue
+    # ("The plan: we go at dawn") and used to truncate the reply (Hermes review H2).
+    r'(?<=\n)[ \t]*\*?(?:Thought|Monologue|Thinking|Check|Self-Correction|Drafting|Thought Process|Internal Monologue|Reasoning|Plan|Analysis|Strategy):[ \t]*|'
     r'\b(?:[A-Z][a-z0-9_\'\s]{0,30})?reaction should be\b|'
     r'"?You MUST begin your response immediately with\s*<thinking[^"\n]*"?|'
     r'\[Dialogue and Narration\]'
@@ -79,12 +81,29 @@ CLOSE_TAG_REGEX = re.compile(
     # treating it as the start of the public reply sent the plan to the user (QA Q5).
     r'\[Public\]|\[Public Response\]|\[Public Dialogue\]|\[Dialogue\]|\[Response\]|'
     r'\*+(?:Public|Public Response|Public Dialogue|Dialogue|Response|Narration|Canon Response):\*+|'
-    r'(?:\*|\b)(?:Public|Public Response|Public Dialogue|Dialogue|Response|Narration|Canon Response):\s*|'
+    r'(?<=\n)[ \t]*(?:Public|Public Response|Public Dialogue|Dialogue|Response|Narration|Canon Response):[ \t]*|'
     r'\[SCENE START\]|\[SCENE\]|\[NARRATION\]|\[RP\]|\[CHARACTER\]|\[PERSPECTIVE\]|'
     r'(?:^|\n)---+\s*(?:\n|$)'
     r')',
     re.IGNORECASE
 )
+
+def _line_search(regex, text: str, at_line_start: bool = True):
+    """Search with knowledge of whether `text` begins at a line start. Line-start markers
+    are written as (?<=\n); a streamed chunk usually begins mid-line, so the caller says.
+    Returns (start, end) in `text`, or None."""
+    probe = ("\n" if at_line_start else "\x00") + text
+    m = regex.search(probe)
+    if not m:
+        return None
+    return max(m.start() - 1, 0), max(m.end() - 1, 0)
+
+
+def _line_sub(regex, text: str) -> str:
+    """regex.sub("", text) treating the start of `text` as a line start."""
+    res = regex.sub("", "\n" + text)
+    return res[1:] if res.startswith("\n") else res
+
 
 PARTIAL_TAG_REGEX = re.compile(r'(?:</?|</?\||\[)[a-zA-Z0-9_:|\-\s]{0,25}$')
 
@@ -139,6 +158,11 @@ class MonologueStreamParser:
         self._line_buffer: str = ""
         self._stream_buffer: str = ""
         self._public_gm_actions: List[str] = []
+        self._at_line_start: bool = True   # whether the unconsumed stream begins a line
+
+    def _note_consumed(self, text: str) -> None:
+        if text:
+            self._at_line_start = text.endswith("\n")
 
     def _check_public_limit(self, chunk: str) -> bool:
         """Helper to increment public token count and check if limit exceeded. Returns True if truncated."""
@@ -172,8 +196,8 @@ class MonologueStreamParser:
 
     def _clean_monologue(self, text: str) -> str:
         """Removes open/close tags and leading blockquote symbols from monologue string."""
-        cleaned = OPEN_TAG_REGEX.sub("", text)
-        cleaned = CLOSE_TAG_REGEX.sub("", cleaned)
+        cleaned = _line_sub(OPEN_TAG_REGEX, text)
+        cleaned = _line_sub(CLOSE_TAG_REGEX, cleaned)
         for tag in OPEN_TAGS + CLOSE_TAGS:
             cleaned = cleaned.replace(tag, "")
         lines = [line[2:] if line.startswith("> ") else line for line in cleaned.split("\n")]
@@ -195,8 +219,8 @@ class MonologueStreamParser:
         if PUBLIC_META_LINE_REGEX.match(line):
             return None
 
-        cleaned = OPEN_TAG_REGEX.sub("", line)
-        cleaned = CLOSE_TAG_REGEX.sub("", cleaned)
+        cleaned = _line_sub(OPEN_TAG_REGEX, line)
+        cleaned = _line_sub(CLOSE_TAG_REGEX, cleaned)
         for tag in OPEN_TAGS + CLOSE_TAGS:
             cleaned = cleaned.replace(tag, "")
             
@@ -260,7 +284,6 @@ class MonologueStreamParser:
     _PLAN_LINE = re.compile(
         r"^\s*(?:(?:Notes?|Plan|Goal|Reminder|Constraints?)\s*:|"
         r"(?:the user|the user's|user's|the player)\b|"
-        r"(?:[A-Z][\w’']+['’]s|Her|His|Their)\s+(?:priority|goal|aim|objective|plan|intention)\s+is\s+to\b|"
         r"I(?:'ll| will| must| need to| should| cannot| can't| am going to| have to)\b|"
         r"(?:Since I|Let me|Now I|Okay[,.]|Alright[,.]))", re.IGNORECASE)
 
@@ -299,11 +322,13 @@ class MonologueStreamParser:
         paras = [p for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
         n = len(paras)
         norm = [re.sub(r"\W+", " ", p.lower()).strip() for p in paras]
-        for k in range(n // 2, 0, -1):
+        # At least two paragraphs repeated, each a close rewrite (Hermes review H3: a single
+        # refrain, or one loose match beside an exact copy, collapsed legitimate replies).
+        for k in range(n // 2, 1, -1):
             tail = norm[n - k:]
             for i in range(0, n - 2 * k + 1):
                 ratios = [difflib.SequenceMatcher(None, norm[i + j], tail[j]).ratio() for j in range(k)]
-                if sum(ratios) / k >= 0.75 and all(r >= 0.5 for r in ratios):
+                if sum(ratios) / k >= 0.8 and all(r >= 0.7 for r in ratios):
                     logger.info(f"[StreamParser] Salvaged reply contained a draft and a final version; "
                                 f"kept the final {k} paragraph(s), dropped {n - k}.")
                     return "\n\n".join(paras[n - k:])
@@ -318,9 +343,14 @@ class MonologueStreamParser:
         paras = [p for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
         for i, para in enumerate(paras):
             if not self._is_planning_paragraph(para) and self._is_prose_paragraph(para):
-                if i and any(self._is_planning_paragraph(p) for p in paras[:i]):
-                    logger.info(f"[StreamParser] Dropped {i} leading planning paragraph(s) from salvaged reply.")
-                    return "\n\n".join(paras[i:])
+                head = paras[:i]
+                planning = [p for p in head if self._is_planning_paragraph(p)]
+                if planning:
+                    # Only the planning paragraphs go; short narration among them stays
+                    # (Hermes review H1: "Lian set the pot down…" was deleted with the aside).
+                    logger.info(f"[StreamParser] Dropped {len(planning)} leading planning paragraph(s) "
+                                f"from salvaged reply.")
+                    return "\n\n".join([p for p in head if p not in planning] + paras[i:])
                 return text
         return text
 
@@ -370,11 +400,11 @@ class MonologueStreamParser:
         # Only a heading at the start of a line counts ("Plan:", "* Plan: offer tea",
         # "[Analysis]"), and its whole paragraph is planning. It used to match the word
         # anywhere and keep the rest of the line (QA Q5: "offer tea" leaked).
-        m_plan = None
-        for m_plan in re.finditer(
-                r'^[ \t]*(?:[\*\-•][ \t]+)?\[?(?:Plan|Strategy|Analysis|Draft|Notes|Planning|Internal Monologue)\b[^\]\n]*\]?:',
-                text, re.IGNORECASE | re.MULTILINE):
-            pass
+        # Only when the text OPENS with such a heading (Hermes review H5: an in-world note
+        # quoted later in the reply, "Plan: meet me at the pier", was cut).
+        m_plan = re.match(
+            r'\s*(?:[\*\-•][ \t]+)?\[?(?:Plan|Strategy|Analysis|Draft|Notes|Planning|Internal Monologue)\b[^\]\n]*\]?:',
+            text, re.IGNORECASE)
         if m_plan:
             m_end = re.search(r'\n\s*\n', text[m_plan.end():])
             after_plan = text[m_plan.end() + m_end.end():].strip() if m_end else ""
@@ -384,8 +414,8 @@ class MonologueStreamParser:
         # Strip explicit scene description headers but keep the content
         text = re.sub(r'\[SCENE DESCRIPTION\]\s*', '', text, flags=re.IGNORECASE)
 
-        cleaned = OPEN_TAG_REGEX.sub("", text)
-        cleaned = CLOSE_TAG_REGEX.sub("", cleaned)
+        cleaned = _line_sub(OPEN_TAG_REGEX, text)
+        cleaned = _line_sub(CLOSE_TAG_REGEX, cleaned)
         for tag in OPEN_TAGS + CLOSE_TAGS:
             cleaned = cleaned.replace(tag, "")
 
@@ -494,9 +524,9 @@ class MonologueStreamParser:
 
                 while True:
                     if self.state == 1:
-                        m_open = OPEN_TAG_REGEX.search(self._stream_buffer)
+                        m_open = _line_search(OPEN_TAG_REGEX, self._stream_buffer, self._at_line_start)
                         if m_open:
-                            pre = self._stream_buffer[:m_open.start()]
+                            pre = self._stream_buffer[:m_open[0]]
                             if pre or self._line_buffer:
                                 outputs = self._process_public_output(pre, force_flush=True)
                                 for out in outputs:
@@ -508,11 +538,13 @@ class MonologueStreamParser:
                                         break
                                 if stop_stream:
                                     break
-                            self._stream_buffer = self._stream_buffer[m_open.end():]
+                            self._note_consumed(self._stream_buffer[:m_open[1]])
+                            self._stream_buffer = self._stream_buffer[m_open[1]:]
                             self.state = 0
                             self._in_monologue = True
                         else:
                             clean_txt, carry = self._process_public_text(self._stream_buffer)
+                            self._note_consumed(clean_txt)
                             if carry:
                                 self._stream_buffer = carry
                             else:
@@ -531,19 +563,21 @@ class MonologueStreamParser:
                             break
 
                     if self.state == 0:
-                        m_close = CLOSE_TAG_REGEX.search(self._stream_buffer)
+                        m_close = _line_search(CLOSE_TAG_REGEX, self._stream_buffer, self._at_line_start)
                         if m_close:
-                            mono_part = self._stream_buffer[:m_close.start()]
+                            mono_part = self._stream_buffer[:m_close[0]]
                             full_mono = self.inner_monologue_buffer + mono_part
                             
                             m_txt = self._clean_monologue(full_mono)
                             if m_txt:
                                 self._monologue_sections.append(m_txt)
                             self.inner_monologue_buffer = ""
-                            self._stream_buffer = self._stream_buffer[m_close.end():]
+                            self._note_consumed(self._stream_buffer[:m_close[1]])
+                            self._stream_buffer = self._stream_buffer[m_close[1]:]
                             self.state = 1
                         else:
                             self.inner_monologue_buffer += self._stream_buffer
+                            self._note_consumed(self._stream_buffer)
                             tokens = len(self._stream_buffer.split()) if self._stream_buffer.strip() else 1
                             self.monologue_token_count += tokens
                             self._stream_buffer = ""
@@ -607,9 +641,9 @@ class MonologueStreamParser:
                     self._monologue_sections.append(mono_text)
                     if not self.public_response_buffer:
                         # Check if mono_text contains an implicit public section split
-                        m_close = CLOSE_TAG_REGEX.search(mono_text)
+                        m_close = _line_search(CLOSE_TAG_REGEX, mono_text)
                         if m_close:
-                            clean_pub = self._guard_salvage(self._strip_monologue_bleed(mono_text[m_close.end():]))
+                            clean_pub = self._guard_salvage(self._strip_monologue_bleed(mono_text[m_close[1]:]))
                             if clean_pub:
                                 self.public_response_buffer += clean_pub
                                 yield clean_pub
@@ -645,12 +679,22 @@ class MonologueStreamParser:
                                         yield clean_pub
                     if not self.public_response_buffer:
                         # Salvage found nothing to show from a non-empty scratchpad. Never send
-                        # a silent empty reply (QA Q5, 2026-10-13): say so, and don't save it.
-                        logger.warning("[StreamParser] Salvage produced no reply text; withheld.")
-                        self.is_failsafe_triggered = True
-                        self.is_tainted = True
-                        self.public_response_buffer = self.SALVAGE_NOTICE
-                        yield self.SALVAGE_NOTICE
+                        # a silent empty reply (QA Q5). If it holds planning, withhold it; if
+                        # not (an in-world list the bullet rules deleted, Hermes review H4),
+                        # the text IS the reply: pass it through, minus GM actions.
+                        body = GM_ACTION_REGEX.sub("", mono_text).strip()
+                        paras = [p for p in re.split(r"\n\s*\n", body) if p.strip()]
+                        if body and not any(self._is_planning_paragraph(p) for p in paras):
+                            logger.info("[StreamParser] Salvage filters removed everything but no "
+                                        "planning was found; passing the text through.")
+                            self.public_response_buffer = body
+                            yield body
+                        else:
+                            logger.warning("[StreamParser] Salvage produced no reply text; withheld.")
+                            self.is_failsafe_triggered = True
+                            self.is_tainted = True
+                            self.public_response_buffer = self.SALVAGE_NOTICE
+                            yield self.SALVAGE_NOTICE
                 self.inner_monologue_buffer = ""
                 self.state = 1
                 logger.info(f"[StreamParser] EOS reached in monologue mode. Monologue captured.")
@@ -671,5 +715,7 @@ class MonologueStreamParser:
                 self._monologue_sections.append(clean)
             self.inner_monologue_buffer = ""
         all_monologue = "\n\n".join([s for s in self._monologue_sections if s])
+        if self.public_response_buffer.strip() == self.SALVAGE_NOTICE:
+            return all_monologue, self.SALVAGE_NOTICE     # Hermes review H8
         clean_public = self._strip_monologue_bleed(self.public_response_buffer)
         return all_monologue, clean_public
