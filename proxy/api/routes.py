@@ -18,6 +18,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from config.hardware_tiers import get_hardware_config, HardwareTierEnum
 from proxy.core.st_parser import parse_sillytavern_context
 from config.manager import get_settings_manager, resolve_gm_actions_mode
+from proxy.core import reasoning
 from proxy.core.stream_parser import MonologueStreamParser, CLOSE_TAGS
 from proxy.core.sensory_filter import ObserverInferenceGatingFilter
 from proxy.rag.prompt_builder import CognitivePromptBuilder
@@ -802,6 +803,11 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         return StreamingResponse(overflow_stream(), media_type="text/event-stream")
 
     gm_mode = resolve_gm_actions_mode(settings)   # resolves "auto" by backend locality
+    reasoning_mode = await reasoning.resolve_mode(settings, lemonade_client, request.model)
+    if reasoning_mode == "none" and gm_mode != "off":
+        # No private block to carry GM actions in, and GM tags in the reply would leak.
+        logger.info(f"[Reasoning] mode 'none': GM actions off for this turn.")
+        gm_mode = "off"
     csa_messages = prompt_builder.build_csa_messages(
         system_prompt=system_prompt,
         sensory_feed=sensory_feed,
@@ -811,6 +817,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         frontend_max_tokens=frontend_max_tokens,
         gm_mode=gm_mode,
         max_history=None,     # the allocator above already budgeted the history
+        reasoning_mode=reasoning_mode,
     )
 
     # Ensure closing tags are NOT in LLM stop sequence list
@@ -840,8 +847,8 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                     f"another character already answered turn {turn_id}.")
         ooc_directions = []
 
-    # --- Inject Assistant Prefill (Only if Monologue is enabled) ---
-    if prompt_builder.config.inner_monologue_enabled:
+    # --- Inject Assistant Prefill (legacy 'prefill' reasoning mode only) ---
+    if prompt_builder.config.inner_monologue_enabled and reasoning_mode == "prefill":
         # A2 (gm_actions_and_lore_scope.md): the GM_ACTION bullets are assembled by
         # mode, so 'off' spends zero prompt tokens on them and 'move_only' never
         # advertises CREATE_ROOM. The lore/anti-puppeting parts are mode-independent.
@@ -881,18 +888,38 @@ The text after </think> must ONLY be narrative and dialogue.
         csa_messages.append({"role": "assistant", "content": "<think>\n"})
         init_state = 0
     else:
-        block = _author_direction_block(ooc_directions)
-        if block:
-            if csa_messages and csa_messages[-1]["role"] == "user":
-                csa_messages[-1]["content"] += block
-            else:
-                csa_messages.append({"role": "user", "content": block.strip()})
+        # Native / none (spike 2026-10-13): the reply prompt is purely in character. In
+        # native mode the model's own thinking is private (the server separates it), so GM
+        # actions go there; nothing asks for a text scratchpad.
+        gm_note = ""
+        if reasoning_mode == "native" and gm_mode != "off":
+            kinds = ("MOVE" if gm_mode == "move_only" else "MOVE or CREATE_ROOM")
+            gm_note = (f"\n- World tracking ({kinds}): while you think privately, if a character "
+                       "(including the user) moves to another location, write "
+                       '[GM_ACTION: {"type": "MOVE", "entity": "...", "room_id": "..."}]'
+                       + ('; for a place not listed, first [GM_ACTION: {"type": "CREATE_ROOM", '
+                          '"room_id": "...", "name": "...", "desc": "..."}]' if gm_mode == "full" else "")
+                       + ". These belong in your private thinking only, never in the reply.")
+            gm_note += await _known_rooms_block(session_id, target_char, gm_mode)
+        block = (_author_direction_block(ooc_directions) + active_lore_str
+                 + "\n\n[Write the reply in character: narrative and dialogue only. Never act, "
+                   "speak or think for the user's character. If the user contradicts the lore, "
+                   "let the character react to it in the story." + gm_note + "]")
+        if csa_messages and csa_messages[-1]["role"] == "user":
+            csa_messages[-1]["content"] += block
+        else:
+            csa_messages.append({"role": "user", "content": block.strip()})
         init_state = 1
+    reasoning_body = reasoning.extra_body(reasoning_mode, settings, lemonade_client.base_url)
     
     # Token budget P0 (OPEN-008): never ask the backend for more room than the
     # window has left. backend_max_tokens is now a CEILING, not a flat value.
     backend_max_tokens = budget.clamp_max_tokens(
         csa_messages, settings, prompt_builder.config, model=str(request.model))
+    if reasoning_mode == "native":
+        # Native thinking spends completion tokens before the reply; without room for it
+        # the reply came back empty (spike 2026-10-13: 3 of 6 probes at 600 tokens).
+        backend_max_tokens += int(settings.get("reasoning_max_tokens", 3000) or 3000)
 
     logger.info(f"[SPMIntoBackendLog] Sending to Backend (model={request.model}): {csa_messages}")
 
@@ -907,6 +934,7 @@ The text after </think> must ONLY be narrative and dialogue.
             stop=stop,
             job_kind="chat",
             session_id=session_id,
+            extra_body=reasoning_body,
         )
         try:
             async for chunk in parser.process_token_stream(raw_stream):
@@ -1002,6 +1030,7 @@ The text after </think> must ONLY be narrative and dialogue.
             stop=stop,
             job_kind="chat",
             session_id=session_id,
+            extra_body=reasoning_body,
         )
 
         def _chunk(content):
@@ -1493,7 +1522,10 @@ async def _ephemeral_passthrough(request: "ChatCompletionRequest", session_id: s
         return lemonade_client.generate_stream(
             messages=messages, model=request.model,
             temperature=request.temperature or 0.7, max_tokens=max_tokens,
-            stop=None, job_kind="utility", session_id=session_id)
+            stop=None, job_kind="utility", session_id=session_id,
+            # QA Q6: Gemma on LM Studio thinks by default, used the whole budget on it and
+            # returned empty summaries. Utility calls don't need thinking.
+            extra_body=reasoning.extra_body("none", settings, lemonade_client.base_url))
 
     if request.stream is False:
         parser = MonologueStreamParser(max_public_tokens=request.max_tokens or 10_000, initial_state=1)

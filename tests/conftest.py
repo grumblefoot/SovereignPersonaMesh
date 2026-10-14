@@ -81,6 +81,9 @@ def isolated_settings(tmp_path, monkeypatch):
                 "EMBEDDING_MODEL", "SPM_DEFAULT_MODEL"):   # EMBEDDING_PROVIDER: isolated_embeddings owns it
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(config_manager, "_CONFIG_PATH", str(tmp_path / "config.json"))
+    # The suite's existing expectations are the legacy text-scratchpad behaviour; 'auto'
+    # would probe the (unreachable) test backend. Native/none have their own tests.
+    monkeypatch.setenv("SPM_REASONING_MODE", "prefill")
     config_manager.reset_settings_manager()
     yield
     config_manager.reset_settings_manager()

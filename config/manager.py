@@ -74,10 +74,25 @@ _DEFAULT_VALUES: Dict[str, Any] = {
     "sleep_cycle_hour": 4,
     "gm_actions_max_per_turn": 4,
     "gm_actions_max_rooms_per_session": 40,
+    # ── Reasoning (native-reasoning spike, 2026-10-13; docs/plans/backend_matrix.md) ──
+    # auto | native | none | prefill. native: the server separates the model's own
+    # thinking (reasoning field); none: no private block; prefill: the legacy text <think>
+    # scratchpad with inline GM actions. auto probes the backend: native if it returns a
+    # reasoning field, else none; a cloud URL resolves to none (thinking costs money).
+    "reasoning_mode": "auto",
+    # low | medium | high: how much a native reasoner may think (reasoning_effort).
+    "reasoning_effort": "low",
+    # Extra completion tokens reserved for native thinking on top of the reply.
+    "reasoning_max_tokens": 3000,
+    # auto | inline | separate. Where GM actions come from: inline = tags in the prefill
+    # scratchpad; separate = a small structured call after the reply. auto = inline only
+    # in prefill mode.
+    "gm_actions_channel": "auto",
 }
 
 # Integer-typed keys that should always produce int values.
 _INT_KEYS = frozenset({
+    "reasoning_max_tokens",
     "SPM_PROXY_PORT",
     "backend_max_tokens",
     "EMBEDDING_DIM",
@@ -120,6 +135,10 @@ _ENV_VAR_MAP: Dict[str, str] = {
     "EMBEDDING_ALLOW_REMOTE": "EMBEDDING_ALLOW_REMOTE",
     "EMBEDDING_MAX_COSINE_DISTANCE": "EMBEDDING_MAX_COSINE_DISTANCE",
     "gm_actions_mode": "SPM_GM_ACTIONS_MODE",
+    "reasoning_mode": "SPM_REASONING_MODE",
+    "reasoning_effort": "SPM_REASONING_EFFORT",
+    "reasoning_max_tokens": "SPM_REASONING_MAX_TOKENS",
+    "gm_actions_channel": "SPM_GM_ACTIONS_CHANNEL",
     "public_output_default": "SPM_PUBLIC_OUTPUT_DEFAULT",
     "context_window_override": "SPM_CONTEXT_WINDOW_OVERRIDE",
     "sleep_cycle_enabled": "SPM_SLEEP_CYCLE_ENABLED",

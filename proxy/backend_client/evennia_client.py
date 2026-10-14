@@ -4,6 +4,7 @@ Handles action evaluation dispatches and spatial state queries.
 """
 
 import logging
+import os
 import httpx
 from typing import Dict, Any, Optional
 
@@ -11,8 +12,10 @@ logger = logging.getLogger(__name__)
 
 
 class EvenniaWorldClient:
-    def __init__(self, base_url: str = "http://localhost:4005/api/v1"):
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url: str = ""):
+        # SPM_ENGINE_URL lets a second instance (tests, spikes, packaging) use another engine.
+        self.base_url = (base_url or os.getenv("SPM_ENGINE_URL", "") or
+                         "http://localhost:4005/api/v1").rstrip("/")
         self._client = None
 
 

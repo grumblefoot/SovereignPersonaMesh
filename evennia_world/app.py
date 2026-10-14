@@ -1093,5 +1093,6 @@ async def shutdown_event():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("evennia_world.app:app", host="0.0.0.0", port=4005)
+    uvicorn.run("evennia_world.app:app", host=os.getenv("SPM_ENGINE_HOST", "0.0.0.0"),
+                port=int(os.getenv("SPM_ENGINE_PORT", "4005")))
 

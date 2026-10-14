@@ -1,0 +1,89 @@
+"""Native-reasoning spike (2026-10-13): reasoning modes and backend probing."""
+import asyncio
+
+import pytest
+
+from proxy.core import reasoning
+from proxy.rag.prompt_builder import CognitivePromptBuilder
+
+
+class FakeClient:
+    def __init__(self, chunks, base_url="http://192.168.50.207:1234/v1"):
+        self.chunks, self.base_url, self.calls = chunks, base_url, 0
+
+    async def generate_stream(self, **kw):
+        self.calls += 1
+        self.kw = kw
+        for c in self.chunks:
+            yield c
+
+
+def test_extra_body_switches_thinking_for_local_backends_only():
+    s = {"reasoning_effort": "medium"}
+    assert reasoning.extra_body("native", s, "http://localhost:13305/v1") == {
+        "reasoning_effort": "medium", "chat_template_kwargs": {"enable_thinking": True}}
+    assert reasoning.extra_body("none", s, "http://10.0.0.5:1234/v1") == {
+        "reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False}}
+    assert reasoning.extra_body("native", s, "https://api.openai.com/v1") is None
+    assert reasoning.extra_body("prefill", s, "http://localhost:13305/v1") is None
+
+
+@pytest.mark.asyncio
+async def test_auto_probe_detects_native_and_caches():
+    reasoning.reset_cache()
+    c = FakeClient(["<thinking>", "The user wants OK.", "</thinking>", "OK"])
+    assert await reasoning.resolve_mode({"reasoning_mode": "auto"}, c, "gemma") == "native"
+    assert await reasoning.resolve_mode({"reasoning_mode": "auto"}, c, "gemma") == "native"
+    assert c.calls == 1                                         # cached
+    assert c.kw["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+
+
+@pytest.mark.asyncio
+async def test_auto_probe_without_reasoning_field_is_none():
+    reasoning.reset_cache()
+    assert await reasoning.resolve_mode({"reasoning_mode": "auto"}, FakeClient(["OK"]), "mixtral") == "none"
+
+
+@pytest.mark.asyncio
+async def test_auto_never_probes_a_cloud_backend():
+    reasoning.reset_cache()
+    c = FakeClient(["<thinking>"], base_url="https://api.openai.com/v1")
+    assert await reasoning.resolve_mode({"reasoning_mode": "auto"}, c, "gpt") == "none"
+    assert c.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_explicit_mode_wins_and_failed_probe_is_none():
+    reasoning.reset_cache()
+    assert await reasoning.resolve_mode({"reasoning_mode": "prefill"}, FakeClient([]), "m") == "prefill"
+
+    class Broken(FakeClient):
+        async def generate_stream(self, **kw):
+            raise ConnectionError("down")
+            yield ""
+    assert await reasoning.resolve_mode({"reasoning_mode": "auto"}, Broken([]), "m") == "none"
+
+
+def _build(mode):
+    b = CognitivePromptBuilder()
+    assert b.config.inner_monologue_enabled
+    return b.build_csa_messages(
+        system_prompt="You are Mei.", sensory_feed="Vardus says hi.", retrieved_memories=[],
+        chat_history=[{"role": "user", "content": "hello"},
+                      {"role": "assistant", "content": "<think> *Processing context...* </think>\nMei bows."},
+                      {"role": "user", "content": "how are you"}],
+        spatial_context="Location: hall", gm_mode="full", max_history=None, reasoning_mode=mode)
+
+
+def test_native_prompt_has_no_text_scratchpad_anywhere():
+    for mode in ("native", "none"):
+        msgs = _build(mode)
+        joined = "\n".join(m["content"] for m in msgs)
+        assert "<think>" not in joined and "GM_ACTION" not in joined, mode
+        assert msgs[2] == {"role": "assistant", "content": "Mei bows."}
+
+
+def test_prefill_prompt_is_unchanged_legacy():
+    msgs = _build("prefill")
+    joined = "\n".join(m["content"] for m in msgs)
+    assert "<think>" in joined and "GM_ACTION" in joined
