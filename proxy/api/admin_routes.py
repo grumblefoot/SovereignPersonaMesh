@@ -204,20 +204,21 @@ async def delete_session(session_id: str):
             # Delete from world_state_sessions
             await conn.execute(strings.get("sql.delete_session_world_state"), session_id)
 
-            # Query all csa_memory tables, plus this chat's lore (OPEN-007: a
-            # deleted chat leaves no chat-scoped rules behind; canon stays).
+            # Chat rules now live in spm_chat_rules (brief C1b): a deleted chat
+            # leaves no chat-scoped rules behind (OPEN-007).
+            res = await conn.execute(
+                "DELETE FROM spm_chat_rules WHERE session_id = $1;", session_id)
+            try:
+                deleted_count += int(res.split()[-1])
+            except (ValueError, IndexError):
+                pass
+
             tables = list(await conn.fetch(strings.get("sql.list_memory_tables")))
-            tables += [t for t in await conn.fetch(strings.get("sql.list_lore_tables"))]
             for t in tables:
                 table_name = t["table_name"]
-                if table_name.startswith("csa_lore_rules_"):
-                    res = await conn.execute(
-                        f"DELETE FROM {table_name} WHERE session_id = $1 AND scope != 'global';",
-                        session_id)
-                else:
-                    res = await conn.execute(
-                        f"DELETE FROM {table_name} WHERE session_id = $1;", session_id
-                    )
+                res = await conn.execute(
+                    f"DELETE FROM {table_name} WHERE session_id = $1;", session_id
+                )
                 # Format: "DELETE 5"
                 try:
                     num = int(res.split()[-1])
@@ -258,7 +259,9 @@ async def factory_reset():
             await conn.execute(strings.get("sql.truncate_archives"))
             await conn.execute(strings.get("sql.truncate_world_state"))
 
-            # Truncate all csa_memory and csa_lore_rules tables
+            # Truncate all csa_memory tables (brief C1b: list_tables_info now
+            # lists only csa_memory_%) plus the shared chat-rules table.
+            await conn.execute("TRUNCATE TABLE spm_chat_rules RESTART IDENTITY CASCADE;")
             tables = await conn.fetch(
                 strings.get("sql.list_tables_info")
             )
@@ -314,104 +317,6 @@ async def shutdown_system():
         "status": "success",
         "message": "Shutting down SPM and Game services gracefully."
     })
-
-@router.get("/lore/pending")
-async def get_pending_lore():
-    """Fetch all pending GM rules from all character tables."""
-    pool = AdminState.get_db_pool()
-    if pool is None:
-        return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
-    
-    pending_rules = []
-    try:
-        async with pool.acquire() as conn:
-            tables = await conn.fetch(
-                strings.get("sql.list_lore_tables")
-            )
-            for t in tables:
-                table_name = t["table_name"]
-                char_id = table_name.replace("csa_lore_rules_", "")
-                
-                # We need to gracefully handle tables without 'status' column yet
-                try:
-                    rows = await conn.fetch(
-                        f"SELECT id, rule_text, rule_type, status, created_at, session_id, scope "
-                        f"FROM {table_name} WHERE status = 'pending';")
-                    for r in rows:
-                        pending_rules.append({
-                            "char_id": char_id,
-                            "id": str(r["id"]),
-                            "rule_text": r["rule_text"],
-                            "rule_type": r["rule_type"],
-                            "status": r["status"],
-                            "session_id": r["session_id"],
-                            "scope": r["scope"],
-                            "created_at": r["created_at"].isoformat() if r["created_at"] else None
-                        })
-                except Exception:
-                    pass
-        return JSONResponse(content={"pending_rules": pending_rules})
-    except Exception as e:
-        logger.error(f"[AdminAPI] Error fetching pending lore: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/lore/{char_id}/{rule_id}/approve")
-async def approve_lore(char_id: str, rule_id: str):
-    """Approve a pending lore rule, setting its status to 'active'."""
-    pool = AdminState.get_db_pool()
-    if pool is None:
-        return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
-    
-    table_name = f"csa_lore_rules_{safe_char_id(char_id)}"
-    try:
-        async with pool.acquire() as conn:
-            res = await conn.execute(f"UPDATE {table_name} SET status = 'active' WHERE id = $1::uuid;", rule_id)
-            if res == "UPDATE 0":
-                return JSONResponse(status_code=404, content={"error": "Rule not found"})
-        return JSONResponse(content={"status": "success"})
-    except Exception as e:
-        logger.error(f"[AdminAPI] Error approving lore: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/lore/{char_id}/{rule_id}/promote")
-async def promote_lore(char_id: str, rule_id: str):
-    """Promote a chat-scoped rule to character canon (OPEN-007 §B.4): scope='global',
-    session_id cleared to the canon bucket, so every chat with this character sees it."""
-    pool = AdminState.get_db_pool()
-    if pool is None:
-        return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
-
-    table_name = f"csa_lore_rules_{safe_char_id(char_id)}"
-    try:
-        async with pool.acquire() as conn:
-            res = await conn.execute(
-                f"UPDATE {table_name} SET scope = 'global', session_id = 'canon' "
-                f"WHERE id = $1::uuid;", rule_id)
-            if res == "UPDATE 0":
-                return JSONResponse(status_code=404, content={"error": "Rule not found"})
-        return JSONResponse(content={"status": "success", "scope": "global"})
-    except Exception as e:
-        logger.error(f"[AdminAPI] Error promoting lore: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/lore/{char_id}/{rule_id}/reject")
-async def reject_lore(char_id: str, rule_id: str):
-    """Reject a pending lore rule by deleting it."""
-    pool = AdminState.get_db_pool()
-    if pool is None:
-        return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
-    
-    table_name = f"csa_lore_rules_{safe_char_id(char_id)}"
-    try:
-        async with pool.acquire() as conn:
-            res = await conn.execute(f"DELETE FROM {table_name} WHERE id = $1::uuid;", rule_id)
-            if res == "DELETE 0":
-                return JSONResponse(status_code=404, content={"error": "Rule not found"})
-        return JSONResponse(content={"status": "success"})
-    except Exception as e:
-        logger.error(f"[AdminAPI] Error rejecting lore: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/lore/test_connection")
 async def test_lore_connection(body: dict):
