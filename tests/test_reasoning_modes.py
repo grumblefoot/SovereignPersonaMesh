@@ -149,3 +149,13 @@ def test_gm_parse_rejects_junk():
     assert gm_planner.parse("no json here") == []
     assert gm_planner.parse('{"actions": "move"}') == []
     assert gm_planner.parse('{"actions": [1, {"type": "MOVE", "room_id": "x"}]}') == [{"type": "MOVE", "room_id": "x"}]
+
+
+def test_gm_grounded_keeps_only_quoted_actions():
+    acts = [{"type": "MOVE", "entity": "lian", "room_id": "kitchen", "evidence": "Lian went to the kitchen"},
+            {"type": "CREATE_ROOM", "room_id": "garden", "name": "Garden", "evidence": "garden"},
+            {"type": "MOVE", "entity": "user", "room_id": "garden", "evidence": "They step out through the back door"}]
+    kept = gm_planner.grounded(acts, '*They step out through the back door.*', "Lian smiled.")
+    assert kept == [{"type": "CREATE_ROOM", "room_id": "garden", "name": "Garden"},
+                    {"type": "MOVE", "entity": "user", "room_id": "garden"}]
+    assert gm_planner.grounded([{"type": "MOVE", "entity": "user", "room_id": "x"}], "anything") == []

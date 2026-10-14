@@ -24,8 +24,9 @@ SCHEMA = {
                     "room_id": {"type": "string"},
                     "name": {"type": "string"},
                     "desc": {"type": "string"},
+                    "evidence": {"type": "string"},
                 },
-                "required": ["type", "room_id"],
+                "required": ["type", "room_id", "evidence"],
             },
         }
     },
@@ -45,15 +46,46 @@ def messages_for(rooms: List[Dict[str, str]], where: Dict[str, str], player: str
         f"The player (entity id 'user', called {player}) wrote:\n{player_text}\n\n"
         f"{speaker} replied:\n{reply}\n\n"
         f"Answer with JSON: {{\"actions\": [...]}}, each action of type {kinds}.\n"
-        "- MOVE {\"type\": \"MOVE\", \"entity\": id, \"room_id\": id} only when someone clearly "
-        "arrives in or leaves for another place in THIS exchange. Talking about a place is not a move.\n"
+        "- MOVE {\"type\": \"MOVE\", \"entity\": id, \"room_id\": id, \"evidence\": quote} only "
+        "when the text says someone arrives in or leaves for another place in THIS exchange. Talking "
+        "about a place, wanting to go, or looking around is not a move.\n"
+        "- evidence: copy the exact words (5-15 words) from the player's message or the reply that "
+        "show the move or the new place. No quote, no action.\n"
         "- Use 'user' for the player and the ids above for others.\n"
+        "- If the place matches a known room (same place, any wording), use that room's id; never "
+        "create a second room for a place that already exists.\n"
         + ("- A place not in the list: first {\"type\": \"CREATE_ROOM\", \"room_id\": "
-           "lowercase_with_underscores, \"name\": short name, \"desc\": one sentence}, then the MOVE.\n"
+           "lowercase_with_underscores, \"name\": short name, \"desc\": one sentence, \"evidence\": "
+           "quote}, then the MOVE.\n"
            if allow_create else "")
         + "- If nobody changed location: {\"actions\": []}")
     return [{"role": "system", "content": "You track locations in a roleplay. Answer with JSON only."},
             {"role": "user", "content": task}]
+
+
+def _norm(t: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (t or "").lower()).strip()
+
+
+def grounded(actions: List[Dict[str, Any]], *texts: str) -> List[Dict[str, Any]]:
+    """Keep only actions whose evidence quote really appears in the exchange (checked in
+    code, not trusted from the model). An invented move (Lian 'to the kitchen' with no such
+    line, replay 2026-10-13) has no quote to point at. Evidence is dropped before dispatch."""
+    hay = " ".join(_norm(t) for t in texts)
+
+    def ok(a):
+        ev = _norm(str(a.get("evidence") or ""))
+        return len(ev.split()) >= 3 and ev in hay
+
+    moves_into = {a.get("room_id") for a in actions if a.get("type") == "MOVE" and ok(a)}
+    kept = []
+    for a in actions:
+        # A new room stands if its own quote checks out, or a grounded move goes into it.
+        if ok(a) or (a.get("type") == "CREATE_ROOM" and a.get("room_id") in moves_into):
+            kept.append({k: v for k, v in a.items() if k != "evidence"})
+        else:
+            logger.info(f"[GMPlanner] dropped ungrounded action (evidence not in the text): {a}")
+    return kept
 
 
 def parse(text: str) -> List[Dict[str, Any]]:

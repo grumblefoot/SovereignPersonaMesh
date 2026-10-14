@@ -1019,7 +1019,8 @@ def test_none_mode_separate_gm_channel_moves_the_world(rig, monkeypatch):
         msgs = kwargs.get("messages", [])
         calls.append(kwargs)
         if msgs and "You track locations" in msgs[0]["content"]:
-            yield '{"actions": [{"type": "MOVE", "entity": "user", "room_id": "tavern_upstairs"}]}'
+            yield ('{"actions": [{"type": "MOVE", "entity": "user", "room_id": "tavern_upstairs", '
+                   '"evidence": "follows you up the creaking stairs"}]}')
             return
         rig.prompts.append([dict(m) for m in msgs])
         yield "Mira nods and follows you up the creaking stairs."
