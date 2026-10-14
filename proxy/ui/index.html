@@ -311,11 +311,12 @@
         <label>Context Window Override</label>
         <input type="number" id="cfg-context-window-override" min="0" step="1024" value="0">
         <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
-          0 = use the hardware tier's window (SOVEREIGN 32768). Set to pin the context window; the
-          proxy trims memories/lore/history to fit and refuses turns whose character card
-          alone overflows.
+          Caps the window the server reports. Leave 0 to use the detected window.
         </p>
       </div>
+      <p id="backend-window-status" style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px;">
+        Context window: --
+      </p>
       <button class="btn" onclick="saveConfig()">Save Configuration</button>
     </div>
   </div>
@@ -324,22 +325,52 @@
   <div id="data" class="tab-content">
     
     <div class="card" style="margin-bottom: 24px;">
-      <h2 style="font-size: 1.1rem; margin-bottom: 16px;">Pending GM Rules</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Character</th>
-            <th>Type</th>
-            <th>Rule Text</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="pending-rules-tbody">
-          <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Loading pending rules...</td></tr>
-        </tbody>
-      </table>
-      <div style="margin-top: 12px; text-align: right;">
-        <button class="btn" onclick="fetchPendingRules()">Refresh Rules</button>
+      <h2 style="font-size: 1.1rem; margin-bottom: 16px;">Chat Rules</h2>
+      <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
+        <select id="rules-chat-select" style="flex: 1;"></select>
+        <button class="btn" id="rules-refresh-btn">Refresh</button>
+      </div>
+      <div id="rules-error" style="display: none; font-size: 0.85rem; color: var(--danger); margin-bottom: 12px;"></div>
+      <div id="rules-groups">
+        <p style="color: var(--text-muted); font-size: 0.9rem;">Loading chats...</p>
+      </div>
+
+      <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0;">
+      <h3 style="font-size: 1rem; margin-bottom: 12px;">Add rule</h3>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+        <div class="form-group">
+          <label>Level</label>
+          <select id="rules-add-level">
+            <option value="world">World</option>
+            <option value="location">Location</option>
+            <option value="character_internal">Character internal</option>
+            <option value="character_external">Character external</option>
+          </select>
+        </div>
+        <div class="form-group" id="rules-add-character-group" style="display: none;">
+          <label>Character</label>
+          <select id="rules-add-character"></select>
+        </div>
+        <div class="form-group" id="rules-add-room-group" style="display: none;">
+          <label>Room</label>
+          <select id="rules-add-room"></select>
+        </div>
+        <div class="form-group">
+          <label>Type</label>
+          <select id="rules-add-type">
+            <option value="invariant">Invariant</option>
+            <option value="conditional_trigger">Conditional trigger</option>
+            <option value="game_over">Game over</option>
+          </select>
+        </div>
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label>Rule text</label>
+          <input type="text" id="rules-add-text" placeholder="e.g. The cellar is always dark.">
+        </div>
+      </div>
+      <div style="display: flex; gap: 12px; align-items: center; margin-top: 8px;">
+        <button class="btn" id="rules-add-btn">Add Rule</button>
+        <span id="rules-add-status" style="font-size: 0.85rem;"></span>
       </div>
     </div>
 
@@ -367,9 +398,9 @@
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.nav button').forEach(el => el.classList.remove('active'));
       document.getElementById(id).classList.add('active');
-      if (event && event.target) event.target.classList.add('active');
+      if (typeof event !== 'undefined' && event && event.target) event.target.classList.add('active');
       
-      if (id === 'data') fetchPendingRules();
+      if (id === 'data') loadChatsForRules();
     }
 
     async function shutdownService() {
@@ -576,6 +607,7 @@
         document.getElementById('cfg-backend-max-tokens').value = data.backend_max_tokens ?? 128000;
         document.getElementById('cfg-public-output-default').value = data.public_output_default ?? 400;
         document.getElementById('cfg-context-window-override').value = data.context_window_override ?? 0;
+        loadBackendWindowStatus();
       } catch (e) {}
     }
 
@@ -606,7 +638,10 @@
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(payload),
       });
-      if (res.ok) alert('Settings saved successfully!');
+      if (res.ok) {
+        alert('Settings saved successfully!');
+        loadBackendWindowStatus();
+      }
     }
 
     async function testAlternateModel() {
@@ -648,47 +683,351 @@
       } catch (e) { /* status is informational */ }
     }
 
-    async function fetchPendingRules() {
-      try {
-        const res = await fetch('/admin/api/v1/lore/pending');
-        if (!res.ok) return;
-        const data = await res.json();
-        const tbody = document.getElementById('pending-rules-tbody');
-        if (!data.pending_rules || data.pending_rules.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No pending rules.</td></tr>';
-          return;
-        }
-        tbody.innerHTML = '';
-        for (const r of data.pending_rules) {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td>${r.char_id}</td>
-            <td><span class="badge ${r.rule_type === 'game_over' ? 'badge-blackout' : 'badge-muffled'}">${r.rule_type}</span></td>
-            <td>${r.rule_text}</td>
-            <td>
-              <button class="btn" style="padding: 4px 8px; font-size: 0.8rem;" onclick="approveRule('${r.char_id}', '${r.id}')">Approve</button>
-              <button class="btn btn-danger" style="padding: 4px 8px; font-size: 0.8rem; margin-left: 4px;" onclick="rejectRule('${r.char_id}', '${r.id}')">Reject</button>
-            </td>
-          `;
-          tbody.appendChild(tr);
-        }
-      } catch (e) {
-        console.error('Error fetching pending rules:', e);
+    // ── Chat Rules (brief C2): per-chat world / location / character rules ──
+    // All markup is built with createElement + textContent (or escaped), and
+    // every button uses addEventListener — rule text never enters a string.
+    let rulesChats = [];
+    let rulesSelectedChat = null;
+    let rulesChatData = null;   // last GET /chats/{sid}/rules payload
+
+    const RULE_TYPE_BADGE = { invariant: 'badge-direct', conditional_trigger: 'badge-muffled', game_over: 'badge-blackout' };
+
+    function el(tag, style, text) {
+      const node = document.createElement(tag);
+      if (style) node.style.cssText = style;
+      if (text !== undefined && text !== null) node.textContent = String(text);
+      return node;
+    }
+
+    function badge(text, cls) {
+      const b = el('span', 'margin-left:6px;', text);
+      b.className = 'badge ' + cls;
+      return b;
+    }
+
+    function rulesError(msg) {
+      const box = document.getElementById('rules-error');
+      box.textContent = msg || '';
+      box.style.display = msg ? 'block' : 'none';
+    }
+
+    async function rulesApi(method, path, sid, body, roomId) {
+      let url = '/admin/api/v1/chats/' + encodeURIComponent(sid) + '/rules';
+      if (path) url += '/' + encodeURIComponent(path);
+      if (roomId) url += '?room_id=' + encodeURIComponent(roomId);
+      const opts = { method };
+      if (body !== undefined) {
+        opts.headers = { 'Content-Type': 'application/json' };
+        opts.body = JSON.stringify(body);
+      }
+      const res = await fetch(url, opts);
+      let data = null;
+      try { data = await res.json(); } catch (e) {}
+      if (!res.ok) {
+        const msg = (data && (data.detail || data.error)) || (res.status + ' ' + res.statusText);
+        throw new Error(msg);
+      }
+      return data;
+    }
+
+    function ruleRow(scope, rule) {
+      // scope: {level: 'world'|'character'|'location', roomId?: ...}
+      const tr = el('tr');
+      const tdText = el('td', '', rule.rule_text);
+      tr.appendChild(tdText);
+
+      const tdType = el('td');
+      tdType.appendChild(badge(rule.rule_type || 'invariant', RULE_TYPE_BADGE[rule.rule_type] || 'badge-muffled'));
+      tr.appendChild(tdType);
+
+      const tdStatus = el('td');
+      const isPending = rule.status === 'pending';
+      tdStatus.appendChild(badge(isPending ? 'pending' : (rule.status || 'active'), isPending ? 'badge-muffled' : 'badge-direct'));
+      tr.appendChild(tdStatus);
+
+      tr.appendChild(el('td', 'color: var(--text-muted); font-size: 0.8rem;', rule.source || ''));
+
+      const tdActions = el('td', 'white-space: nowrap;');
+      const smallBtn = (label, danger) => {
+        const b = el('button', 'padding: 4px 8px; font-size: 0.8rem; margin-left: 4px;', label);
+        b.className = 'btn' + (danger ? ' btn-danger' : '');
+        return b;
+      };
+      if (isPending) {
+        const approve = smallBtn('Approve', false);
+        approve.addEventListener('click', async () => {
+          try {
+            await rulesApi('PUT', rule.id, rulesSelectedChat, { status: 'active' }, scope.roomId);
+            loadChatRulesView(rulesSelectedChat);
+          } catch (e) { alert('Error approving rule: ' + e.message); }
+        });
+        tdActions.appendChild(approve);
+      }
+      const edit = smallBtn('Edit', false);
+      edit.addEventListener('click', () => showRuleEditor(tr, scope, rule));
+      tdActions.appendChild(edit);
+      const del = smallBtn('Delete', true);
+      del.addEventListener('click', async () => {
+        if (!confirm('Delete this rule?\n\n' + (rule.rule_text || ''))) return;
+        try {
+          await rulesApi('DELETE', rule.id, rulesSelectedChat, undefined, scope.roomId);
+          loadChatRulesView(rulesSelectedChat);
+        } catch (e) { alert('Error deleting rule: ' + e.message); }
+      });
+      tdActions.appendChild(del);
+      tr.appendChild(tdActions);
+      return tr;
+    }
+
+    function showRuleEditor(row, scope, rule) {
+      const tr = el('tr');
+      const td = el('td', 'background: #090d16;');
+      td.colSpan = 5;
+
+      const wrap = el('div', 'display: flex; gap: 8px; align-items: center; flex-wrap: wrap;');
+      const textInput = el('input');
+      textInput.type = 'text';
+      textInput.value = rule.rule_text || '';
+      textInput.style.cssText = 'flex: 1; min-width: 240px;';
+      const typeSelect = el('select');
+      typeSelect.style.cssText = 'width: auto; padding: 4px 8px; font-size: 0.85rem;';
+      ['invariant', 'conditional_trigger', 'game_over'].forEach(t => {
+        const o = el('option', '', t);
+        o.value = t;
+        if (t === rule.rule_type) o.selected = true;
+        typeSelect.appendChild(o);
+      });
+      const save = el('button', 'padding: 4px 8px; font-size: 0.8rem;', 'Save');
+      save.className = 'btn';
+      const cancel = el('button', 'padding: 4px 8px; font-size: 0.8rem;', 'Cancel');
+      cancel.className = 'btn';
+      const status = el('span', 'font-size: 0.8rem; color: var(--danger);');
+
+      save.addEventListener('click', async () => {
+        try {
+          await rulesApi('PUT', rule.id, rulesSelectedChat,
+                         { rule_text: textInput.value, rule_type: typeSelect.value }, scope.roomId);
+          loadChatRulesView(rulesSelectedChat);
+        } catch (e) { status.textContent = e.message; }
+      });
+      cancel.addEventListener('click', () => tr.remove());
+
+      [textInput, typeSelect, save, cancel, status].forEach(n => wrap.appendChild(n));
+      td.appendChild(wrap);
+      tr.appendChild(td);
+      row.parentNode.insertBefore(tr, row.nextSibling);
+    }
+
+    function rulesTable(rules, scope) {
+      const table = el('table', 'margin-top: 8px;');
+      const tbody = el('tbody');
+      rules.forEach(r => tbody.appendChild(ruleRow(scope, r)));
+      table.appendChild(tbody);
+      return table;
+    }
+
+    function ruleGroup(headerText, rules, scope) {
+      const group = el('div', 'margin-bottom: 18px;');
+      const header = el('div', 'font-weight: bold; color: var(--accent); font-size: 0.9rem;', headerText);
+      const pending = (rules || []).filter(r => r.status === 'pending').length;
+      if (pending) header.appendChild(badge(pending + ' pending', 'badge-muffled'));
+      group.appendChild(header);
+      if (!rules || rules.length === 0) {
+        group.appendChild(el('div', 'color: var(--text-muted); font-size: 0.85rem; margin-top: 4px;', 'No rules'));
+      } else {
+        group.appendChild(rulesTable(rules, scope));
+      }
+      return group;
+    }
+
+    function renderChatRules(data) {
+      const box = document.getElementById('rules-groups');
+      box.innerHTML = '';
+      if (data.engine_error) {
+        box.appendChild(el('div', 'color: var(--warning); font-size: 0.85rem; margin-bottom: 12px;',
+                           'World engine unavailable — room rules hidden: ' + data.engine_error));
+      }
+      box.appendChild(ruleGroup('World', data.world, { level: 'world' }));
+
+      (data.locations || []).forEach(loc => {
+        box.appendChild(ruleGroup(loc.name || String(loc.room_id), loc.rules,
+                                  { level: 'location', roomId: loc.room_id }));
+      });
+
+      const chars = data.characters || {};
+      Object.keys(chars).sort().forEach(cid => {
+        const group = el('div', 'margin-bottom: 18px;');
+        group.appendChild(el('div', 'font-weight: bold; color: var(--text); font-size: 0.95rem; margin-top: 8px;', cid));
+        group.appendChild(ruleGroup('Internal', chars[cid].internal, { level: 'character' }));
+        group.appendChild(ruleGroup('External', chars[cid].external, { level: 'character' }));
+        box.appendChild(group);
+      });
+
+      if (!(data.world || []).length && !(data.locations || []).length && !Object.keys(chars).length) {
+        box.appendChild(el('p', 'color: var(--text-muted); font-size: 0.9rem;', 'This chat has no rules yet.'));
       }
     }
 
-    async function approveRule(charId, ruleId) {
+    async function loadChatRulesView(sid) {
+      if (!sid) return;
+      const box = document.getElementById('rules-groups');
+      box.innerHTML = '<p style="color: var(--text-muted); font-size: 0.9rem;">Loading rules...</p>';
+      rulesError('');
       try {
-        await fetch(`/admin/api/v1/lore/${charId}/${ruleId}/approve`, { method: 'POST' });
-        fetchPendingRules();
-      } catch (e) { alert('Error approving rule'); }
+        const res = await fetch('/admin/api/v1/chats/' + encodeURIComponent(sid) + '/rules');
+        if (!res.ok) {
+          let msg = res.status + ' ' + res.statusText;
+          try { const d = await res.json(); msg = d.error || msg; } catch (e) {}
+          box.innerHTML = '';
+          box.appendChild(el('p', 'color: var(--danger); font-size: 0.9rem;', 'Could not load rules: ' + msg));
+          return;
+        }
+        rulesChatData = await res.json();
+        renderChatRules(rulesChatData);
+        refreshRulesAddSelects();
+      } catch (e) {
+        box.innerHTML = '';
+        box.appendChild(el('p', 'color: var(--danger); font-size: 0.9rem;', 'Could not load rules: ' + e.message));
+      }
     }
 
-    async function rejectRule(charId, ruleId) {
+    async function loadChatsForRules() {
+      const select = document.getElementById('rules-chat-select');
+      rulesError('');
+      let chats;
       try {
-        await fetch(`/admin/api/v1/lore/${charId}/${ruleId}/reject`, { method: 'POST' });
-        fetchPendingRules();
-      } catch (e) { alert('Error rejecting rule'); }
+        const res = await fetch('/admin/api/v1/chats');
+        if (!res.ok) {
+          let msg = res.status + ' ' + res.statusText;
+          try { const d = await res.json(); msg = d.error || msg; } catch (e) {}
+          rulesError('Could not load chats: ' + msg);
+          return;
+        }
+        chats = await res.json();
+      } catch (e) {
+        rulesError('Could not load chats: ' + e.message);
+        return;
+      }
+      rulesChats = chats || [];
+      const previous = rulesSelectedChat;
+      select.innerHTML = '';
+      if (rulesChats.length === 0) {
+        select.appendChild(el('option', '', 'No chats yet'));
+        document.getElementById('rules-groups').innerHTML =
+          '<p style="color: var(--text-muted); font-size: 0.9rem;">No chats recorded yet.</p>';
+        return;
+      }
+      rulesChats.forEach(c => {
+        const namePart = (c.characters && c.characters.length) ? c.characters.join(', ') : 'unknown';
+        const datePart = (c.last_activity || '').slice(0, 10) || 'no activity';
+        const opt = el('option', '', namePart + ' — ' + datePart);
+        opt.value = c.session_id;
+        select.appendChild(opt);
+      });
+      rulesSelectedChat = (previous && rulesChats.some(c => c.session_id === previous))
+        ? previous : rulesChats[0].session_id;
+      select.value = rulesSelectedChat;
+      loadChatRulesView(rulesSelectedChat);
+    }
+
+    function refreshRulesAddSelects() {
+      const level = document.getElementById('rules-add-level').value;
+      const charGroup = document.getElementById('rules-add-character-group');
+      const roomGroup = document.getElementById('rules-add-room-group');
+      charGroup.style.display = (level === 'character_internal' || level === 'character_external') ? '' : 'none';
+      roomGroup.style.display = (level === 'location') ? '' : 'none';
+
+      const chat = rulesChats.find(c => c.session_id === rulesSelectedChat) || {};
+      const charSel = document.getElementById('rules-add-character');
+      charSel.innerHTML = '';
+      const chars = new Set(chat.characters || []);
+      const data = rulesChatData || {};
+      Object.keys(data.characters || {}).forEach(c => chars.add(c));
+      [...chars].sort().forEach(c => charSel.appendChild(el('option', '', c)));
+
+      const roomSel = document.getElementById('rules-add-room');
+      roomSel.innerHTML = '';
+      (data.locations || []).forEach(loc => {
+        const opt = el('option', '', loc.name || String(loc.room_id));
+        opt.value = loc.room_id;
+        roomSel.appendChild(opt);
+      });
+    }
+
+    async function addChatRule() {
+      const status = document.getElementById('rules-add-status');
+      status.textContent = '';
+      if (!rulesSelectedChat) { status.textContent = 'Pick a chat first.'; status.style.color = 'var(--danger)'; return; }
+      const level = document.getElementById('rules-add-level').value;
+      const payload = {
+        level,
+        rule_text: document.getElementById('rules-add-text').value,
+        rule_type: document.getElementById('rules-add-type').value,
+      };
+      if (level === 'location') {
+        payload.room_id = document.getElementById('rules-add-room').value;
+        if (!payload.room_id) { status.textContent = 'This chat has no rooms to attach a rule to.'; status.style.color = 'var(--danger)'; return; }
+      } else if (level !== 'world') {
+        payload.character_id = document.getElementById('rules-add-character').value;
+        if (!payload.character_id) { status.textContent = 'This chat has no characters to attach a rule to.'; status.style.color = 'var(--danger)'; return; }
+      }
+      try {
+        const res = await fetch('/admin/api/v1/chats/' + encodeURIComponent(rulesSelectedChat) + '/rules', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        let data = null;
+        try { data = await res.json(); } catch (e) {}
+        if (!res.ok) {
+          const msg = (data && (data.error || data.detail)) || (res.status + ' ' + res.statusText);
+          status.textContent = msg;
+          status.style.color = 'var(--danger)';
+          return;
+        }
+        status.textContent = 'Rule added.';
+        status.style.color = 'var(--success)';
+        document.getElementById('rules-add-text').value = '';
+        loadChatRulesView(rulesSelectedChat);
+      } catch (e) {
+        status.textContent = 'Error: ' + e.message;
+        status.style.color = 'var(--danger)';
+      }
+    }
+
+    function initChatRulesUI() {
+      document.getElementById('rules-refresh-btn').addEventListener('click', loadChatsForRules);
+      document.getElementById('rules-chat-select').addEventListener('change', (ev) => {
+        rulesSelectedChat = ev.target.value;
+        loadChatRulesView(rulesSelectedChat);
+      });
+      document.getElementById('rules-add-level').addEventListener('change', refreshRulesAddSelects);
+      document.getElementById('rules-add-btn').addEventListener('click', addChatRule);
+    }
+    initChatRulesUI();
+
+    // W2: what context window SPM believes the backend has (brief W1b status line).
+    const WINDOW_SOURCE_WORDS = {
+      'lmstudio-loaded': 'LM Studio, loaded',
+      'lmstudio-jit-default': 'LM Studio default (model not loaded)',
+      'models-list': 'reported by the server',
+      'lemonade-launch': 'Lemonade',
+      'llamacpp-props': 'llama.cpp',
+      'unknown': 'not reported: using the tier/override',
+    };
+
+    async function loadBackendWindowStatus() {
+      const line = document.getElementById('backend-window-status');
+      try {
+        const res = await fetch('/admin/api/v1/backend/window');
+        if (!res.ok) { line.textContent = 'Context window: unavailable (' + res.status + ')'; return; }
+        const d = await res.json();
+        const fmt = (n) => (typeof n === 'number' && isFinite(n)) ? n.toLocaleString('en-US') : '?';
+        const words = WINDOW_SOURCE_WORDS[d.source] || 'not reported: using the tier/override';
+        line.textContent = 'Context window: ' + fmt(d.tokens) + ' (' + words + ') - effective ' + fmt(d.effective);
+      } catch (e) {
+        line.textContent = 'Context window: unavailable';
+      }
     }
 
     function clearThoughtStreamUI() {
@@ -814,6 +1153,8 @@
     fetchStats();
     fetchLogs();
     fetchConfig();
+    // Deep link: /admin#data (or #settings ...) opens that tab directly.
+    if (location.hash && document.getElementById(location.hash.slice(1))) showTab(location.hash.slice(1));
     fetchSpatialMap();
     initThoughtStream();
   </script>
