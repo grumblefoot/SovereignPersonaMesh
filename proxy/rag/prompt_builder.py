@@ -122,6 +122,7 @@ class CognitivePromptBuilder:
         style_card: Optional[Any] = None,
         gm_mode: str = "full",
         max_history: Optional[int] = 15,
+        reasoning_mode: str = "prefill",
     ) -> List[Dict[str, str]]:
         """
         Assembles OpenAI-native structured messages array for Character Subagent execution.
@@ -157,7 +158,11 @@ class CognitivePromptBuilder:
             env_block=env_block
         )
 
-        if self.config.inner_monologue_enabled:
+        # Native/none reasoning (spike 2026-10-13): no text-<think> instructions anywhere.
+        # The legacy prompt pushed a text scratchpad in four places, and models imitated it
+        # in the visible reply even while thinking natively.
+        legacy = self.config.inner_monologue_enabled and reasoning_mode == "prefill"
+        if legacy:
             system_content += strings.get(
                 "rag.monologue_directive_strict",
                 frontend_max_tokens=frontend_max_tokens,
@@ -175,10 +180,13 @@ class CognitivePromptBuilder:
         for msg in (chat_history if max_history is None else chat_history[-max_history:]):
             r = msg.get("role", "user")
             c = msg.get("content", "")
-            if r == "assistant" and self.config.inner_monologue_enabled:
+            if r == "assistant" and legacy:
                 c = re.sub(r'Internal Monologue/Planning:\s*\n*', '', c, flags=re.IGNORECASE)
                 if OPEN_THINK_TAG not in c:
                     c = strings.get("rag.dummy_think_block", open_tag=OPEN_THINK_TAG, close_tag=CLOSE_THINK_TAG, content=c)
+            elif r == "assistant":
+                # Never show the model an example of a text scratchpad to copy.
+                c = re.sub(r"<think>.*?</think>\s*", "", c, flags=re.DOTALL | re.IGNORECASE).strip()
             if r in ("user", "assistant"):
                 messages.append({"role": r, "content": c})
 

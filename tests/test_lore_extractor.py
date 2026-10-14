@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from proxy.rag.lore_extractor import LoreExtractionWorker
@@ -316,7 +318,29 @@ async def test_reasoning_text_is_skipped_and_reasoning_disabled():
          patch.object(extractor.llm_client, "generate_stream", return_value=mock_gen()) as gen:
         await extractor.extract_initial_rules("s", "mira_vale", "context")
 
-    assert gen.call_args.kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert gen.call_args.kwargs["extra_body"] == {"reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False}}
     inserts = [c for c in conn_mock.execute.call_args_list if "INSERT INTO csa_lore_rules_mira_vale" in c[0][0]]
     assert len(inserts) == 1
     assert inserts[0][0][1] == "Mira Vale is the tavern keeper."
+
+
+@pytest.mark.asyncio
+async def test_extraction_output_fits_the_window_and_local_gets_both_switches(monkeypatch):
+    """Live test 2026-10-13: Gemma loaded with an 8k window; max_tokens=8192 on top of the
+    prompt made every extraction come back empty."""
+    from unittest.mock import MagicMock
+    from config.manager import get_settings_manager
+    get_settings_manager().update({"context_window_override": 8192})
+    seen = {}
+
+    async def gen(**kw):
+        seen.update(kw)
+        yield "[]"
+    client = MagicMock()
+    client.base_url = "http://192.168.50.207:1234/v1"
+    client.generate_stream = gen
+    w = LoreExtractionWorker.__new__(LoreExtractionWorker)
+    w.llm_client, w.logger = client, logging.getLogger("t")
+    await w._execute_extraction("x " * 2000, "s", "c", "m")
+    assert seen["max_tokens"] < 8192 - 1000
+    assert seen["extra_body"] == {"reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False}}

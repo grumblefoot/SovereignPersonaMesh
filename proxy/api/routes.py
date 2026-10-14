@@ -18,6 +18,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from config.hardware_tiers import get_hardware_config, HardwareTierEnum
 from proxy.core.st_parser import parse_sillytavern_context
 from config.manager import get_settings_manager, resolve_gm_actions_mode
+from proxy.core import gm_planner, reasoning
 from proxy.core.stream_parser import MonologueStreamParser, CLOSE_TAGS
 from proxy.core.sensory_filter import ObserverInferenceGatingFilter
 from proxy.rag.prompt_builder import CognitivePromptBuilder
@@ -26,11 +27,12 @@ from proxy.rag.import_worker import BulkImportWorker, get_import_worker, _comput
 from proxy.rag.tier_manager import MemoryTierManager
 from proxy.rag.lore_extractor import LoreExtractionWorker
 from proxy.backend_client.lemonade_client import LemonadeLLMClient, LLMBackendError, DEFAULT_CHAT_MODEL, SPM_VIRTUAL_MODEL_ID
-from proxy.core.llm_scheduler import get_scheduled_client, QueueFull, QueueWaitTimeout, TurnSuperseded
+from proxy.core.llm_scheduler import get_scheduled_client, get_scheduler, QueueFull, QueueWaitTimeout, TurnSuperseded
 from proxy.core import gm_actions as gm_validation
 from proxy.rag import budget
 from proxy.gating.action_parser import parse_user_message, parse_message, CONF_TAG
 from proxy.gating.world_seed import propose_world_seed
+from proxy.gating import backfill
 from proxy.gating.perception import gated_history, prune_later_turns, record_turn_perceptions, render_history_rows
 from proxy.backend_client.evennia_client import EvenniaWorldClient
 from proxy.embeddings import get_embedding_service, space_id_for
@@ -768,6 +770,26 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                 session_has_rows = bool(percep_rows) or bool(await conn.fetchval(
                     "SELECT 1 FROM spm_perception WHERE session_id = $1 LIMIT 1",
                     session_id))
+                # History SPM never saw (an imported chat): the turns before the first
+                # one SPM recorded. Used in this prompt now; written when the LLM is idle.
+                planned = []
+                if not ephemeral:
+                    done, first_live, has_greeting = backfill.coverage(session_id, [
+                        r["turn_id"] for r in await conn.fetch(
+                            "SELECT DISTINCT turn_id FROM spm_perception WHERE session_id = $1",
+                            session_id)])
+                    if not done:
+                        planned = backfill.plan_rows(
+                            session_id,
+                            [(m.role, m.content or "") for m in request.messages
+                             if m.role in ("user", "assistant")],
+                            target_char=target_char, current_turn=user_msg_count,
+                            first_live_turn=first_live, has_greeting=has_greeting,
+                            redact=_redact_private_spans)
+            if planned:
+                percep_rows = backfill.for_recipient(planned, target_char) + percep_rows
+                session_has_rows = True
+                _schedule_backfill(session_id, planned)
             if session_has_rows:
                 chat_history = render_history_rows(percep_rows, target_char)
                 pinned_head = len(render_history_rows(percep_rows[:PINNED_OPENING_ROWS], target_char))
@@ -802,6 +824,15 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         return StreamingResponse(overflow_stream(), media_type="text/event-stream")
 
     gm_mode = resolve_gm_actions_mode(settings)   # resolves "auto" by backend locality
+    reasoning_mode = await reasoning.resolve_mode(settings, lemonade_client, request.model)
+    gm_channel = reasoning.gm_channel(reasoning_mode, settings)
+    if reasoning_mode == "none" and gm_channel == "inline" and gm_mode != "off":
+        # No private block to carry inline GM tags, and GM tags in the reply would leak.
+        logger.info("[Reasoning] mode 'none' with inline GM channel: GM actions off this turn.")
+        gm_mode = "off"
+    # The reply prompt carries GM duties only for the inline channel; the separate channel
+    # reads world changes after the reply (proxy/core/gm_planner.py).
+    prompt_gm_mode = gm_mode if gm_channel == "inline" else "off"
     csa_messages = prompt_builder.build_csa_messages(
         system_prompt=system_prompt,
         sensory_feed=sensory_feed,
@@ -809,8 +840,9 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         chat_history=chat_history,
         spatial_context=f"Location: {location_name}",
         frontend_max_tokens=frontend_max_tokens,
-        gm_mode=gm_mode,
+        gm_mode=prompt_gm_mode,
         max_history=None,     # the allocator above already budgeted the history
+        reasoning_mode=reasoning_mode,
     )
 
     # Ensure closing tags are NOT in LLM stop sequence list
@@ -840,8 +872,8 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                     f"another character already answered turn {turn_id}.")
         ooc_directions = []
 
-    # --- Inject Assistant Prefill (Only if Monologue is enabled) ---
-    if prompt_builder.config.inner_monologue_enabled:
+    # --- Inject Assistant Prefill (legacy 'prefill' reasoning mode only) ---
+    if prompt_builder.config.inner_monologue_enabled and reasoning_mode == "prefill":
         # A2 (gm_actions_and_lore_scope.md): the GM_ACTION bullets are assembled by
         # mode, so 'off' spends zero prompt tokens on them and 'move_only' never
         # advertises CREATE_ROOM. The lore/anti-puppeting parts are mode-independent.
@@ -881,18 +913,41 @@ The text after </think> must ONLY be narrative and dialogue.
         csa_messages.append({"role": "assistant", "content": "<think>\n"})
         init_state = 0
     else:
-        block = _author_direction_block(ooc_directions)
-        if block:
-            if csa_messages and csa_messages[-1]["role"] == "user":
-                csa_messages[-1]["content"] += block
-            else:
-                csa_messages.append({"role": "user", "content": block.strip()})
+        # Native / none (spike 2026-10-13): the reply prompt is purely in character. In
+        # native mode the model's own thinking is private (the server separates it), so GM
+        # actions go there; nothing asks for a text scratchpad.
+        gm_note = ""
+        if reasoning_mode == "native" and prompt_gm_mode != "off":
+            kinds = ("MOVE" if gm_mode == "move_only" else "MOVE or CREATE_ROOM")
+            gm_note = (f"\n- World tracking ({kinds}): while you think privately, if a character "
+                       "(including the user) moves to another location, write "
+                       '[GM_ACTION: {"type": "MOVE", "entity": "...", "room_id": "..."}]'
+                       + ('; for a place not listed, first [GM_ACTION: {"type": "CREATE_ROOM", '
+                          '"room_id": "...", "name": "...", "desc": "..."}]' if gm_mode == "full" else "")
+                       + ". These belong in your private thinking only, never in the reply.")
+            gm_note += await _known_rooms_block(session_id, target_char, gm_mode)
+        block = (_author_direction_block(ooc_directions) + active_lore_str
+                 + "\n\n[Write the reply in character: narrative and dialogue only. Never act, "
+                   "speak or think for the user's character. If the user contradicts the lore, "
+                   "let the character react to it in the story." + gm_note + "]")
+        if csa_messages and csa_messages[-1]["role"] == "user":
+            csa_messages[-1]["content"] += block
+        else:
+            csa_messages.append({"role": "user", "content": block.strip()})
         init_state = 1
+    reasoning_body = reasoning.extra_body(reasoning_mode, settings, lemonade_client.base_url)
     
     # Token budget P0 (OPEN-008): never ask the backend for more room than the
     # window has left. backend_max_tokens is now a CEILING, not a flat value.
+    # Native thinking spends completion tokens before the reply; without room for it the
+    # reply came back empty (spike 2026-10-13: 3 of 6 probes at 600 tokens). The reserve
+    # goes into the ceiling, so the window clamp still applies to the total.
+    ceiling = int(settings.get("backend_max_tokens", 2048) or 2048)
+    if reasoning_mode == "native":
+        ceiling += int(settings.get("reasoning_max_tokens", 3000) or 3000)
     backend_max_tokens = budget.clamp_max_tokens(
-        csa_messages, settings, prompt_builder.config, model=str(request.model))
+        csa_messages, settings, prompt_builder.config, model=str(request.model),
+        configured_ceiling=ceiling)
 
     logger.info(f"[SPMIntoBackendLog] Sending to Backend (model={request.model}): {csa_messages}")
 
@@ -907,6 +962,7 @@ The text after </think> must ONLY be narrative and dialogue.
             stop=stop,
             job_kind="chat",
             session_id=session_id,
+            extra_body=reasoning_body,
         )
         try:
             async for chunk in parser.process_token_stream(raw_stream):
@@ -937,7 +993,8 @@ The text after </think> must ONLY be narrative and dialogue.
                 parser, session_id, target_char, public_resp, turn_id,
                 turn_index=user_msg_count, persona=_extract_persona_name(request.messages), player_name=player_name or "",
                 user_text=observable_text,
-                narrator=narrator))
+                narrator=narrator, gm_channel=gm_channel, gm_mode=gm_mode,
+                model=str(request.model), speaker=_target_display_name(request.messages) or target_char))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
@@ -1002,6 +1059,7 @@ The text after </think> must ONLY be narrative and dialogue.
             stop=stop,
             job_kind="chat",
             session_id=session_id,
+            extra_body=reasoning_body,
         )
 
         def _chunk(content):
@@ -1068,7 +1126,8 @@ The text after </think> must ONLY be narrative and dialogue.
                 parser, session_id, target_char, public_resp, turn_id,
                 turn_index=user_msg_count, persona=_extract_persona_name(request.messages), player_name=player_name or "",
                 user_text=observable_text,
-                narrator=narrator))
+                narrator=narrator, gm_channel=gm_channel, gm_mode=gm_mode,
+                model=str(request.model), speaker=_target_display_name(request.messages) or target_char))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
@@ -1493,7 +1552,10 @@ async def _ephemeral_passthrough(request: "ChatCompletionRequest", session_id: s
         return lemonade_client.generate_stream(
             messages=messages, model=request.model,
             temperature=request.temperature or 0.7, max_tokens=max_tokens,
-            stop=None, job_kind="utility", session_id=session_id)
+            stop=None, job_kind="utility", session_id=session_id,
+            # QA Q6: Gemma on LM Studio thinks by default, used the whole budget on it and
+            # returned empty summaries. Utility calls don't need thinking.
+            extra_body=reasoning.extra_body("none", settings, lemonade_client.base_url))
 
     if request.stream is False:
         parser = MonologueStreamParser(max_public_tokens=request.max_tokens or 10_000, initial_state=1)
@@ -1602,6 +1664,46 @@ async def _chat_player(session_id: str) -> Tuple[Optional[str], Optional[str]]:
     except Exception as e:
         logger.warning(f"[SPMProxy] chat player unavailable: {e}")
         return None, None
+
+
+BACKFILL_QUIET_S = 2.0
+BACKFILL_MAX_WAIT_S = 600.0
+
+
+async def _backfill_when_idle(session_id: str, rows) -> None:
+    """Write planned backfill rows at the lowest scheduler priority (P3): it waits for the
+    LLM queue to drain, and a chat turn preempts it. A preempted or failed write leaves no
+    rows, so the next turn plans and schedules it again."""
+    try:
+        # Wait for real idle time first: queued at turn time, the job used to start at once
+        # and be preempted by the very turn that queued it (live test 2026-10-13). The reply,
+        # its lore and GM calls run first; the write starts after the queue has been quiet
+        # for a couple of seconds.
+        sched = get_scheduler()
+        quiet, waited = 0.0, 0.0
+        while quiet < BACKFILL_QUIET_S and waited < BACKFILL_MAX_WAIT_S:
+            await asyncio.sleep(0.5)
+            waited += 0.5
+            quiet = quiet + 0.5 if sched.idle() else 0.0
+        async with sched.slot("batch", session_id=session_id,
+                              coalesce_key=f"backfill:{session_id}"):
+            async with _db_pool.acquire() as conn:
+                n = await backfill.persist(conn, session_id, rows)
+        if n:
+            logger.info(f"[Backfill] {n} perception rows written for {session_id} "
+                        f"(history from before SPM saw this chat).")
+    except asyncio.CancelledError:
+        logger.info(f"[Backfill] {session_id}: preempted by a chat turn; retried on a later turn.")
+    except Exception as e:
+        logger.warning(f"[Backfill] {session_id}: not written ({e}); retried on a later turn.")
+
+
+def _schedule_backfill(session_id: str, rows) -> None:
+    logger.info(f"[Backfill] {session_id}: {len(rows)} rows of earlier history planned; "
+                f"used for this reply, written when idle.")
+    task = asyncio.create_task(_backfill_when_idle(session_id, rows))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 async def _record_greeting(session_id: str, target_char: str, messages) -> None:
@@ -1819,7 +1921,8 @@ async def _record_reply_action(session_id: str, target_char: str, public_resp: s
 async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_char: str,
                          public_resp: str, turn_id: str, turn_index: int, persona: str,
                          narrator: bool = False, player_name: str = "",
-                         user_text: str = "") -> None:
+                         user_text: str = "", gm_channel: str = "inline", gm_mode: str = "full",
+                         model: str = "", speaker: str = "") -> None:
     """Apply the turn's GM actions, then record the reply as a world event, in order."""
     if parser.is_tainted:
         # A withheld reply ("not saved") must not move the world either: a regenerate
@@ -1829,10 +1932,15 @@ async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_
             logger.info(f"[GMAction] reply withheld; skipped {n} GM action(s) for {session_id}.")
     else:
         try:
+            actions = None
+            if gm_channel == "separate" and gm_mode != "off":
+                actions = await _plan_gm_actions(session_id, model, persona or "the player",
+                                                 user_text, speaker or target_char, public_resp,
+                                                 allow_create=(gm_mode == "full"))
             await _dispatch_gm_actions(parser, session_id, target_char,
                                        turn_index=turn_index, persona=persona,
                                        player_name=player_name,
-                                       story_text=public_resp)
+                                       story_text=public_resp, actions=actions)
         except Exception as e:  # never let a GM failure lose the reply
             logger.error(f"[GMAction] dispatch failed for {session_id}: {e}")
     if narrator and not parser.is_tainted:
@@ -1842,15 +1950,39 @@ async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_
                                tainted=parser.is_tainted)
 
 
+async def _plan_gm_actions(session_id: str, model: str, player: str, player_text: str,
+                           speaker: str, reply: str, allow_create: bool) -> List[Dict[str, Any]]:
+    """Separate GM channel: read location changes from the finished exchange (spike
+    2026-10-13). The player's text is the observable part only (no private thoughts)."""
+    if not reply.strip():
+        return []
+    try:
+        snap = await evennia_client.get_snapshot(session_id=session_id, template_key="")
+    except Exception as e:
+        logger.warning(f"[GMPlanner] world snapshot unavailable: {e}")
+        return []
+    rooms = [{"room_id": r["room_id"], "name": r.get("name") or r["room_id"]} for r in snap.get("rooms", [])]
+    where = {o["entity_id"]: o.get("room_id") for o in snap.get("occupants", [])}
+    msgs = gm_planner.messages_for(rooms, where, player, player_text, speaker, reply, allow_create)
+    acts = await gm_planner.plan(lemonade_client, model, msgs,
+                                 local=reasoning._is_local(lemonade_client.base_url),
+                                 job_kind="gm", session_id=session_id)
+    acts = gm_planner.drop_no_ops(
+        gm_planner.reuse_rooms(gm_planner.grounded(acts, player_text, reply), rooms), where)
+    logger.info(f"[GMPlanner] {len(acts)} proposed action(s) for {session_id}: {acts}")
+    return acts
+
+
 async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str,
                                turn_index: int = 0, persona: str = "", player_name: str = "",
-                               story_text: str = ""):
+                               story_text: str = "", actions: Optional[List[Dict[str, Any]]] = None):
     """LLM-proposed world actions, gated and validated before anything hits the engine
     (OPEN-005 / SD-01). Mode off: nothing is dispatched (the stream parser already
     strips stray [GM_ACTION...] text either way). Otherwise the deterministic validator
     in proxy/core/gm_actions.py decides: schema, semantics against a single world
     snapshot, CREATE-then-MOVE ordering, caps, reason-coded rejections."""
-    actions = parser.extract_gm_actions()
+    if actions is None:
+        actions = parser.extract_gm_actions()
     if not actions:
         return
 

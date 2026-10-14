@@ -238,6 +238,33 @@
         <input type="number" id="cfg-gm-actions-max-rooms" value="40">
       </div>
       <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0;">
+      <h3 style="font-size: 1rem; margin-bottom: 12px;">Model Reasoning</h3>
+      <div class="form-group">
+        <label>Private reasoning</label>
+        <select id="cfg-reasoning-mode">
+          <option value="none">None: no hidden reasoning (recommended)</option>
+          <option value="auto">Auto (detect the backend)</option>
+          <option value="native">Native (the model's own thinking)</option>
+          <option value="prefill">Legacy text scratchpad</option>
+        </select>
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;" id="reasoning-status">
+          Auto uses native thinking when the backend separates it, and none for remote backends.
+        </p>
+        <p style="font-size: 0.8rem; color: #b45309; margin-top: 6px; display: none;" id="reasoning-notice"></p>
+      </div>
+      <div class="form-group">
+        <label>Reasoning effort</label>
+        <select id="cfg-reasoning-effort">
+          <option value="low">Low (faster replies)</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Tokens reserved for reasoning</label>
+        <input type="number" id="cfg-reasoning-max-tokens" value="3000">
+      </div>
+      <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0;">
       <h3 style="font-size: 1rem; margin-bottom: 12px;">Memory &amp; Embeddings</h3>
       <div class="form-group">
         <label>Embedding Model</label>
@@ -536,6 +563,10 @@
         document.getElementById('cfg-use-alt').checked = data.use_alternate_extraction_model === 'true' || data.use_alternate_extraction_model === true;
         document.getElementById('cfg-alternate-model').value = data.alternate_extraction_model_name || 'google/gemma-4-26B-A4B-it';
         document.getElementById('cfg-gm-actions-mode').value = data.gm_actions_mode || 'full';
+        document.getElementById('cfg-reasoning-mode').value = data.reasoning_mode || 'none';
+        document.getElementById('cfg-reasoning-effort').value = data.reasoning_effort || 'low';
+        document.getElementById('cfg-reasoning-max-tokens').value = data.reasoning_max_tokens ?? 3000;
+        loadReasoningStatus();
         document.getElementById('cfg-gm-actions-max-per-turn').value = data.gm_actions_max_per_turn ?? 4;
         document.getElementById('cfg-gm-actions-max-rooms').value = data.gm_actions_max_rooms_per_session ?? 40;
         document.getElementById('cfg-embedding-model').value = data.EMBEDDING_MODEL || 'Qwen3-Embedding-0.6B-GGUF-Q8_0';
@@ -557,6 +588,9 @@
         use_alternate_extraction_model: document.getElementById('cfg-use-alt').checked,
         alternate_extraction_model_name: document.getElementById('cfg-alternate-model').value,
         gm_actions_mode: document.getElementById('cfg-gm-actions-mode').value,
+        reasoning_mode: document.getElementById('cfg-reasoning-mode').value,
+        reasoning_effort: document.getElementById('cfg-reasoning-effort').value,
+        reasoning_max_tokens: parseInt(document.getElementById('cfg-reasoning-max-tokens').value),
         gm_actions_max_per_turn: parseInt(document.getElementById('cfg-gm-actions-max-per-turn').value),
         gm_actions_max_rooms_per_session: parseInt(document.getElementById('cfg-gm-actions-max-rooms').value),
         EMBEDDING_MODEL: document.getElementById('cfg-embedding-model').value,
@@ -598,6 +632,20 @@
         statusSpan.textContent = "✗ Error testing connection.";
         statusSpan.style.color = "var(--error)";
       }
+    }
+
+    async function loadReasoningStatus() {
+      try {
+        const res = await fetch('/admin/api/v1/reasoning/status');
+        const d = await res.json();
+        const resolved = Object.entries(d.resolved || {}).map(([k, v]) => `${k}: ${v}`).join('; ');
+        document.getElementById('reasoning-status').textContent =
+          `Backend ${d.backend_url} (${d.local ? 'local' : 'remote'}). ` +
+          (resolved ? `Detected: ${resolved}.` : 'Auto detects on the first chat turn.');
+        const n = document.getElementById('reasoning-notice');
+        n.textContent = d.notice || '';
+        n.style.display = d.notice ? 'block' : 'none';
+      } catch (e) { /* status is informational */ }
     }
 
     async function fetchPendingRules() {

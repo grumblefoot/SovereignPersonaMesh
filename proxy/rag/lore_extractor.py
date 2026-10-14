@@ -58,9 +58,24 @@ class LoreExtractionWorker:
         # but LemonadeLLMClient only has generate_stream.
         # We can collect tokens from the generator.
         # JSON extraction needs no reasoning: with it on, Qwen3.8-27B took ~36 s per call instead of ~7 s.
+        # Live test 2026-10-13: LM Studio loaded Gemma with an 8k window, and a fixed
+        # max_tokens=8192 on top of the prompt made every extraction fail at once (empty
+        # output). Size the output to the window like the chat turn does; switch thinking
+        # off with both switches (LM Studio honours only reasoning_effort).
+        from config.manager import get_settings_manager
+        from proxy.rag import budget
+        from proxy.rag.prompt_builder import CognitivePromptBuilder
+        from proxy.core import reasoning
+        settings = get_settings_manager().get_settings()
+        max_tokens = budget.clamp_max_tokens(
+            [{"role": "user", "content": prompt}], settings,
+            CognitivePromptBuilder().config, model=model, configured_ceiling=8192)
+        # Local backends get both switches; a cloud API only the field it always got.
+        no_thinking = (reasoning.extra_body("none", settings, str(getattr(self.llm_client, "base_url", "") or ""))
+                       or {"chat_template_kwargs": {"enable_thinking": False}})
         generator = self.llm_client.generate_stream(
-            prompt=prompt, model=model, temperature=0.2, max_tokens=8192,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            prompt=prompt, model=model, temperature=0.2, max_tokens=max_tokens,
+            extra_body=no_thinking,
             job_kind="lore", session_id=session_id,
             coalesce_key=f"lore:{session_id}:{character_id}",
         )

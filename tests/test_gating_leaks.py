@@ -962,3 +962,119 @@ def test_b3_shortened_edit_is_a_new_message_and_drops_old_replies(rig):
     lian = [x for x in rows if x["recipient_id"] == "lian" and "#" not in x["turn_id"]]
     assert lian and lian[0]["perceived_text"].rstrip('"').endswith(PH(1106))
     assert not any(x["turn_id"].endswith("#reply:mei") for x in rows)   # old reply gone
+
+
+def test_native_mode_end_to_end_reasoning_stays_private_and_gm_moves_apply(rig, monkeypatch):
+    """Spike 2026-10-13: in native mode the server returns the model's thinking separately
+    (the client marks it <thinking>…</thinking>). The prompt carries no text scratchpad and
+    no prefill; GM actions written in the thinking are applied; the reply stays clean."""
+    import proxy.api.routes as routes
+    from proxy.core import reasoning
+    from config.manager import get_settings_manager
+    reasoning.reset_cache()
+    get_settings_manager().update({"reasoning_mode": "native",     # config.json beats env
+                                   "gm_actions_channel": "inline"})  # GM tags in the thinking
+    calls = []
+
+    async def native_stream(*args, **kwargs):
+        calls.append(kwargs)
+        rig.prompts.append([dict(m) for m in kwargs.get("messages", [])])
+        yield "<thinking>"
+        yield 'The user wants to go upstairs. [GM_ACTION: {"type": "MOVE", "entity": "user", "room_id": "tavern_upstairs"}]'
+        yield "</thinking>"
+        yield "Mira nods and follows you up the creaking stairs."
+    monkeypatch.setattr(routes.lemonade_client, "generate_stream", native_stream)
+
+    rig.seed(placements=[("user", "cellar"), ("mira", "cellar")])
+    r = rig.turn(sysmsgs("Mira") + [{"role": "user", "content": '"Let us go upstairs."'}])
+    sent = rig.prompts[-1]
+    joined = "\n".join(m.get("content", "") for m in sent)
+    assert "<think>" not in joined and sent[-1]["role"] == "user"          # no prefill
+    assert calls[-1]["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+    assert "Mira nods" in r.text and "GM_ACTION" not in r.text and "The user wants" not in r.text
+    snap = rig.engine.get("/api/v1/world/snapshot",
+                          params={"session_id": rig.session_id, "template_key": ""}).json()
+    where = {o["entity_id"]: o["room_id"] for o in snap["occupants"]}
+    for _ in range(40):                                                     # GM runs in background
+        if where.get("user") == "tavern_upstairs":
+            break
+        rig.client.get("/health")
+        snap = rig.engine.get("/api/v1/world/snapshot",
+                              params={"session_id": rig.session_id, "template_key": ""}).json()
+        where = {o["entity_id"]: o["room_id"] for o in snap["occupants"]}
+    assert where.get("user") == "tavern_upstairs"
+
+
+def test_none_mode_separate_gm_channel_moves_the_world(rig, monkeypatch):
+    """Spike 2026-10-13: reasoning 'none' + separate GM channel. The reply prompt has no GM
+    duties; a small JSON call after the reply reports location changes, validated as usual."""
+    import proxy.api.routes as routes
+    from config.manager import get_settings_manager
+    from proxy.core import reasoning
+    reasoning.reset_cache()
+    get_settings_manager().update({"reasoning_mode": "none", "gm_actions_mode": "full"})
+    calls = []
+
+    async def stream(*args, **kwargs):
+        msgs = kwargs.get("messages", [])
+        calls.append(kwargs)
+        if msgs and "You track locations" in msgs[0]["content"]:
+            yield ('{"actions": [{"type": "MOVE", "entity": "user", "room_id": "tavern_upstairs", '
+                   '"evidence": "follows you up the creaking stairs"}]}')
+            return
+        rig.prompts.append([dict(m) for m in msgs])
+        yield "Mira nods and follows you up the creaking stairs."
+    monkeypatch.setattr(routes.lemonade_client, "generate_stream", stream)
+
+    rig.seed(placements=[("user", "cellar"), ("mira", "cellar")])
+    r = rig.turn(sysmsgs("Mira") + [{"role": "user", "content": '"Let us go upstairs." \'I hope she hides the key.\''}])
+    joined = "\n".join(m.get("content", "") for m in rig.prompts[-1])
+    assert "GM_ACTION" not in joined and "<think>" not in joined
+    assert "Mira nods" in r.text
+    gm_calls = [c for c in calls if c.get("job_kind") == "gm"]
+    for _ in range(40):
+        snap = rig.engine.get("/api/v1/world/snapshot",
+                              params={"session_id": rig.session_id, "template_key": ""}).json()
+        if {o["entity_id"]: o["room_id"] for o in snap["occupants"]}.get("user") == "tavern_upstairs":
+            break
+        rig.client.get("/health")
+        gm_calls = [c for c in calls if c.get("job_kind") == "gm"]
+    assert gm_calls, "the separate GM call was not made"
+    gm_prompt = gm_calls[-1]["messages"][1]["content"]
+    assert "hides the key" not in gm_prompt               # private thoughts never reach it
+    assert {o["entity_id"]: o["room_id"] for o in snap["occupants"]}["user"] == "tavern_upstairs"
+
+
+def test_imported_chat_history_is_used_at_once_and_backfilled_when_idle(rig, monkeypatch):
+    """Live test 2026-10-13: an imported chat's first reply saw only the card and the last
+    message. The earlier turns are now in that prompt, and written to spm_perception in
+    the background, so later turns read them from the store."""
+    import asyncio as _aio
+    import asyncpg
+    from tests._testdb import TEST_DB_CONFIG
+    _patch_import(monkeypatch)
+    rig.seed(placements=[("user", "cellar"), ("mira", "cellar")])
+    hist = _long_history(5)
+    rig.history = list(hist)                           # the chat as imported
+    rig.turn(sysmsgs("Mira") + [{"role": "user", "content": '"Where were we?"'}])
+    first = rig.prompt_text(-1)
+    assert "line 0" in first and "reply 4" in first
+
+    async def bf_rows():
+        conn = await asyncpg.connect(**TEST_DB_CONFIG)
+        try:
+            return await conn.fetchval(
+                "SELECT count(*) FROM spm_perception WHERE session_id=$1 AND turn_id LIKE $2",
+                rig.session_id, f"{rig.session_id}:%:bf%")
+        finally:
+            await conn.close()
+    deadline = time.time() + 3
+    while not _aio.run(bf_rows()) and time.time() < deadline:
+        rig.client.get("/health")
+        time.sleep(0.05)
+    n = _aio.run(bf_rows())
+    assert n > 0
+    rig.turn(sysmsgs("Mira") + [{"role": "user", "content": '"Go on."'}])
+    second = rig.prompt_text(-1)
+    assert "line 0" in second and second.count("reply 4") == 1     # from the store, once
+    assert _aio.run(bf_rows()) == n                                    # not written twice
