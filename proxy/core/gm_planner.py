@@ -50,7 +50,8 @@ def messages_for(rooms: List[Dict[str, str]], where: Dict[str, str], player: str
         f"Answer with JSON: {{\"actions\": [...]}}, each action of type {kinds}.\n"
         "- MOVE {\"type\": \"MOVE\", \"entity\": id, \"room_id\": id, \"evidence\": quote} only "
         "when the text says someone arrives in or leaves for another place in THIS exchange. Talking "
-        "about a place, wanting to go, or looking around is not a move.\n"
+        "about a place, wanting to go, being told to go, or looking around is not a move. Quote "
+        "the narration, not dialogue.\n"
         "- evidence: copy the exact words (5-15 words) from the player's message or the reply that "
         "show the move or the new place. No quote, no action.\n"
         "- entity is who moves: 'user' for the player, the ids above for others. Every MOVE "
@@ -75,11 +76,16 @@ def _norm(t: str) -> str:
 _FIELDS = {"MOVE": {"type", "entity", "room_id"}, "CREATE_ROOM": {"type", "room_id", "name", "desc"}}
 
 
+_QUOTED = re.compile(r'"[^"\n]{1,600}"|\u201c[^\u201d\n]{1,600}\u201d')
+
+
 def grounded(actions: List[Dict[str, Any]], *texts: str) -> List[Dict[str, Any]]:
     """Keep only actions whose evidence quote really appears in the exchange (checked in
     code, not trusted from the model). An invented move (Lian 'to the kitchen' with no such
     line, replay 2026-10-13) has no quote to point at. Evidence is dropped before dispatch."""
-    hay = " ".join(_norm(t) for t in texts)
+    # Quoted dialogue is not evidence: an order or plan in speech ("Go to the guest room",
+    # Lian to Mei, replay 2026-10-13) moved Mei although she never left in the text.
+    hay = " ".join(_norm(_QUOTED.sub(" | ", t or "")) for t in texts)
 
     def ok(a):
         ev = _norm(str(a.get("evidence") or ""))

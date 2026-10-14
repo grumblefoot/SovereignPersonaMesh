@@ -186,3 +186,11 @@ def test_gm_reuse_rooms_keeps_the_last_move_per_entity():
             {"type": "CREATE_ROOM", "room_id": "vardus_room"}, {"type": "MOVE", "entity": "lian", "room_id": "vardus_room"}]
     assert gm_planner.reuse_rooms(acts, []) == [{"type": "CREATE_ROOM", "room_id": "vardus_room"},
                                                 {"type": "MOVE", "entity": "lian", "room_id": "vardus_room"}]
+
+
+def test_gm_grounded_ignores_evidence_inside_dialogue():
+    reply = ('"Mei!" Lian called out. "Go to the guest room and ensure the linens are crisp." '
+             'Lian walks back into the kitchen and sets the kettle down.')
+    acts = [{"type": "MOVE", "entity": "mei", "room_id": "guest_room", "evidence": "Go to the guest room"},
+            {"type": "MOVE", "entity": "lian", "room_id": "kitchen", "evidence": "Lian walks back into the kitchen"}]
+    assert gm_planner.grounded(acts, reply) == [{"type": "MOVE", "entity": "lian", "room_id": "kitchen"}]
