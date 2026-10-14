@@ -25,7 +25,8 @@ def test_extra_body_switches_thinking_for_local_backends_only():
     assert reasoning.extra_body("none", s, "http://10.0.0.5:1234/v1") == {
         "reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False}}
     assert reasoning.extra_body("native", s, "https://api.openai.com/v1") is None
-    assert reasoning.extra_body("prefill", s, "http://localhost:13305/v1") is None
+    assert reasoning.extra_body("prefill", s, "http://localhost:13305/v1") == {   # C7: thinking off
+        "reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False}}
 
 
 @pytest.mark.asyncio

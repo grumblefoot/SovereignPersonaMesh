@@ -55,8 +55,11 @@ def effort(settings: Dict[str, Any]) -> str:
 def extra_body(mode: str, settings: Dict[str, Any], base_url: str) -> Optional[Dict[str, Any]]:
     """Request fields that switch the server's thinking on or off. Only for local
     backends: strict cloud APIs reject unknown fields such as chat_template_kwargs."""
-    if mode == "prefill" or not _is_local(base_url):
+    if not _is_local(base_url):
         return None
+    # prefill writes its own text scratchpad, so the server's thinking must be OFF too: a
+    # backend that thinks by default would otherwise think twice and can run out of
+    # tokens before the reply (Hermes review C, item C7).
     if mode == "native":
         return {"reasoning_effort": effort(settings),
                 "chat_template_kwargs": {"enable_thinking": True}}
