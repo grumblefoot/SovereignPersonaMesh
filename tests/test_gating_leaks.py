@@ -1043,3 +1043,38 @@ def test_none_mode_separate_gm_channel_moves_the_world(rig, monkeypatch):
     gm_prompt = gm_calls[-1]["messages"][1]["content"]
     assert "hides the key" not in gm_prompt               # private thoughts never reach it
     assert {o["entity_id"]: o["room_id"] for o in snap["occupants"]}["user"] == "tavern_upstairs"
+
+
+def test_imported_chat_history_is_used_at_once_and_backfilled_when_idle(rig, monkeypatch):
+    """Live test 2026-10-13: an imported chat's first reply saw only the card and the last
+    message. The earlier turns are now in that prompt, and written to spm_perception in
+    the background, so later turns read them from the store."""
+    import asyncio as _aio
+    import asyncpg
+    from tests._testdb import TEST_DB_CONFIG
+    _patch_import(monkeypatch)
+    rig.seed(placements=[("user", "cellar"), ("mira", "cellar")])
+    hist = _long_history(5)
+    rig.history = list(hist)                           # the chat as imported
+    rig.turn(sysmsgs("Mira") + [{"role": "user", "content": '"Where were we?"'}])
+    first = rig.prompt_text(-1)
+    assert "line 0" in first and "reply 4" in first
+
+    async def bf_rows():
+        conn = await asyncpg.connect(**TEST_DB_CONFIG)
+        try:
+            return await conn.fetchval(
+                "SELECT count(*) FROM spm_perception WHERE session_id=$1 AND turn_id LIKE $2",
+                rig.session_id, f"{rig.session_id}:%:bf%")
+        finally:
+            await conn.close()
+    deadline = time.time() + 3
+    while not _aio.run(bf_rows()) and time.time() < deadline:
+        rig.client.get("/health")
+        time.sleep(0.05)
+    n = _aio.run(bf_rows())
+    assert n > 0
+    rig.turn(sysmsgs("Mira") + [{"role": "user", "content": '"Go on."'}])
+    second = rig.prompt_text(-1)
+    assert "line 0" in second and second.count("reply 4") == 1     # from the store, once
+    assert _aio.run(bf_rows()) == n                                    # not written twice

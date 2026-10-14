@@ -27,11 +27,12 @@ from proxy.rag.import_worker import BulkImportWorker, get_import_worker, _comput
 from proxy.rag.tier_manager import MemoryTierManager
 from proxy.rag.lore_extractor import LoreExtractionWorker
 from proxy.backend_client.lemonade_client import LemonadeLLMClient, LLMBackendError, DEFAULT_CHAT_MODEL, SPM_VIRTUAL_MODEL_ID
-from proxy.core.llm_scheduler import get_scheduled_client, QueueFull, QueueWaitTimeout, TurnSuperseded
+from proxy.core.llm_scheduler import get_scheduled_client, get_scheduler, QueueFull, QueueWaitTimeout, TurnSuperseded
 from proxy.core import gm_actions as gm_validation
 from proxy.rag import budget
 from proxy.gating.action_parser import parse_user_message, parse_message, CONF_TAG
 from proxy.gating.world_seed import propose_world_seed
+from proxy.gating import backfill
 from proxy.gating.perception import gated_history, prune_later_turns, record_turn_perceptions, render_history_rows
 from proxy.backend_client.evennia_client import EvenniaWorldClient
 from proxy.embeddings import get_embedding_service, space_id_for
@@ -769,6 +770,26 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                 session_has_rows = bool(percep_rows) or bool(await conn.fetchval(
                     "SELECT 1 FROM spm_perception WHERE session_id = $1 LIMIT 1",
                     session_id))
+                # History SPM never saw (an imported chat): the turns before the first
+                # one SPM recorded. Used in this prompt now; written when the LLM is idle.
+                planned = []
+                if not ephemeral:
+                    done, first_live, has_greeting = backfill.coverage(session_id, [
+                        r["turn_id"] for r in await conn.fetch(
+                            "SELECT DISTINCT turn_id FROM spm_perception WHERE session_id = $1",
+                            session_id)])
+                    if not done:
+                        planned = backfill.plan_rows(
+                            session_id,
+                            [(m.role, m.content or "") for m in request.messages
+                             if m.role in ("user", "assistant")],
+                            target_char=target_char, current_turn=user_msg_count,
+                            first_live_turn=first_live, has_greeting=has_greeting,
+                            redact=_redact_private_spans)
+            if planned:
+                percep_rows = backfill.for_recipient(planned, target_char) + percep_rows
+                session_has_rows = True
+                _schedule_backfill(session_id, planned)
             if session_has_rows:
                 chat_history = render_history_rows(percep_rows, target_char)
                 pinned_head = len(render_history_rows(percep_rows[:PINNED_OPENING_ROWS], target_char))
@@ -1643,6 +1664,32 @@ async def _chat_player(session_id: str) -> Tuple[Optional[str], Optional[str]]:
     except Exception as e:
         logger.warning(f"[SPMProxy] chat player unavailable: {e}")
         return None, None
+
+
+async def _backfill_when_idle(session_id: str, rows) -> None:
+    """Write planned backfill rows at the lowest scheduler priority (P3): it waits for the
+    LLM queue to drain, and a chat turn preempts it. A preempted or failed write leaves no
+    rows, so the next turn plans and schedules it again."""
+    try:
+        async with get_scheduler().slot("batch", session_id=session_id,
+                                        coalesce_key=f"backfill:{session_id}"):
+            async with _db_pool.acquire() as conn:
+                n = await backfill.persist(conn, session_id, rows)
+        if n:
+            logger.info(f"[Backfill] {n} perception rows written for {session_id} "
+                        f"(history from before SPM saw this chat).")
+    except asyncio.CancelledError:
+        logger.info(f"[Backfill] {session_id}: preempted by a chat turn; retried on a later turn.")
+    except Exception as e:
+        logger.warning(f"[Backfill] {session_id}: not written ({e}); retried on a later turn.")
+
+
+def _schedule_backfill(session_id: str, rows) -> None:
+    logger.info(f"[Backfill] {session_id}: {len(rows)} rows of earlier history planned; "
+                f"used for this reply, written when idle.")
+    task = asyncio.create_task(_backfill_when_idle(session_id, rows))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 async def _record_greeting(session_id: str, target_char: str, messages) -> None:
