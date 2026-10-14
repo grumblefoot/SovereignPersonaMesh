@@ -41,6 +41,61 @@ def _normalise_model_id(model_id: str) -> str:
     return "-".join(kept)
 
 
+_TAG_SUFFIX = re.compile(r":[^:/]+$")   # 'model:quant-tag' -> 'model' (LM Studio / Lemonade tag form)
+
+
+def _match_forms(model_id: str) -> Tuple[set, set]:
+    """(raw, normalised) comparison forms of an id: ':tag' stripped on both levels."""
+    id_low = (model_id or "").strip().lower()
+    raw = {id_low, _TAG_SUFFIX.sub("", id_low)}
+    norm = {_normalise_model_id(v) for v in raw}
+    norm.discard("")
+    return raw, norm
+
+
+def _forms_match(a: Tuple[set, set], b: Tuple[set, set]) -> bool:
+    """Equality first on raw forms, then normalised equality/containment (as _resolve_model does)."""
+    if a[0] & b[0]:
+        return True
+    na, nb = a[1], b[1]
+    if na & nb:
+        return True
+    return any(x and y and (x in y or y in x) for x in na for y in nb)
+
+
+def best_match(requested: str, candidates) -> Optional[str]:
+    """The candidate id that is the same model as `requested`, or None. Tiered, each tier
+    needing a UNIQUE hit: raw equality (case-insensitive, ':tag' stripped), then normalised
+    equality, then normalised containment. An exact name therefore wins over a longer
+    sibling ('qwen3.8-27b' vs 'qwen3.8-27b-instruct'), which a single any-match pass lost."""
+    if not (requested or "").strip():
+        return None
+    cands = [c for c in dict.fromkeys(str(c) for c in candidates if c)]
+    rf = _match_forms(requested)
+    forms = {c: _match_forms(c) for c in cands}
+    tiers = (
+        lambda f: bool(rf[0] & f[0]),
+        lambda f: bool(rf[1] & f[1]),
+        lambda f: any(x and y and (x in y or y in x) for x in rf[1] for y in f[1]),
+    )
+    for hit in tiers:
+        found = [c for c in cands if hit(forms[c])]
+        if len(found) == 1:
+            return found[0]
+        if len(found) > 1:
+            return None          # ambiguous at this tier: do not guess further down
+    return None
+
+
+def model_matches(a: str, b: str) -> bool:
+    """Do two model ids refer to the same model across servers? Strips ':tag', normalises,
+    then equality or containment ('Gemma-4-26B-A4B-it-GGUF' ~ 'google/gemma-4-26b-a4b-qat',
+    and Lemonade checkpoint names like 'unsloth/gemma-4-26b-a4b-it-gguf:UD-Q4_K_M')."""
+    if not (a or "").strip() or not (b or "").strip():
+        return False
+    return _forms_match(_match_forms(a), _match_forms(b))
+
+
 class LLMBackendError(RuntimeError):
     """The LLM backend could not produce a reply (unreachable or non-200)."""
 
@@ -123,25 +178,14 @@ class LemonadeLLMClient:
         requested = LEGACY_MODEL_IDS.get(requested.lower(), requested)
         if available is None or requested in available:
             return requested
-        req_lower = requested.lower()
-        for av in available:
-            if av.lower() == req_lower:
-                return av
-        matches = [av for av in available if req_lower in av.lower()]
-        if len(matches) == 1:
-            return matches[0]
-        # Same model, another server's naming: compare with vendor prefix, build and
-        # quantisation tags removed (LM Studio 'google/gemma-4-26b-a4b-qat' for
-        # Lemonade's 'Gemma-4-26B-A4B-it-GGUF'). Equality first, then unique containment.
-        req_norm = _normalise_model_id(requested)
-        if req_norm:
-            by_norm = {av: _normalise_model_id(av) for av in available}
-            matches = [av for av, n in by_norm.items() if n == req_norm]
-            if len(matches) != 1:
-                matches = [av for av, n in by_norm.items() if n and (req_norm in n or n in req_norm)]
-            if len(matches) == 1:
-                logger.info(f"[LemonadeClient] Model '{requested_model}' resolved to '{matches[0]}' by normalised name.")
-                return matches[0]
+        # Same model, another server's naming: shared matcher model_matches() (review W1a
+        # item 2) — ':tag' stripped, case-insensitive, then normalised equality/containment
+        # (LM Studio 'google/gemma-4-26b-a4b-qat' for Lemonade's 'Gemma-4-26B-A4B-it-GGUF').
+        # A *unique* match wins; anything else passes through unchanged.
+        match = best_match(requested, available)
+        if match is not None:
+            logger.info(f"[LemonadeClient] Model '{requested_model}' resolved to '{match}' by normalised name.")
+            return match
         logger.warning(f"[LemonadeClient] Model '{requested_model}' not found among chat models; passing it through unchanged.")
         return requested
 
