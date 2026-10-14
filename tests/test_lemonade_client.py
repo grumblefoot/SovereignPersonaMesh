@@ -247,11 +247,11 @@ async def test_base_url_follows_backend_setting(monkeypatch):
     """The client used to be hard-wired to localhost:13305 whatever BACKEND_LLM_URL said.
     Settings are re-read on every call, so a config change needs no restart."""
     import config.manager as cm
-    current = {"BACKEND_LLM_URL": "http://192.168.50.207:1234/v1/"}
+    current = {"BACKEND_LLM_URL": "http://10.0.0.5:1234/v1/"}
     stub = MagicMock(); stub.get_settings = lambda: dict(current)
     monkeypatch.setattr(cm, "get_settings_manager", lambda: stub)
     c = LemonadeLLMClient()
-    assert c.base_url == "http://192.168.50.207:1234/v1"
+    assert c.base_url == "http://10.0.0.5:1234/v1"
     current["BACKEND_LLM_URL"] = "http://localhost:13305/v1"
     assert c.base_url == "http://localhost:13305/v1"
     current["BACKEND_LLM_URL"] = ""

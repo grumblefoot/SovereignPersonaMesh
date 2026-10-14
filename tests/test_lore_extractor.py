@@ -337,7 +337,7 @@ async def test_extraction_output_fits_the_window_and_local_gets_both_switches(mo
         seen.update(kw)
         yield "[]"
     client = MagicMock()
-    client.base_url = "http://192.168.50.207:1234/v1"
+    client.base_url = "http://10.0.0.5:1234/v1"
     client.generate_stream = gen
     w = LoreExtractionWorker.__new__(LoreExtractionWorker)
     w.llm_client, w.logger = client, logging.getLogger("t")

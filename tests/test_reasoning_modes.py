@@ -8,7 +8,7 @@ from proxy.rag.prompt_builder import CognitivePromptBuilder
 
 
 class FakeClient:
-    def __init__(self, chunks, base_url="http://192.168.50.207:1234/v1"):
+    def __init__(self, chunks, base_url="http://10.0.0.5:1234/v1"):
         self.chunks, self.base_url, self.calls = chunks, base_url, 0
 
     async def generate_stream(self, **kw):
@@ -97,7 +97,7 @@ async def test_reasoning_status_reports_remote_cost_notice():
     get_settings_manager().update({"BACKEND_LLM_URL": "https://api.openai.com/v1", "reasoning_mode": "auto"})
     d = _json.loads((await reasoning_status()).body)
     assert d["local"] is False and "charge per token" in d["notice"] and d["configured"] == "auto"
-    get_settings_manager().update({"BACKEND_LLM_URL": "http://192.168.50.207:1234/v1"})
+    get_settings_manager().update({"BACKEND_LLM_URL": "http://10.0.0.5:1234/v1"})
     d = _json.loads((await reasoning_status()).body)
     assert d["local"] is True and d["notice"] == ""
 
