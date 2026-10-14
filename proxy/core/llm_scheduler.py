@@ -109,6 +109,10 @@ class LLMScheduler:
             return sum(len(q) for q in self._queues.values())
         return len(self._queues[priority])
 
+    def idle(self) -> bool:
+        """Nothing running and nothing queued."""
+        return not self._running and self.depth() == 0
+
     def snapshot(self) -> Dict:
         waits = sorted(self._wait_times)
         pct = lambda p: round(waits[min(len(waits) - 1, int(len(waits) * p))], 3) if waits else 0.0

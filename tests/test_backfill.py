@@ -94,3 +94,13 @@ async def test_persist_once_orders_before_live_rows_and_rewinds_prune_it():
     finally:
         await conn.execute("DELETE FROM spm_perception WHERE session_id = $1", SID)
         await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_reports_idle_only_when_nothing_runs_or_waits():
+    from proxy.core.llm_scheduler import LLMScheduler
+    s = LLMScheduler()
+    assert s.idle()
+    async with s.slot("chat", session_id="x"):
+        assert not s.idle()
+    assert s.idle()

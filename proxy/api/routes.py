@@ -1666,13 +1666,27 @@ async def _chat_player(session_id: str) -> Tuple[Optional[str], Optional[str]]:
         return None, None
 
 
+BACKFILL_QUIET_S = 2.0
+BACKFILL_MAX_WAIT_S = 600.0
+
+
 async def _backfill_when_idle(session_id: str, rows) -> None:
     """Write planned backfill rows at the lowest scheduler priority (P3): it waits for the
     LLM queue to drain, and a chat turn preempts it. A preempted or failed write leaves no
     rows, so the next turn plans and schedules it again."""
     try:
-        async with get_scheduler().slot("batch", session_id=session_id,
-                                        coalesce_key=f"backfill:{session_id}"):
+        # Wait for real idle time first: queued at turn time, the job used to start at once
+        # and be preempted by the very turn that queued it (live test 2026-10-13). The reply,
+        # its lore and GM calls run first; the write starts after the queue has been quiet
+        # for a couple of seconds.
+        sched = get_scheduler()
+        quiet, waited = 0.0, 0.0
+        while quiet < BACKFILL_QUIET_S and waited < BACKFILL_MAX_WAIT_S:
+            await asyncio.sleep(0.5)
+            waited += 0.5
+            quiet = quiet + 0.5 if sched.idle() else 0.0
+        async with sched.slot("batch", session_id=session_id,
+                              coalesce_key=f"backfill:{session_id}"):
             async with _db_pool.acquire() as conn:
                 n = await backfill.persist(conn, session_id, rows)
         if n:
