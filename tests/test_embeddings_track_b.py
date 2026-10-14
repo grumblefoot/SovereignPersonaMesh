@@ -541,23 +541,27 @@ def test_lore_invariants_survive_without_vectors_and_triggers_respect_space():
 # ──────────────────────────────────────────────────────────────────────────
 
 def test_reembed_fills_nulls_stamps_space_and_is_resumable():
+    from proxy.rag import chat_rules
+
     async def _test():
         conn = await asyncpg.connect(**TEST_DB_CONFIG)
         service = EmbeddingService(FakeEmbeddingProvider(dim=16), "fake", "reembed-test", 16)
         try:
+            await conn.execute("DELETE FROM spm_chat_rules;")
             await conn.execute("SELECT create_csa_memory_table('reembed');")
-            await conn.execute("SELECT create_csa_lore_rules_table('reembed');")
             for i in range(3):
                 await conn.execute(
                     "INSERT INTO csa_memory_reembed (session_id, sensory_input, public_response) "
                     "VALUES ('s1', $1, 'reply');", f"memory number {i}")
+            # Brief C1b-3: lore rules live in spm_chat_rules; seed vectorless rows.
             for i in range(2):
-                await conn.execute(
-                    "INSERT INTO csa_lore_rules_reembed (rule_text, rule_type) "
-                    "VALUES ($1, 'invariant');", f"rule number {i}")
+                await chat_rules.add_rule(
+                    conn, session_id=f"reembed-{i}", level="character_internal",
+                    character_id="reembed", rule_text=f"rule number {i}",
+                    rule_type="invariant", status="active", embedding=None)
 
             # batch_size=2 forces several batches (interrupt/resume granularity).
-            only = ["csa_memory_reembed", "csa_lore_rules_reembed"]
+            only = ["csa_memory_reembed", "spm_chat_rules"]
             totals = await reembed_all(conn, service, batch_size=2, allow_fake=True, only_tables=only)
             assert totals["updated"] == 5
             assert totals["space_id"] is not None
@@ -566,7 +570,7 @@ def test_reembed_fills_nulls_stamps_space_and_is_resumable():
                 "SELECT count(*) FROM csa_memory_reembed WHERE episodic_embedding IS NOT NULL "
                 "AND embedding_space_id = $1;", totals["space_id"])
             n_lore = await conn.fetchval(
-                "SELECT count(*) FROM csa_lore_rules_reembed WHERE rule_embedding IS NOT NULL "
+                "SELECT count(*) FROM spm_chat_rules WHERE rule_embedding IS NOT NULL "
                 "AND embedding_space_id = $1;", totals["space_id"])
             assert (n_mem, n_lore) == (3, 2)
 
@@ -581,7 +585,8 @@ def test_reembed_fills_nulls_stamps_space_and_is_resumable():
             resumed = await reembed_all(conn, service, batch_size=2, allow_fake=True, only_tables=only)
             assert resumed["updated"] == 1
         finally:
-            await conn.execute("DROP TABLE IF EXISTS csa_memory_reembed, csa_lore_rules_reembed;")
+            await conn.execute("DROP TABLE IF EXISTS csa_memory_reembed;")
+            await conn.execute("DELETE FROM spm_chat_rules;")
             await conn.close()
 
     asyncio.run(_test())

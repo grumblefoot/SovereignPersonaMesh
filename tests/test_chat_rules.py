@@ -564,3 +564,50 @@ def test_route_turn_survives_snapshot_failure_and_keeps_world_rules(monkeypatch)
             assert marker in rig.prompt_text(-1)
         finally:
             _drop_session_rules_sync(rig.session_id)
+
+
+# --- brief C1b-3: migration 008 drops the retired per-character lore tables ---
+
+MIGRATION_008 = (Path(__file__).resolve().parent.parent
+                 / "scripts" / "migrations" / "008_drop_char_lore_tables.sql")
+
+
+async def test_migration_008_drops_lore_tables_idempotent_in_rolled_back_txn():
+    """Runs 008 twice inside one transaction that is rolled back: the seeded
+    csa_lore_rules_dropme table and create_csa_lore_rules_table are gone
+    inside the transaction, and the rollback restores them for other tests."""
+    conn = await asyncpg.connect(**TEST_DB_CONFIG)
+    try:
+        tr = conn.transaction()
+        await tr.start()
+        try:
+            await conn.execute("SELECT create_csa_lore_rules_table('dropme');")
+            assert await conn.fetchval(
+                "SELECT to_regclass('public.csa_lore_rules_dropme') IS NOT NULL;")
+
+            sql = MIGRATION_008.read_text()
+            await conn.execute(sql)
+            await conn.execute(sql)  # idempotent: second run is harmless
+
+            assert not await conn.fetchval(
+                "SELECT to_regclass('public.csa_lore_rules_dropme') IS NOT NULL;")
+            assert not await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_proc p "
+                "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                "WHERE n.nspname = 'public' "
+                "AND p.proname = 'create_csa_lore_rules_table');")
+            # Every csa_lore_rules_% table is gone, not just the seeded one.
+            n_left = await conn.fetchval(
+                "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' "
+                "AND tablename LIKE 'csa\\_lore\\_rules\\_%' ESCAPE '\\';")
+            assert n_left == 0
+        finally:
+            await tr.rollback()
+        # The rollback restores the schema for the rest of the suite.
+        assert await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pg_proc p "
+            "JOIN pg_namespace n ON n.oid = p.pronamespace "
+            "WHERE n.nspname = 'public' "
+            "AND p.proname = 'create_csa_lore_rules_table');")
+    finally:
+        await conn.close()
