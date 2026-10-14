@@ -27,9 +27,11 @@ logger = logging.getLogger(__name__)
 MODES = ("native", "none", "prefill")
 EFFORTS = ("low", "medium", "high")
 PROBE_TTL_S = 600.0
+PROBE_RETRY_S = 60.0     # after an inconclusive probe
 PROBE_TIMEOUT_S = 45.0
 
-_probe_cache: Dict[Tuple[str, str], Tuple[float, str]] = {}
+_probe_cache: Dict[Tuple[str, str], Tuple[float, str, float]] = {}   # (when, mode, ttl)
+_inflight: Dict[Tuple[str, str], "asyncio.Future"] = {}
 
 
 def _is_local(url: str) -> bool:
@@ -97,17 +99,32 @@ async def resolve_mode(settings: Dict[str, Any], client, model: str) -> str:
         return "none"
     key = (base_url, str(model))
     hit = _probe_cache.get(key)
-    if hit and time.monotonic() - hit[0] < PROBE_TTL_S:
+    if hit and time.monotonic() - hit[0] < hit[2]:
         return hit[1]
+    # One probe per backend at a time: two characters' first turns share it (review C5).
+    task = _inflight.get(key)
+    if task is None:
+        task = asyncio.ensure_future(_probe_and_cache(client, model, key))
+        _inflight[key] = task
+        task.add_done_callback(lambda _t, k=key: _inflight.pop(k, None))
+    return await asyncio.shield(task)
+
+
+async def _probe_and_cache(client, model: str, key) -> str:
+    base_url = key[0]
     try:
         found = await asyncio.wait_for(_probe(client, model), timeout=PROBE_TIMEOUT_S)
+        ttl = PROBE_TTL_S
     except Exception as e:
+        # Inconclusive (timeout, busy queue, network): 'none' for a short while only, so a
+        # native backend that was briefly loaded is not pinned to 'none' (review C5).
         logger.warning(f"[Reasoning] probe of {base_url} ({model}) failed, using 'none': {e}")
-        found = "none"
-    _probe_cache[key] = (time.monotonic(), found)
+        found, ttl = "none", PROBE_RETRY_S
+    _probe_cache[key] = (time.monotonic(), found, ttl)
     logger.info(f"[Reasoning] {base_url} ({model}): reasoning_mode auto -> {found}")
     return found
 
 
 def reset_cache() -> None:
     _probe_cache.clear()
+    _inflight.clear()

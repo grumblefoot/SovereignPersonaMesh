@@ -164,7 +164,7 @@ async def reasoning_status():
     s = get_settings_manager().get_settings()
     url = str(s.get("BACKEND_LLM_URL") or "")
     local = reasoning._is_local(url)
-    resolved = {f"{u} ({m})": mode for (u, m), (_, mode) in reasoning._probe_cache.items()}
+    resolved = {f"{u} ({m})": mode for (u, m), (_, mode, _ttl) in reasoning._probe_cache.items()}
     notice = "" if local else (
         "This backend looks remote and may charge per token. Hidden reasoning is billed as "
         "output tokens, and SPM's background jobs (lore review, memory consolidation) make "

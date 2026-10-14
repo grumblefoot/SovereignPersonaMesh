@@ -4,6 +4,7 @@ Used when the reply prompt carries no GM duties (reasoning_mode none, or native 
 inline GM tags). The model sees the rooms, who is where, the player's message and the reply,
 and answers with JSON only. The result goes through the usual validator.
 """
+import asyncio
 import json
 import logging
 import re
@@ -98,7 +99,9 @@ _MOTION = re.compile(
     r"(?:lead|leads|led|leading) (?:him|her|them|you|me|us|the way)\b|"
     r"cross(?:es|ed|ing)? (?:the|into)\b|now (?:in|inside|at)\b)", re.IGNORECASE)
 
-_QUOTED = re.compile(r'"[^"\n]{1,600}"|\u201c[^\u201d\n]{1,600}\u201d')
+# Dialogue may run over several lines (review C3); an unpaired quote strips more narration,
+# which only loses a move (the safe direction).
+_QUOTED = re.compile(r'"[^"]{1,600}"|\u201c[^\u201d]{1,600}\u201d')
 
 
 def grounded(actions: List[Dict[str, Any]], player_text: str, *texts: str) -> List[Dict[str, Any]]:
@@ -115,11 +118,22 @@ def grounded(actions: List[Dict[str, Any]], player_text: str, *texts: str) -> Li
       "I go to the training grounds" (offline check: 9 of 18 moves lost).
     - A CREATE_ROOM stands if its own quote checks out or a kept MOVE goes into it."""
     hay = " ".join(_norm(_QUOTED.sub(" | ", t or "")) for t in (player_text, *texts))
-    player_moves = bool(_MOTION.search(_norm(_QUOTED.sub(" | ", player_text or ""))))
+    said = _norm(_QUOTED.sub(" | ", player_text or ""))
+    player_moves = bool(_MOTION.search(said))
+    said_words = set(_words(said))
 
     def ok(a):
         ev = _norm(str(a.get("evidence") or ""))
-        if a.get("type") == "MOVE" and a.get("entity") == "user" and player_moves:
+        if a.get("type") == "MOVE" and a.get("entity") != "user":
+            # Someone else moves only if the exchange names them (review C1: a quote about
+            # Lian moved Vardus). "mei_lin" matches "Mei-Lin"; the first name is enough.
+            name = _norm(str(a.get("entity") or "")).split()
+            if not name or not re.search(rf"\b{re.escape(name[0])}\b", hay):
+                return False
+        if (a.get("type") == "MOVE" and a.get("entity") == "user" and player_moves
+                and said_words & set(_words(str(a.get("room_id") or "")))):
+            # The player's narration moves them AND names the place ("I go to the training
+            # grounds" -> pe_grounds). "The key is back in the box" names no place (review C1).
             return True
         if a.get("type") == "MOVE" and not _MOTION.search(ev):
             return False
@@ -152,15 +166,20 @@ def _words(t: str) -> List[str]:
     return out
 
 
+def _place_words(t: str) -> frozenset:
+    # "U.A." -> "ua": join runs of single letters before comparing.
+    t = re.sub(r"\b([a-z])[^a-z0-9]+(?=[a-z]\b)", r"\1", (t or "").lower())
+    return frozenset(_words(t))
+
+
 def _same_place(a_id: str, a_name: str, b_id: str, b_name: str) -> bool:
-    """Close names that end in the same noun: "principals_office" ~ "Principal Nezu's
-    Office", but "UA High School Main Gates" is not "UA High School"."""
-    a = _words(a_name or a_id) or _words(a_id)
-    b = _words(b_name or b_id) or _words(b_id)
-    if not a or not b or a[-1] != b[-1]:
-        return False
-    sa, sb = set(a), set(b)
-    return len(sa & sb) / len(sa | sb) >= 0.6
+    """The same words after dropping filler and plurals: "principals_office" ~ "Principal's
+    Office", "ua_high_school" ~ "U.A. High School". Any extra word means a different place
+    ("Vice Principal's Office" is not "Principal's Office", review C4): a duplicate room is
+    recoverable, a wrong merge is not."""
+    a = {_place_words(a_id), _place_words(a_name)} - {frozenset()}
+    b = {_place_words(b_id), _place_words(b_name)} - {frozenset()}
+    return bool(a & b)
 
 
 def reuse_rooms(actions: List[Dict[str, Any]], rooms: List[Dict[str, str]]) -> List[Dict[str, Any]]:
@@ -206,8 +225,21 @@ def parse(text: str) -> List[Dict[str, Any]]:
 _NO_SCHEMA: set = set()        # (base_url, model) pairs that rejected structured output
 
 
+PLAN_TIMEOUT_S = 45.0   # the GM call holds the only LLM slot (review C2); a lost move is cheap
+
+
 async def plan(client, model: str, msgs: List[Dict[str, str]], local: bool,
                **stream_kwargs) -> List[Dict[str, Any]]:
+    try:
+        return await asyncio.wait_for(_plan(client, model, msgs, local, **stream_kwargs),
+                                      timeout=PLAN_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        logger.warning(f"[GMPlanner] no answer within {PLAN_TIMEOUT_S:.0f}s; no location changes this turn")
+        return []
+
+
+async def _plan(client, model: str, msgs: List[Dict[str, str]], local: bool,
+                **stream_kwargs) -> List[Dict[str, Any]]:
     """Ask for the JSON. Structured output first; plain text if the server refuses it.
     Thinking is switched off (local backends only: cloud APIs reject unknown fields)."""
     base = {"reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False}} if local else {}

@@ -168,15 +168,20 @@ def test_gm_grounded_keeps_only_quoted_actions():
     assert gm_planner.grounded([{"type": "MOVE", "entity": "user", "room_id": "x"}], "anything") == []
 
 
-def test_gm_reuse_rooms_maps_near_duplicates_only():
+def test_gm_reuse_rooms_maps_same_place_only():
     rooms = [{"room_id": "principals_office", "name": "Principal's Office"},
              {"room_id": "ua_high_school", "name": "U.A. High School"}]
-    acts = [{"type": "CREATE_ROOM", "room_id": "principal_nezus_office", "name": "Principal Nezu's Office"},
-            {"type": "MOVE", "entity": "user", "room_id": "principal_nezus_office"}]
-    assert gm_planner.reuse_rooms(acts, rooms) == [{"type": "MOVE", "entity": "user", "room_id": "principals_office"}]
-    gates = [{"type": "CREATE_ROOM", "room_id": "ua_high_school_main_gates", "name": "U.A. High School Main Gates"},
-             {"type": "MOVE", "entity": "user", "room_id": "ua_high_school_main_gates"}]
-    assert gm_planner.reuse_rooms(gates, rooms) == gates                     # a different place
+    acts = [{"type": "CREATE_ROOM", "room_id": "principal_office", "name": "The Principal's Office"},
+            {"type": "MOVE", "entity": "user", "room_id": "principal_office"},
+            {"type": "CREATE_ROOM", "room_id": "u_a_high_school", "name": "UA High School"},
+            {"type": "MOVE", "entity": "mei", "room_id": "u_a_high_school"}]
+    assert gm_planner.reuse_rooms(acts, rooms) == [{"type": "MOVE", "entity": "user", "room_id": "principals_office"},
+                                                   {"type": "MOVE", "entity": "mei", "room_id": "ua_high_school"}]
+    # An extra word is a different place (review C4).
+    for rid, name in (("vice_principals_office", "Vice Principal's Office"),
+                      ("ua_high_school_main_gates", "U.A. High School Main Gates")):
+        new = [{"type": "CREATE_ROOM", "room_id": rid, "name": name}, {"type": "MOVE", "entity": "user", "room_id": rid}]
+        assert gm_planner.reuse_rooms(new, rooms) == new
 
 
 def test_gm_grounded_trims_fields_the_validator_forbids():
@@ -227,3 +232,50 @@ async def test_gm_plan_remembers_a_backend_that_rejects_structured_output():
     await gm_planner.plan(c, "m", [{"role": "user", "content": "x"}], local=True)
     assert len(c.calls) == 3                       # schema+plain, then plain only
     assert "response_format" not in (c.calls[2]["extra_body"] or {})
+
+
+def test_gm_grounded_binds_the_move_to_the_named_character():
+    reply = "Lian walks into the kitchen and sets the kettle down."
+    acts = [{"type": "MOVE", "entity": "vardus", "room_id": "kitchen", "evidence": "Lian walks into the kitchen"},
+            {"type": "MOVE", "entity": "lian", "room_id": "kitchen", "evidence": "Lian walks into the kitchen"}]
+    assert gm_planner.grounded(acts, "", reply) == [{"type": "MOVE", "entity": "lian", "room_id": "kitchen"}]
+
+
+def test_gm_grounded_player_shortcut_needs_the_place_named():
+    junk = [{"type": "MOVE", "entity": "user", "room_id": "moon_base", "evidence": "xyz"}]
+    assert gm_planner.grounded(junk, "The key is back in the box.", "Nothing happens.") == []
+
+
+def test_gm_grounded_ignores_dialogue_that_spans_lines():
+    reply = 'She said\n"Go to the guest\nroom now."\nMei stayed seated.'
+    acts = [{"type": "MOVE", "entity": "mei", "room_id": "guest_room", "evidence": "Go to the guest room now"}]
+    assert gm_planner.grounded(acts, "", reply) == []
+
+
+@pytest.mark.asyncio
+async def test_gm_plan_gives_up_after_the_timeout(monkeypatch):
+    class Hung:
+        async def generate_stream(self, **kw):
+            await asyncio.sleep(10)
+            yield "{}"
+    monkeypatch.setattr(gm_planner, "PLAN_TIMEOUT_S", 0.05)
+    assert await gm_planner.plan(Hung(), "m", [{"role": "user", "content": "x"}], local=True) == []
+
+
+@pytest.mark.asyncio
+async def test_failed_probe_is_retried_soon_and_shared(monkeypatch):
+    reasoning.reset_cache()
+    calls = {"n": 0}
+
+    async def slow_fail(client, model):
+        calls["n"] += 1
+        await asyncio.sleep(0.05)
+        raise RuntimeError("queue full")
+    monkeypatch.setattr(reasoning, "_probe", slow_fail)
+    c = FakeClient([])
+    s = {"reasoning_mode": "auto"}
+    assert await asyncio.gather(reasoning.resolve_mode(s, c, "m"), reasoning.resolve_mode(s, c, "m")) == ["none", "none"]
+    assert calls["n"] == 1                                   # one probe for both turns
+    when, mode, ttl = reasoning._probe_cache[(c.base_url, "m")]
+    assert mode == "none" and ttl == reasoning.PROBE_RETRY_S < reasoning.PROBE_TTL_S
+    reasoning.reset_cache()
