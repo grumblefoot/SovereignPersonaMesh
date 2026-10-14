@@ -179,14 +179,19 @@ def _record_idempotency(session_id: str, key: Optional[str], message: str) -> No
         seen.popitem(last=False)
 
 import os
-# Database config
-DB_CONFIG = {
-    "user": os.environ.get("SPM_DB_USER", "spm_user"),
-    "password": os.environ.get("SPM_DB_PASSWORD", "spm_secure_password"),
-    "database": os.environ.get("SPM_DB_NAME", "litellm_postgres"),
-    "host": os.environ.get("SPM_DB_HOST", "localhost"),
-    "port": int(os.environ.get("SPM_DB_PORT", 5432))
-}
+# Database config. The proxy reads POSTGRES_* (proxy/main.py); the engine reads these too,
+# with the legacy SPM_DB_* names as fallback so existing deployments keep working.
+def _db_config() -> Dict[str, Any]:
+    return {
+        "user": os.environ.get("POSTGRES_USER") or os.environ.get("SPM_DB_USER", "spm_user"),
+        "password": os.environ.get("POSTGRES_PASSWORD") or os.environ.get("SPM_DB_PASSWORD", "spm_secure_password"),
+        "database": os.environ.get("POSTGRES_DB") or os.environ.get("SPM_DB_NAME", "litellm_postgres"),
+        "host": os.environ.get("POSTGRES_HOST") or os.environ.get("SPM_DB_HOST", "localhost"),
+        "port": int(os.environ.get("POSTGRES_PORT") or os.environ.get("SPM_DB_PORT", 5432)),
+    }
+
+
+DB_CONFIG = _db_config()
 
 
 def _resolve_template(session_id: str, requested: Optional[str]) -> str:
