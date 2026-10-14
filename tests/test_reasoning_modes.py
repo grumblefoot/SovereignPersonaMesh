@@ -107,6 +107,13 @@ async def test_reasoning_status_reports_remote_cost_notice():
 from proxy.core import gm_planner
 
 
+@pytest.fixture(autouse=True)
+def _fresh_schema_memory():
+    gm_planner._NO_SCHEMA.clear()
+    yield
+    gm_planner._NO_SCHEMA.clear()
+
+
 class GMClient:
     def __init__(self, replies, reject_schema=False):
         self.replies, self.reject_schema, self.calls = list(replies), reject_schema, []
@@ -211,3 +218,12 @@ def test_gm_grounded_player_move_stands_on_the_players_narration():
         {"type": "MOVE", "entity": "user", "room_id": "training_grounds"}]
     # Movement only in the player's dialogue is not a declared move.
     assert gm_planner.grounded(acts, '"Let\'s go to the training grounds later," I say.', reply) == []
+
+
+@pytest.mark.asyncio
+async def test_gm_plan_remembers_a_backend_that_rejects_structured_output():
+    c = GMClient(['{"actions": []}', '{"actions": []}'], reject_schema=True)
+    await gm_planner.plan(c, "m", [{"role": "user", "content": "x"}], local=True)
+    await gm_planner.plan(c, "m", [{"role": "user", "content": "x"}], local=True)
+    assert len(c.calls) == 3                       # schema+plain, then plain only
+    assert "response_format" not in (c.calls[2]["extra_body"] or {})

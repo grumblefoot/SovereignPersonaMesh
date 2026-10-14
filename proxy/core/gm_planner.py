@@ -203,13 +203,18 @@ def parse(text: str) -> List[Dict[str, Any]]:
     return [a for a in acts if isinstance(a, dict)] if isinstance(acts, list) else []
 
 
+_NO_SCHEMA: set = set()        # (base_url, model) pairs that rejected structured output
+
+
 async def plan(client, model: str, msgs: List[Dict[str, str]], local: bool,
                **stream_kwargs) -> List[Dict[str, Any]]:
     """Ask for the JSON. Structured output first; plain text if the server refuses it.
     Thinking is switched off (local backends only: cloud APIs reject unknown fields)."""
     base = {"reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False}} if local else {}
-    attempts = [dict(base, response_format={"type": "json_schema", "json_schema": {
-                    "name": "location_changes", "schema": SCHEMA}}), base]
+    key = (getattr(client, "base_url", None), model)
+    attempts = [] if key in _NO_SCHEMA else [dict(base, response_format={
+        "type": "json_schema", "json_schema": {"name": "location_changes", "schema": SCHEMA}})]
+    attempts.append(base)
     for extra in attempts:
         text, thinking = "", False
         try:
@@ -222,6 +227,9 @@ async def plan(client, model: str, msgs: List[Dict[str, str]], local: bool,
                     text += chunk
         except Exception as e:
             logger.info(f"[GMPlanner] call failed ({'schema' if 'response_format' in extra else 'plain'}): {e}")
+            if "response_format" in extra and re.search(r"\b(?:400|422)\b", str(e)):
+                # gufo answers 400 to json_schema on every call: remember it, skip the wasted call.
+                _NO_SCHEMA.add(key)
             continue
         acts = parse(text)
         if acts or re.search(r'"actions"\s*:\s*\[\s*\]', text):
