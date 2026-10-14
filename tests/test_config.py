@@ -31,7 +31,7 @@ class TestLazyDefaultGetter:
         """When no env vars are set, get_default_settings returns sensible defaults."""
         with patch.dict(os.environ, {}, clear=True):
             settings = get_default_settings()
-            assert settings["BACKEND_LLM_URL"] == "http://localhost:8000/v1"
+            assert settings["BACKEND_LLM_URL"] == "http://localhost:13305/v1"
             assert settings["SPM_PROXY_PORT"] == 5050
             assert isinstance(settings["SPM_PROXY_PORT"], int)
             assert settings["SPM_HARDWARE_TIER"] == "SOVEREIGN"
@@ -95,7 +95,7 @@ class TestResilientJsonParse:
             mgr = SettingsManager(config_path=f.name)
 
         settings = mgr.get_settings()
-        assert settings["BACKEND_LLM_URL"] == "http://localhost:8000/v1"
+        assert settings["BACKEND_LLM_URL"] == "http://localhost:13305/v1"
         assert settings["SPM_PROXY_PORT"] == 5050
         os.unlink(f.name)
 
@@ -111,7 +111,7 @@ class TestResilientJsonParse:
 
         settings = mgr.get_settings()
         assert settings["SPM_HARDWARE_TIER"] == "TITAN"
-        assert settings["BACKEND_LLM_URL"] == "http://localhost:8000/v1"
+        assert settings["BACKEND_LLM_URL"] == "http://localhost:13305/v1"
         os.unlink(f.name)
 
     def test_empty_config_uses_defaults(self):
@@ -122,7 +122,7 @@ class TestResilientJsonParse:
             mgr = SettingsManager(config_path=f.name)
 
         settings = mgr.get_settings()
-        assert settings["BACKEND_LLM_URL"] == "http://localhost:8000/v1"
+        assert settings["BACKEND_LLM_URL"] == "http://localhost:13305/v1"
         assert settings["SPM_PROXY_PORT"] == 5050
         os.unlink(f.name)
 

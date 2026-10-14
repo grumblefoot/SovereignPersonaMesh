@@ -38,7 +38,7 @@ _CONFIG_PATH = os.getenv("SPM_CONFIG_PATH") or default_config_path()
 
 # Static defaults (no env var evaluation here — env reads happen lazily).
 _DEFAULT_VALUES: Dict[str, Any] = {
-    "BACKEND_LLM_URL": "http://localhost:8000/v1",
+    "BACKEND_LLM_URL": "http://localhost:13305/v1",   # Lemonade; 8000 is SillyTavern (fixed 2026-10-14)
     "BACKEND_API_KEY": "",
     "SPM_PROXY_PORT": 5050,
     "SPM_HARDWARE_TIER": "SOVEREIGN",
