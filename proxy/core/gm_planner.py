@@ -26,7 +26,9 @@ SCHEMA = {
                     "desc": {"type": "string"},
                     "evidence": {"type": "string"},
                 },
-                "required": ["type", "room_id", "evidence"],
+                # entity is required for every item (CREATE_ROOM uses ""): without it Gemma
+                # dropped "who moves" from 18 moves (replay round 3).
+                "required": ["type", "entity", "room_id", "evidence"],
             },
         }
     },
@@ -51,7 +53,10 @@ def messages_for(rooms: List[Dict[str, str]], where: Dict[str, str], player: str
         "about a place, wanting to go, or looking around is not a move.\n"
         "- evidence: copy the exact words (5-15 words) from the player's message or the reply that "
         "show the move or the new place. No quote, no action.\n"
-        "- Use 'user' for the player and the ids above for others.\n"
+        "- entity is who moves: 'user' for the player, the ids above for others. Every MOVE "
+        "needs an entity, e.g. {\"type\": \"MOVE\", \"entity\": \"user\", \"room_id\": "
+        "\"kitchen\", \"evidence\": \"I walk into the kitchen and sit down\"}. For CREATE_ROOM "
+        "use entity \"\".\n"
         "- If the place matches a known room (same place, any wording), use that room's id; never "
         "create a second room for a place that already exists.\n"
         + ("- A place not in the list: first {\"type\": \"CREATE_ROOM\", \"room_id\": "
@@ -65,6 +70,9 @@ def messages_for(rooms: List[Dict[str, str]], where: Dict[str, str], player: str
 
 def _norm(t: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (t or "").lower()).strip()
+
+
+_FIELDS = {"MOVE": {"type", "entity", "room_id"}, "CREATE_ROOM": {"type", "room_id", "name", "desc"}}
 
 
 def grounded(actions: List[Dict[str, Any]], *texts: str) -> List[Dict[str, Any]]:
@@ -82,10 +90,58 @@ def grounded(actions: List[Dict[str, Any]], *texts: str) -> List[Dict[str, Any]]
     for a in actions:
         # A new room stands if its own quote checks out, or a grounded move goes into it.
         if ok(a) or (a.get("type") == "CREATE_ROOM" and a.get("room_id") in moves_into):
-            kept.append({k: v for k, v in a.items() if k != "evidence"})
+            # Only the fields the validator accepts for the type (extra fields are rejected):
+            # the schema makes CREATE_ROOM carry entity "" and MOVE may carry name/desc "".
+            keep = _FIELDS.get(str(a.get("type")), set())
+            kept.append({k: v for k, v in a.items() if k in keep and (k == "type" or v)})
         else:
             logger.info(f"[GMPlanner] dropped ungrounded action (evidence not in the text): {a}")
     return kept
+
+
+_STOP = {"the", "a", "an", "of", "s", "room", "area", "place", "main"}
+
+
+def _words(t: str) -> List[str]:
+    out = []
+    for w in re.split(r"[^a-z0-9]+", (t or "").lower()):
+        if not w or w in _STOP:
+            continue
+        out.append(w[:-1] if len(w) > 3 and w.endswith("s") else w)   # principals -> principal
+    return out
+
+
+def _same_place(a_id: str, a_name: str, b_id: str, b_name: str) -> bool:
+    """Close names that end in the same noun: "principals_office" ~ "Principal Nezu's
+    Office", but "UA High School Main Gates" is not "UA High School"."""
+    a = _words(a_name or a_id) or _words(a_id)
+    b = _words(b_name or b_id) or _words(b_id)
+    if not a or not b or a[-1] != b[-1]:
+        return False
+    sa, sb = set(a), set(b)
+    return len(sa & sb) / len(sa | sb) >= 0.6
+
+
+def reuse_rooms(actions: List[Dict[str, Any]], rooms: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    """Map a proposed new room onto an existing room for the same place (deterministic):
+    the model kept creating near-duplicates (ua_academy / ua_high_school; principals_office /
+    principal_nezus_office) although the list was in the prompt."""
+    known = {r["room_id"]: r.get("name") or r["room_id"] for r in rooms}
+    alias = {}
+    out = []
+    for a in actions:
+        if a.get("type") == "CREATE_ROOM" and a.get("room_id") not in known:
+            match = next((rid for rid, nm in known.items()
+                          if _same_place(a.get("room_id", ""), a.get("name", ""), rid, nm)), None)
+            if match:
+                alias[a["room_id"]] = match
+                logger.info(f"[GMPlanner] '{a['room_id']}' is the existing room '{match}'; reusing it.")
+                continue
+        out.append(a)
+    for a in out:
+        if a.get("type") == "MOVE" and a.get("room_id") in alias:
+            a["room_id"] = alias[a["room_id"]]
+    return out
 
 
 def parse(text: str) -> List[Dict[str, Any]]:

@@ -159,3 +159,23 @@ def test_gm_grounded_keeps_only_quoted_actions():
     assert kept == [{"type": "CREATE_ROOM", "room_id": "garden", "name": "Garden"},
                     {"type": "MOVE", "entity": "user", "room_id": "garden"}]
     assert gm_planner.grounded([{"type": "MOVE", "entity": "user", "room_id": "x"}], "anything") == []
+
+
+def test_gm_reuse_rooms_maps_near_duplicates_only():
+    rooms = [{"room_id": "principals_office", "name": "Principal's Office"},
+             {"room_id": "ua_high_school", "name": "U.A. High School"}]
+    acts = [{"type": "CREATE_ROOM", "room_id": "principal_nezus_office", "name": "Principal Nezu's Office"},
+            {"type": "MOVE", "entity": "user", "room_id": "principal_nezus_office"}]
+    assert gm_planner.reuse_rooms(acts, rooms) == [{"type": "MOVE", "entity": "user", "room_id": "principals_office"}]
+    gates = [{"type": "CREATE_ROOM", "room_id": "ua_high_school_main_gates", "name": "U.A. High School Main Gates"},
+             {"type": "MOVE", "entity": "user", "room_id": "ua_high_school_main_gates"}]
+    assert gm_planner.reuse_rooms(gates, rooms) == gates                     # a different place
+
+
+def test_gm_grounded_trims_fields_the_validator_forbids():
+    acts = [{"type": "CREATE_ROOM", "entity": "", "room_id": "garden", "name": "Garden", "desc": "",
+             "evidence": "we step out into the garden"},
+            {"type": "MOVE", "entity": "user", "room_id": "garden", "name": "", "evidence": "we step out into the garden"}]
+    out = gm_planner.grounded(acts, "Hand in hand, we step out into the garden.")
+    assert out == [{"type": "CREATE_ROOM", "room_id": "garden", "name": "Garden"},
+                   {"type": "MOVE", "entity": "user", "room_id": "garden"}]

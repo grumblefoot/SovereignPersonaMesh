@@ -1906,7 +1906,7 @@ async def _plan_gm_actions(session_id: str, model: str, player: str, player_text
     acts = await gm_planner.plan(lemonade_client, model, msgs,
                                  local=reasoning._is_local(lemonade_client.base_url),
                                  job_kind="gm", session_id=session_id)
-    acts = gm_planner.grounded(acts, player_text, reply)
+    acts = gm_planner.reuse_rooms(gm_planner.grounded(acts, player_text, reply), rooms)
     logger.info(f"[GMPlanner] {len(acts)} proposed action(s) for {session_id}: {acts}")
     return acts
 
