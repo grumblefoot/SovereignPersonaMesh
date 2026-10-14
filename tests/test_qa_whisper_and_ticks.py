@@ -71,7 +71,6 @@ async def test_q16_configure_persists_every_seeded_room(monkeypatch):
 
     monkeypatch.setattr(world_app, "_persist_room", fake_persist)
     monkeypatch.setattr(world_app.app_state, "session_worlds", {})
-    monkeypatch.setattr(world_app.app_state, "current_world", {})
     res = await world_app.configure_world(WorldConfigPayload(
         template_key="generic_void", session_id="sess_q16",
         placements=[SeedPlacement(character_id="user", room_id="central_nexus"),

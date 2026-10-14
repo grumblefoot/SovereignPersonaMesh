@@ -51,7 +51,6 @@ class AppState:
         self.session_ticks: Dict[str, int] = {}
         self.session_turn_ticks: Dict[str, Dict[str, int]] = {}
         self._db_pool = None
-        self.current_world: Dict[str, RoomMetadata] = {}
         self.room_to_template: Dict[str, str] = {}
         self.session_worlds: Dict[str, Dict[str, Dict[str, RoomMetadata]]] = {}
         # B5: per-session FIFO of seen idempotency keys -> {digest, message}.
@@ -180,14 +179,19 @@ def _record_idempotency(session_id: str, key: Optional[str], message: str) -> No
         seen.popitem(last=False)
 
 import os
-# Database config
-DB_CONFIG = {
-    "user": os.environ.get("SPM_DB_USER", "spm_user"),
-    "password": os.environ.get("SPM_DB_PASSWORD", "spm_secure_password"),
-    "database": os.environ.get("SPM_DB_NAME", "litellm_postgres"),
-    "host": os.environ.get("SPM_DB_HOST", "localhost"),
-    "port": int(os.environ.get("SPM_DB_PORT", 5432))
-}
+# Database config. The proxy reads POSTGRES_* (proxy/main.py); the engine reads these too,
+# with the legacy SPM_DB_* names as fallback so existing deployments keep working.
+def _db_config() -> Dict[str, Any]:
+    return {
+        "user": os.environ.get("POSTGRES_USER") or os.environ.get("SPM_DB_USER", "spm_user"),
+        "password": os.environ.get("POSTGRES_PASSWORD") or os.environ.get("SPM_DB_PASSWORD", "spm_secure_password"),
+        "database": os.environ.get("POSTGRES_DB") or os.environ.get("SPM_DB_NAME", "litellm_postgres"),
+        "host": os.environ.get("POSTGRES_HOST") or os.environ.get("SPM_DB_HOST", "localhost"),
+        "port": int(os.environ.get("POSTGRES_PORT") or os.environ.get("SPM_DB_PORT", 5432)),
+    }
+
+
+DB_CONFIG = _db_config()
 
 
 def _resolve_template(session_id: str, requested: Optional[str]) -> str:
@@ -196,8 +200,8 @@ def _resolve_template(session_id: str, requested: Optional[str]) -> str:
     "" or the legacy default "dynamic" mean "this session's live world": the
     session's configured (non-dynamic) template if it has one. Without this,
     callers that didn't track the template (action, GM move/room) silently used
-    an empty 'dynamic' world — and action then fell back to the process-global
-    current_world, i.e. ANOTHER session's rooms and occupants. An explicit
+    an empty 'dynamic' world — and action then fell back to a process-global
+    world alias, i.e. ANOTHER session's rooms and occupants. An explicit
     non-dynamic template is always honoured as given.
     """
     if requested and requested != "dynamic":
@@ -220,10 +224,6 @@ def _ensure_world(template_key: str = "dynamic", session_id: str = "default_sess
         app_state.session_worlds[session_id][template_key] = {
             rid: RoomMetadata(**r.model_dump()) for rid, r in fresh.items()
         }
-    # Also sync the legacy app_state.current_world for backward compatibility
-    
-    if not app_state.current_world:
-        app_state.current_world = app_state.session_worlds[session_id][template_key]
     return app_state.session_worlds[session_id][template_key]
 
 
@@ -266,7 +266,7 @@ async def health_check():
         # Decision 10: report the default_session's session tick so existing
         # readiness checks keep seeing a tick field.
         "tick": _session_tick("default_session"),
-        "template": list(app_state.current_world.keys()) if app_state.current_world else "none",
+        "template": sorted({k for w in app_state.session_worlds.values() for k in w}) or "none",
         "uptime_seconds": round(time.time() - app.state.start_time, 1),
         "active_sessions": len(app_state.session_worlds),
     }
@@ -304,8 +304,8 @@ async def submit_action(payload: ActionPayload, background_tasks: BackgroundTask
     # Ensure session-scoped world is loaded
     template_key = _resolve_template(payload.session_id, getattr(payload, "template_key", "dynamic"))
     world = _ensure_world(template_key, payload.session_id)
-    # NO fallback to app_state.current_world: that alias is process-global (the
-    # last session to configure), so falling back gated this session's speech
+    # NO fallback to a process-global world alias: it tracked only the last
+    # session to configure, so falling back gated this session's speech
     # against another session's occupants. An empty world just has no listeners.
 
     # Find which room the actor is in
@@ -417,7 +417,7 @@ async def query_world_state(character_id: str, session_id: str = "default_sessio
             distances={},
         )
 
-    # Session-scoped only (no global current_world fallback — QA 2026-10-05).
+    # Session-scoped only (no global world-alias fallback — QA 2026-10-05).
     room = world.get(char_room)
     if room is None:
         room = RoomMetadata(
@@ -695,7 +695,7 @@ async def add_character_to_world(payload: CharacterMovePayload, background_tasks
 
     # QA 2026-10-05: write the SESSION world only. This endpoint used to mutate the
     # shared builder template (so every later session instantiated from it inherited
-    # the character) and the process-global current_world, but never the session
+    # the character) and the process-global world alias, but never the session
     # world — the same cross-session leak class A2 fixed for /world/move.
     session_id = payload.session_id
     world = _ensure_world(payload.template_key, session_id)
@@ -722,7 +722,7 @@ async def remove_character_from_world(character_id: str, background_tasks: Backg
     """Remove a character from all rooms in a template."""
     modified_rooms = set()
     # Session-scoped only (QA 2026-10-05): this used to strip the character from the
-    # shared builder template and the process-global current_world as well.
+    # shared builder template and the process-global world alias as well.
     target_worlds = list(app_state.session_worlds.get(session_id, {}).values())
     for w in target_worlds:
         for r_id, r in list(w.items()):
@@ -734,7 +734,7 @@ async def remove_character_from_world(character_id: str, background_tasks: Backg
         room_obj = None
         if session_id in app_state.session_worlds and tmpl_key in app_state.session_worlds[session_id] and r_id in app_state.session_worlds[session_id][tmpl_key]:
             room_obj = app_state.session_worlds[session_id][tmpl_key][r_id]
-        # (no current_world fallback: it would persist ANOTHER session's room
+        # (no global world-alias fallback: it would persist ANOTHER session's room
         # object under this session_id)
         if room_obj:
             background_tasks.add_task(_persist_room, session_id, tmpl_key, r_id, room_obj)
@@ -796,7 +796,7 @@ async def move_character(payload: CharacterMovePayload, background_tasks: Backgr
     modified_rooms = set()
     # QA 2026-10-05: remove from THIS session's worlds only. The old code also
     # stripped the character from the shared builder templates and from the
-    # process-global current_world (another session's live world), so moving the
+    # process-global world alias (another session's live world), so moving the
     # player — id 'user' in every chat — removed them from other chats.
     for tmpl_key, tmpl_dict in app_state.session_worlds.get(session_id, {}).items():
         for r_id, r in list(tmpl_dict.items()):
@@ -813,7 +813,7 @@ async def move_character(payload: CharacterMovePayload, background_tasks: Backgr
         room_obj = None
         if session_id in app_state.session_worlds and tmpl_key in app_state.session_worlds[session_id] and r_id in app_state.session_worlds[session_id][tmpl_key]:
             room_obj = app_state.session_worlds[session_id][tmpl_key][r_id]
-        # (no current_world fallback: it would persist ANOTHER session's room
+        # (no global world-alias fallback: it would persist ANOTHER session's room
         # object under this session_id)
         if room_obj:
             background_tasks.add_task(_persist_room, session_id, tmpl_key, r_id, room_obj)
@@ -893,8 +893,6 @@ async def configure_world(payload: WorldConfigPayload):
             except Exception as e:
                 logging.error(f"Failed to load existing world state: {e}")
 
-    app_state.current_world = app_state.session_worlds[session_id_for_config][payload.template_key]
-
     # A2: optional seed placements — validate every room first, apply only if all valid.
     world_now = app_state.session_worlds[session_id_for_config][payload.template_key]
     bad = [pl.room_id for pl in payload.placements if pl.room_id not in world_now]
@@ -962,7 +960,6 @@ async def reset_world_state(session_id: Optional[str] = None):
     app_state.session_edges.clear()
     app_state.mutation_log.clear()
 
-    app_state.current_world = {}
     return {"status": "success", "message": "In-memory world state cache cleared"}
 
 # ── A2: snapshot + stateful barriers ────────────────────────────────────
@@ -1069,7 +1066,7 @@ async def get_lock_info(session_id: str):
 
 def _find_actor_room(character_id: str, session_id: str = "default_session", template_key: str = "dynamic") -> Optional[str]:
     """Find the room_id where character_id is present in the active world for a session."""
-    # Session-scoped only: the old fallback to the process-global current_world
+    # Session-scoped only: the old fallback to the process-global world alias
     # located the actor in ANOTHER session's world (QA 2026-10-05).
     world = _get_session_world(session_id, template_key) or {}
     for room_id, room in world.items():
@@ -1103,10 +1100,9 @@ def _compute_distance_and_barriers(
     Adjacent room → ~15 ft, closed door barrier.
     Other room → 45 ft, closed door + solid wall.
 
-    Adjacency is read from the ACTING session's world when ``world`` is passed
-    (the /world/action path). The global ``app_state.current_world`` is only a
-    read alias for legacy callers that have no session in hand (e.g. the void
-    graph helpers); NOTE each such use at its call site.
+    Adjacency is read from the ACTING session's world: pass ``world`` (the
+    /world/action path) or ``session_id``. Neither is given, the lookup is empty
+    and rooms are treated as distant.
     """
     if actor_room is None:
         return (45.0, [_str_to_barrier("closed_door"), _str_to_barrier("solid_wall")])
@@ -1155,7 +1151,7 @@ def _compute_all_distances(character_id: str, session_id: str = "default_session
 
 def _remove_character_from_all_rooms(character_id: str, session_id: str = "default_session") -> None:
     """Remove a character from every room in THIS session's worlds — never the
-    process-global current_world, which aliases whichever session configured last
+    process-global world alias (retired), which tracked whichever session configured last
     (every chat's player is 'user', so that removed the player from other chats)."""
     for w in app_state.session_worlds.get(session_id, {}).values():
         for room_id, room in list(w.items()):
@@ -1234,6 +1230,6 @@ async def shutdown_event():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("evennia_world.app:app", host=os.getenv("SPM_ENGINE_HOST", "0.0.0.0"),
+    uvicorn.run("evennia_world.app:app", host=os.getenv("SPM_ENGINE_HOST", "127.0.0.1"),
                 port=int(os.getenv("SPM_ENGINE_PORT", "4005")))
 

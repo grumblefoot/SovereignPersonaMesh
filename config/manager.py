@@ -12,13 +12,29 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+_CONFIG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config")
+
+
+def default_config_path(config_dir: Optional[str] = None) -> str:
+    """Pick the settings file when SPM_CONFIG_PATH is not set (brief P4).
+
+    Settings saved from the admin dashboard are user data, so they must not live
+    in the tracked config/config.json (every user's backend URL would show up as
+    a local change to a repo file). Prefer the git-ignored config.local.json when
+    it exists; fall back to config/config.json (the repo default) when it does
+    not. Reads and writes both go to the chosen file.
+    """
+    directory = config_dir or _CONFIG_DIR
+    local = os.path.join(directory, "config.local.json")
+    if os.path.exists(local):
+        return local
+    return os.path.join(directory, "config.json")
+
+
 # SPM_CONFIG_PATH lets a deployment keep its settings outside the repo file. Resolved
 # once at import (proxy/main.py loads .env first); tests redirect _CONFIG_PATH itself.
-_CONFIG_PATH = os.getenv("SPM_CONFIG_PATH") or os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "config",
-    "config.json"
-)
+_CONFIG_PATH = os.getenv("SPM_CONFIG_PATH") or default_config_path()
 
 # Static defaults (no env var evaluation here — env reads happen lazily).
 _DEFAULT_VALUES: Dict[str, Any] = {

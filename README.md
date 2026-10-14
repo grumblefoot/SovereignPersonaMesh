@@ -48,14 +48,58 @@ The container runs `scripts/init_db.sql` on first start. To upgrade an existing 
 the files in `scripts/migrations/` with `.venv/bin/python scripts/apply_migrations.py`
 (it records what it applied, so running it again is safe).
 
+**Without Docker** (PostgreSQL already installed on your machine):
+
+1. Install PostgreSQL 16 with the pgvector extension (e.g. `postgresql16-server` plus
+   `pgvector_16` on Fedora/RHEL, `postgresql-16-pgvector` on Debian/Ubuntu).
+2. Create a user that may create databases:
+   ```sql
+   CREATE ROLE spm_user LOGIN PASSWORD 'change-me' CREATEDB;
+   ```
+3. Make sure the user can run `CREATE EXTENSION vector` in the SPM database — either the
+   user owns the database / has the needed rights, or a superuser runs
+   `CREATE EXTENSION vector;` once inside it.
+4. Set `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD` and
+   `POSTGRES_DB` in `.env`, then:
+   ```bash
+   python -m spm init          # creates the database and the schema
+   python -m spm init --existing   # an existing SPM database: apply migrations only
+   ```
+
+After the database step, `python -m spm init` continues with first-run setup: it asks for
+your model server URL, chat model, embedding server and embedding model, probes them
+(lists the models, warns if your chat model is not there, checks `/embeddings`), writes the
+answers to the git-ignored `config/config.local.json` (the tracked `config/config.json`
+stays untouched) and pins the chat model in `.env` as `SPM_DEFAULT_MODEL`. Use
+`--backend-url`, `--model`, `--embedding-url`, `--embedding-model` (or `none`) and `--yes`
+to answer non-interactively, or `--no-setup` for the database only.
+
 ### 3. Start SPM
 
 Start your LLM server first, then:
 
 ```bash
+python -m spm start      # world engine (port 4005) + SPM proxy (port 5050)
+python -m spm status     # PID + health of each service
+python -m spm stop       # stop both
+```
+
+(`.venv/bin/python` on Linux/macOS, `.venv\Scripts\python` on Windows; run it from the repo
+root.) `start` detaches both services, waits for their health endpoints, writes their PIDs to
+`run/spm.pids` and appends their output to `logs/`. `start --foreground` stays attached and
+stops both on Ctrl+C — that is what a container runs.
+
+Or, by hand:
+
+```bash
 .venv/bin/python -m evennia_world.app &   # world engine, port 4005
 .venv/bin/python -m proxy.main            # SPM proxy, port 5050
 ```
+
+Both services listen on this machine only (127.0.0.1). To reach SPM from another device on your
+network (for example SillyTavern on a laptop), set `SPM_HOST=0.0.0.0` (and
+`SPM_ENGINE_HOST=0.0.0.0` only if the engine must be reachable too) — but the admin dashboard has
+no login, so do this only on a trusted network. Containers set both to `0.0.0.0` themselves.
 
 ### 4. Connect SillyTavern
 
@@ -77,6 +121,27 @@ Start your LLM server first, then:
    can't be filtered per character), so Summarize only costs extra model time.
 
 Details and troubleshooting: [docs/st_extension_setup.md](docs/st_extension_setup.md).
+
+## Run with Docker
+
+The compose bundle runs the whole of SPM itself (database plus the proxy and world engine):
+
+```bash
+docker compose -f config/docker-compose.yml up -d --build
+```
+
+- The model server must listen on the **host**, not inside the container: Lemonade, LM Studio
+  with "Serve on Local Network", or `llama-server --host 0.0.0.0`.
+- If it is not reachable at `host.docker.internal:13305`, set `BACKEND_LLM_URL` in `.env`
+  (e.g. `BACKEND_LLM_URL=http://192.168.1.10:1234/v1`). A `localhost` or `127.0.0.1` URL in
+  `.env` (for the model server or `EMBEDDING_URL`) is rewritten to `host.docker.internal`
+  inside the container, so the same `.env` works with and without Docker.
+- Podman works too (`podman compose ...`); the healthcheck is ignored there unless images are
+  built in Docker format.
+- On first boot the container runs `spm init` to create and prepare the database; settings
+  saved from the admin dashboard persist on a named volume across rebuilds.
+- Admin dashboard: `http://127.0.0.1:5050/admin`
+- SillyTavern URL: `http://127.0.0.1:5050/v1`
 
 ## Writing conventions
 

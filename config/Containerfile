@@ -1,20 +1,32 @@
-# Rootless Podman Containerfile for Sovereign Persona Mesh Proxy
+# Containerfile for Sovereign Persona Mesh (works with Docker and Podman).
+# Build context is the repo root: docker compose -f config/docker-compose.yml build
 FROM python:3.13-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# asyncpg ships wheels, so no build-essential/libpq-dev is needed. curl stays
+# for the HEALTHCHECK below.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libpq-dev \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Dependencies first so the layer caches across code changes.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# The launcher rewrites localhost URLs for a model/embeddings server to
+# host.docker.internal when this is set (spm/run.py _container_hosts).
+ENV SPM_IN_CONTAINER=1
+
 EXPOSE 5050
 
-CMD ["uvicorn", "proxy.main:app", "--host", "0.0.0.0", "--port", "5050"]
+# `spm init --existing` prepares an empty database on first boot (full schema) and
+# applies pending migrations on later boots. SPM starts only if that succeeded
+# (Claude's compose test: it used to start on an empty schema). Both services run
+# attached (SIGTERM-aware).
+CMD sh -c "python -m spm init --existing --yes --no-setup && exec python -m spm start --foreground"
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:5050/health || exit 1

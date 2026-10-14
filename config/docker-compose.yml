@@ -1,25 +1,67 @@
-version: '3.8'
+# Sovereign Persona Mesh — full stack (database + proxy/engine bundle).
+# Run: docker compose -f config/docker-compose.yml up -d --build
+# Compose v2 format: no `version:` key.
 
 services:
-  spm_db:
+  postgres:
     image: pgvector/pgvector:pg16
-    container_name: litellm_postgres
-    restart: always
+    # No container_name on purpose: a fixed name would collide with an existing
+    # spm-postgres / litellm_postgres container (as on the owner's machine).
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: litellm_postgres
-      POSTGRES_USER: spm_user
-      POSTGRES_PASSWORD: spm_secure_password
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${POSTGRES_DB:-litellm_postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-spm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spm_secure_password}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ../scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
-    networks:
-      - ai-net
+      # No init_db.sql mount any more: `spm init` (run by the spm container's
+      # CMD on first boot) creates and prepares the database.
+    # No published port: SPM reaches postgres over the compose network. To poke
+    # at it with psql from the host, publish loopback only, e.g.:
+    #   ports:
+    #     - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-spm_user} -d ${POSTGRES_DB:-litellm_postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
 
-networks:
-  ai-net:
-    driver: bridge
+  spm:
+    build:
+      context: ..
+      dockerfile: config/Containerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Your host's .env (relative to this file). Optional: absent file is fine,
+    # the defaults below and inside the image take over.
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      POSTGRES_HOST: postgres
+      # Same database settings as the postgres service (spm init requires POSTGRES_DB).
+      POSTGRES_DB: ${POSTGRES_DB:-litellm_postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-spm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spm_secure_password}
+      # Inside a container a 127.0.0.1 bind is unreachable from the host, so
+      # both services listen on all interfaces here.
+      SPM_HOST: 0.0.0.0
+      SPM_ENGINE_HOST: 0.0.0.0
+      BACKEND_LLM_URL: ${BACKEND_LLM_URL:-http://host.docker.internal:13305/v1}
+      # Settings saved from the admin dashboard live on the named volume below,
+      # not in the image.
+      SPM_CONFIG_PATH: /app/state/config.local.json
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Linux: reach the host's model server
+    ports:
+      - "127.0.0.1:5050:5050"
+    volumes:
+      - spm_state:/app/state
+      - spm_logs:/app/logs
 
 volumes:
   pgdata:
+  spm_state:
+  spm_logs:

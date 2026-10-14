@@ -24,7 +24,6 @@ def reset_state(app_module):
     """Fresh engine state before every test."""
     from evennia_world.app import app as fa_app
     fa_app.state.start_time = 0
-    app_module.app_state.current_world = {}
     app_module.app_state.room_to_template = {}
     app_module.app_state.session_worlds = {}
     app_module.app_state.idempotency_seen = {}
@@ -74,8 +73,6 @@ class TestMoveSessionScoping:
             assert r.status_code == 200
             world = app_module.app_state.session_worlds[sess]["dungeon_cellar"]
             world["cellar"].present_characters.append("rowan")
-        # Detach the legacy global so session scoping is what's under test.
-        app_module.app_state.current_world = {}
 
         r = client.post("/api/v1/world/move", json={
             "character_id": "rowan",

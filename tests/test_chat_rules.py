@@ -527,7 +527,6 @@ def test_route_turn_survives_snapshot_failure_and_keeps_world_rules(monkeypatch)
     monkeypatch.setenv("SPM_WORLD_DB", "0")
     st = world_app.app_state
     st._db_pool = None
-    st.current_world = {}
     st.session_worlds = {}
     st.session_ticks = {}
     st.session_turn_ticks = {}

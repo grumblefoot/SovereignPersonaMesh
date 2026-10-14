@@ -68,7 +68,7 @@ async def apply_migrations(conn: asyncpg.Connection) -> List[str]:
             continue
         logger.info("[migrations] applying %s ...", path.name)
         async with conn.transaction():
-            await conn.execute(path.read_text())
+            await conn.execute(path.read_text(encoding="utf-8"))
             await conn.execute(
                 "INSERT INTO spm_schema_migrations (filename) VALUES ($1);", path.name
             )

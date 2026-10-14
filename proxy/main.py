@@ -151,7 +151,7 @@ async def shutdown_event():
 
 if __name__ == "__main__":
     import uvicorn
-    host = os.getenv("SPM_HOST", "0.0.0.0")
+    host = os.getenv("SPM_HOST", "127.0.0.1")
     port = int(os.getenv("SPM_PORT", 5050))
     from proxy.core.logger import attach_rotating_file_handler
     attach_rotating_file_handler()

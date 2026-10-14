@@ -14,7 +14,6 @@ def app_module():
 
 @pytest.fixture(autouse=True)
 def reset_state(app_module):
-    app_module.app_state.current_world = {}
     app_module.app_state.room_to_template = {}
     app_module.app_state.session_worlds = {}
     app_module.app_state.idempotency_seen = {}
