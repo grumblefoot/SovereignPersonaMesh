@@ -914,12 +914,15 @@ The text after </think> must ONLY be narrative and dialogue.
     
     # Token budget P0 (OPEN-008): never ask the backend for more room than the
     # window has left. backend_max_tokens is now a CEILING, not a flat value.
-    backend_max_tokens = budget.clamp_max_tokens(
-        csa_messages, settings, prompt_builder.config, model=str(request.model))
+    # Native thinking spends completion tokens before the reply; without room for it the
+    # reply came back empty (spike 2026-10-13: 3 of 6 probes at 600 tokens). The reserve
+    # goes into the ceiling, so the window clamp still applies to the total.
+    ceiling = int(settings.get("backend_max_tokens", 2048) or 2048)
     if reasoning_mode == "native":
-        # Native thinking spends completion tokens before the reply; without room for it
-        # the reply came back empty (spike 2026-10-13: 3 of 6 probes at 600 tokens).
-        backend_max_tokens += int(settings.get("reasoning_max_tokens", 3000) or 3000)
+        ceiling += int(settings.get("reasoning_max_tokens", 3000) or 3000)
+    backend_max_tokens = budget.clamp_max_tokens(
+        csa_messages, settings, prompt_builder.config, model=str(request.model),
+        configured_ceiling=ceiling)
 
     logger.info(f"[SPMIntoBackendLog] Sending to Backend (model={request.model}): {csa_messages}")
 
