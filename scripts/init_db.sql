@@ -205,6 +205,30 @@ SELECT create_csa_lore_rules_table('seamus');
 SELECT create_csa_lore_rules_table('arvenia');
 
 -- ======================================================================
+-- Brief A1: one rules table for all chats (replaces per-character
+-- csa_lore_rules_* for retrieval; keep create_csa_lore_rules_table for now).
+-- Levels: world (every character in the chat), character_internal (only
+-- that character), character_external (that character + same-room characters).
+-- Keep in sync with scripts/migrations/007_chat_rules.sql.
+CREATE TABLE IF NOT EXISTS spm_chat_rules (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id VARCHAR(255) NOT NULL,
+    level VARCHAR(20) NOT NULL CHECK (level IN ('world','character_internal','character_external')),
+    character_id VARCHAR(255),
+    rule_text TEXT NOT NULL,
+    rule_type VARCHAR(24) NOT NULL CHECK (rule_type IN ('invariant','conditional_trigger','game_over')),
+    status VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active')),
+    source VARCHAR(12) NOT NULL DEFAULT 'extracted' CHECK (source IN ('extracted','manual','migrated')),
+    rule_embedding vector,
+    embedding_space_id SMALLINT,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    CHECK (level = 'world' OR character_id IS NOT NULL)
+);
+
+CREATE INDEX IF NOT EXISTS idx_spm_chat_rules_session ON spm_chat_rules (session_id, status);
+
+-- ======================================================================
 -- V0.4 World State Sessions
 -- ======================================================================
 CREATE TABLE IF NOT EXISTS world_state_sessions (
