@@ -15,7 +15,8 @@ async def record_turn_perceptions(conn, *, session_id: str, tick: int,
                                   turn_id: Optional[str], actor_id: str,
                                   action_type: str,
                                   consequences: List[Dict[str, Any]],
-                                  only_recipient: Optional[str] = None) -> int:
+                                  only_recipient: Optional[str] = None,
+                                  action_digest: Optional[str] = None) -> int:
     """Insert one perception row per consequence recipient. Returns rows written.
 
     Blackout rows ARE recorded (with empty perceived_text): "X perceived nothing of this
@@ -46,14 +47,15 @@ async def record_turn_perceptions(conn, *, session_id: str, tick: int,
                 """
                 INSERT INTO spm_perception
                     (session_id, tick, turn_id, actor_id, action_type, recipient_id,
-                     gating_level, perceived_text, distance_ft, barriers)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+                     gating_level, perceived_text, distance_ft, barriers, action_digest)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
                 """,
                 session_id, tick, turn_id, actor_id, action_type, recipient,
                 str(c.get("gating_level", "direct")).lower(),
                 c.get("sensory_feed") or "",
                 float(c["distance_ft"]) if c.get("distance_ft") is not None else None,
                 json.dumps(list(c.get("barriers") or [])),
+                action_digest,
             )
             rows += 1
     return rows

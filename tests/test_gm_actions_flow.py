@@ -188,6 +188,15 @@ async def test_q10_offscene_move_needs_the_story_to_mention_the_character(monkey
                                       story_text='"Would you show me the garden?" Lian took his arm.')
     assert sorted(moved) == ["lian", "user"]          # Mei stays in the kitchen
 
+    # review B4: separators don't matter ("mei_lin" vs "Mei-Lin")
+    snap["occupants"].append({"entity_id": "mei_lin", "room_id": "kitchen"})
+    moved.clear()
+    p2 = MonologueStreamParser(initial_state=0)
+    p2._monologue_sections.append('[GM_ACTION: {"type": "MOVE", "entity": "mei_lin", "room_id": "garden"}]')
+    await routes._dispatch_gm_actions(p2, "s", "lian", turn_index=3, persona="Vardus",
+                                      story_text="Mei-Lin drifted out after them, unnoticed.")
+    assert moved == ["mei_lin"]
+
     moved.clear()
     await routes._dispatch_gm_actions(parser(), "s", "lian", turn_index=2, persona="Vardus",
                                       story_text="Behind them, Mei slipped out of the kitchen to listen.")

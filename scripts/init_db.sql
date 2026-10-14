@@ -284,3 +284,9 @@ ALTER TABLE spm_chat_settings ADD COLUMN IF NOT EXISTS initial_lore_done BOOLEAN
 INSERT INTO spm_chat_settings (session_id, initial_lore_done)
 SELECT DISTINCT session_id, TRUE FROM spm_perception
 ON CONFLICT (session_id) DO UPDATE SET initial_lore_done = TRUE;
+
+-- QA 2026-10-13 (Hermes review B1-B3): fingerprint of the player's exact message per turn.
+-- A later responder in a group turn reuses the recorded perception only when the message is
+-- unchanged; comparing rendered feeds failed for muffled rows and partial edits. Idempotent.
+
+ALTER TABLE spm_perception ADD COLUMN IF NOT EXISTS action_digest CHAR(16);

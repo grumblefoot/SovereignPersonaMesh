@@ -564,7 +564,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # "heard" Vardus's words. If another character already answered this turn, reuse the
     # recorded perception instead.
     recorded = None if (ephemeral or direction_only) else \
-        await _recorded_player_action(session_id, turn_id, target_char, observable_text)
+        await _recorded_player_action(session_id, turn_id, target_char, _action_digest(user_text))
     try:
         if ephemeral or direction_only:
             # No in-world action: ephemeral turns write nothing; a direction-only
@@ -624,6 +624,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                     turn_id=turn_id, actor_id="user", action_type=primary_action,
                     consequences=world_res["consequences"],
                     only_recipient=target_char if only_target else None,
+                    action_digest=_action_digest(user_text),
                 )
         except Exception as e:
             logger.warning(f"[SPMProxy] Perception recording skipped: {e}")
@@ -1368,12 +1369,21 @@ class _AlreadyRecorded(Exception):
     """The player's action for this turn was already perceived (QA Q11)."""
 
 
-def _norm_text(t: str) -> str:
-    return re.sub(r"\W+", " ", (t or "").lower()).strip()
+def _action_digest(user_text: str) -> str:
+    """Fingerprint of the player's exact message (thoughts included; a hash, so nothing
+    private is stored). Hermes review B1-B3: comparing rendered feeds failed for muffled
+    rows, thought-only edits and edits past the first 60 characters."""
+    return hashlib.sha256((user_text or "").strip().encode("utf-8")).hexdigest()[:16]
+
+
+def _like_prefix(s: str) -> str:
+    """A LIKE pattern matching strings that start with `s` literally (Hermes review B7:
+    '_' and '%' in a chat id acted as wildcards). Use with ESCAPE '\\'."""
+    return re.sub(r"([\\%_])", r"\\\1", s) + "%"
 
 
 async def _recorded_player_action(session_id: str, turn_id: str, target_char: str,
-                                  observable_text: str = "") -> Optional[Dict[str, Any]]:
+                                  digest: str = "") -> Optional[Dict[str, Any]]:
     """QA Q11. If ANOTHER character already replied to this turn, the player's action has
     been perceived, with the positions at the moment it was said.
 
@@ -1383,30 +1393,31 @@ async def _recorded_player_action(session_id: str, turn_id: str, target_char: st
         return None
     try:
         async with _db_pool.acquire() as conn:
-            other = await conn.fetchval(
-                "SELECT 1 FROM spm_perception WHERE session_id = $1 AND turn_id LIKE $2 "
-                "AND actor_id <> $3 LIMIT 1",
-                session_id, f"{turn_id}#reply:%", target_char)
-            if other is not True and other != 1:
-                return None
             rows = await conn.fetch(
-                "SELECT tick, recipient_id, gating_level, perceived_text, distance_ft "
+                "SELECT tick, recipient_id, gating_level, perceived_text, distance_ft, action_digest "
                 "FROM spm_perception WHERE session_id = $1 AND turn_id = $2 AND actor_id = 'user' "
                 "ORDER BY id", session_id, turn_id)
-        rows = [dict(r) for r in rows] if isinstance(rows, list) else []
+            rows = [dict(r) for r in rows] if isinstance(rows, list) else []
+            stored = {r["action_digest"] for r in rows if r.get("action_digest")}
+            if rows and stored and digest and digest not in stored:
+                # The same turn number with a DIFFERENT message (edited, or deleted and
+                # re-sent): a new action. Its old version's replies go too (review B5).
+                await conn.execute(
+                    "DELETE FROM spm_perception WHERE session_id = $1 AND turn_id LIKE $2 ESCAPE '\\'",
+                    session_id, _like_prefix(f"{turn_id}#reply:"))
+                logger.info(f"[SPMProxy] Turn {turn_id} has a new message (edited or re-sent); "
+                            f"perceiving it afresh and dropping replies to the old version.")
+                return None
+            other = await conn.fetchval(
+                "SELECT 1 FROM spm_perception WHERE session_id = $1 AND turn_id LIKE $2 ESCAPE '\\' "
+                "AND actor_id <> $3 LIMIT 1",
+                session_id, _like_prefix(f"{turn_id}#reply:"), target_char)
+            if other is not True and other != 1:
+                return None
     except Exception as e:
         logger.warning(f"[SPMProxy] recorded-action lookup failed, re-submitting: {e}")
         return None
     if not rows:
-        return None
-    # The same turn number with a DIFFERENT message (edited, or deleted and re-sent) is a new
-    # action: never reuse the old version's perception. Rows that carry text must contain
-    # this message; if only blackout rows exist, there is nothing to compare, so reuse.
-    said = _norm_text(observable_text)[:60]
-    texts = [_norm_text(r["perceived_text"]) for r in rows if r["perceived_text"]]
-    if said and texts and not any(said in t for t in texts):
-        logger.info(f"[SPMProxy] Turn {turn_id} has a new message (edited or re-sent); "
-                    f"perceiving it afresh.")
         return None
     return {
         "reused": True,
@@ -1428,8 +1439,8 @@ async def _turn_answered_by_other(session_id: str, turn_id: str, target_char: st
             async with _db_pool.acquire() as conn:
                 owner = await conn.fetchval(
                     "SELECT actor_id FROM spm_perception WHERE session_id = $1 "
-                    "AND turn_id LIKE $2 ORDER BY created_at, id LIMIT 1",
-                    session_id, f"{turn_id}#reply:%")
+                    "AND turn_id LIKE $2 ESCAPE '\\' ORDER BY created_at, id LIMIT 1",
+                    session_id, _like_prefix(f"{turn_id}#reply:"))
         except Exception as e:
             logger.warning(f"[SPMProxy] direction-recipient check failed, delivering: {e}")
     if owner is None:
@@ -1821,7 +1832,7 @@ async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_
             await _dispatch_gm_actions(parser, session_id, target_char,
                                        turn_index=turn_index, persona=persona,
                                        player_name=player_name,
-                                       story_text=f"{user_text}\n{public_resp}")
+                                       story_text=public_resp)
         except Exception as e:  # never let a GM failure lose the reply
             logger.error(f"[GMAction] dispatch failed for {session_id}: {e}")
     if narrator and not parser.is_tainted:
@@ -1883,11 +1894,12 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
         logger.warning(f"[GMAction] rejected ({rej.reason}): {rej.detail} — {rej.action}")
 
     # QA Q10: the GM may move a character who is ELSEWHERE only when the story says so:
-    # the character is named in the player's message or in this reply ("Mei lingers by the
-    # door, listening"). An unexplained move teleported Mei from the kitchen into a scene
-    # she had no part in. The GM only sees its own room's occupants, so it was guessing.
+    # THIS reply names the character ("Mei lingers by the door, listening"). An unexplained
+    # move teleported Mei from the kitchen into a scene she had no part in. The player's
+    # message doesn't count: it is shared by every responder of the turn (review B4).
+    # Hyphens, underscores and spaces are equivalent ("mei_lin" = "Mei-Lin").
     speaker_room = where.get(target_char)
-    story = (story_text or "").lower()
+    story = re.sub(r"[-_\s]+", " ", (story_text or "").lower())
     accepted = []
     for action in batch.accepted:
         if (isinstance(action, gm_validation.MoveAction)

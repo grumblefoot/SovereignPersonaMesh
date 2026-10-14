@@ -850,8 +850,9 @@ def test_q11_character_moved_in_mid_turn_does_not_hear_what_was_already_said(rig
     assert r.status_code == 200, r.text
     n = len(rig.prompts)
     rig.turn(sysmsgs("Mei"))                                   # same turn, second responder
-    if len(rig.prompts) > n:
-        assert PH(1101) not in rig.prompt_text(-1)             # no re-gating after the move
+    # Mei was upstairs when the player spoke: either her turn is bypassed (no new prompt)
+    # or her prompt lacks the words. Both are checked; neither can be skipped (review B6).
+    assert all(PH(1101) not in "\n".join(m.get("content", "") for m in pr) for pr in rig.prompts[n:])
     import asyncio, asyncpg
     from tests._testdb import TEST_DB_CONFIG
 
@@ -871,10 +872,23 @@ def test_q11_character_moved_in_mid_turn_does_not_hear_what_was_already_said(rig
 def test_q11_late_joiner_on_the_same_turn_still_hears_the_player(rig):
     """QA F10 must survive Q11: a group member who joins on the same turn is placed with
     the player and gets her own perception, without rewriting the others' rows."""
+    import asyncio, asyncpg
+    from tests._testdb import TEST_DB_CONFIG
     rig.seed(placements=[("user", "cellar"), ("mei", "cellar")])
     rig.turn(sysmsgs("Mei") + [{"role": "user", "content": f'"{PH(1102)}"'}])
+
+    async def mei_row_id():
+        conn = await asyncpg.connect(**TEST_DB_CONFIG)
+        try:
+            return await conn.fetchval(
+                "SELECT id FROM spm_perception WHERE session_id=$1 AND turn_id=$2 "
+                "AND actor_id='user' AND recipient_id='mei'", rig.session_id, f"{rig.session_id}:1")
+        finally:
+            await conn.close()
+    before = asyncio.run(mei_row_id())
     rig.turn(sysmsgs("Lian"))                                  # joins, same turn
     assert PH(1102) in rig.prompt_text(-1)
+    assert asyncio.run(mei_row_id()) == before                 # Mei's row untouched (review B6)
 
 
 def test_q11_edited_message_on_the_same_turn_is_perceived_afresh(rig):
@@ -899,3 +913,52 @@ def test_q11_edited_message_on_the_same_turn_is_perceived_afresh(rig):
     text = asyncio.run(lian_row())
     assert PH(1104) in text and PH(1103) not in text
     assert PH(1104) in rig.prompt_text(-1)
+
+
+
+def _user_rows(rig, turn=1):
+    import asyncio, asyncpg
+    from tests._testdb import TEST_DB_CONFIG
+
+    async def q():
+        conn = await asyncpg.connect(**TEST_DB_CONFIG)
+        try:
+            return [dict(r) for r in await conn.fetch(
+                "SELECT recipient_id, gating_level, perceived_text, turn_id FROM spm_perception "
+                "WHERE session_id=$1 AND (turn_id=$2 OR turn_id LIKE $2 || '#%')",
+                rig.session_id, f"{rig.session_id}:{turn}")]
+        finally:
+            await conn.close()
+    return asyncio.run(q())
+
+
+def test_b1_muffled_rows_still_count_as_the_same_message(rig):
+    """Hermes review B1: with only degraded/blackout rows stored, the old text check never
+    matched, so a later responder re-submitted the action at post-move positions."""
+    rig.seed(placements=[("user", "cellar"), ("lian", "tavern_upstairs"), ("mei", "tavern_upstairs")])
+    rig.barrier("cellar", "tavern_upstairs", barrier="drywall", state="closed", distance_ft=10.0)
+    rig.turn(sysmsgs("Lian") + [{"role": "user", "content": f'"{PH(1105)}"'}])
+    r = rig.engine.post("/api/v1/world/move", json={
+        "character_id": "mei", "room_id": "cellar", "session_id": rig.session_id,
+        "template_key": "", "origin": "gm"})
+    assert r.status_code == 200, r.text
+    n = len(rig.prompts)
+    rig.turn(sysmsgs("Mei"))                                   # same turn, after the move
+    assert all(PH(1105) not in "\n".join(m.get("content", "") for m in pr) for pr in rig.prompts[n:])
+    mei = [x for x in _user_rows(rig) if x["recipient_id"] == "mei" and "#" not in x["turn_id"]]
+    assert mei and PH(1105) not in (mei[0]["perceived_text"] or "")
+
+
+def test_b3_shortened_edit_is_a_new_message_and_drops_old_replies(rig):
+    """Hermes review B3/B5: "I love you" edited to "I love" is a new message, and replies
+    to the old version are dropped."""
+    rig.seed(placements=[("user", "cellar"), ("lian", "cellar"), ("mei", "cellar")])
+    rig.turn(sysmsgs("Lian") + [{"role": "user", "content": f'"{PH(1106)} you"'}])
+    rig.turn(sysmsgs("Mei"))
+    assert any(x["turn_id"].endswith("#reply:mei") for x in _user_rows(rig))
+    rig.history = []                                           # the user edits message 1
+    rig.turn(sysmsgs("Lian") + [{"role": "user", "content": f'"{PH(1106)}"'}])
+    rows = _user_rows(rig)
+    lian = [x for x in rows if x["recipient_id"] == "lian" and "#" not in x["turn_id"]]
+    assert lian and lian[0]["perceived_text"].rstrip('"').endswith(PH(1106))
+    assert not any(x["turn_id"].endswith("#reply:mei") for x in rows)   # old reply gone
