@@ -100,3 +100,52 @@ async def test_reasoning_status_reports_remote_cost_notice():
     get_settings_manager().update({"BACKEND_LLM_URL": "http://192.168.50.207:1234/v1"})
     d = _json.loads((await reasoning_status()).body)
     assert d["local"] is True and d["notice"] == ""
+
+
+# --- separate GM channel (proxy/core/gm_planner.py) ---
+
+from proxy.core import gm_planner
+
+
+class GMClient:
+    def __init__(self, replies, reject_schema=False):
+        self.replies, self.reject_schema, self.calls = list(replies), reject_schema, []
+
+    async def generate_stream(self, **kw):
+        self.calls.append(kw)
+        if self.reject_schema and "response_format" in (kw.get("extra_body") or {}):
+            raise RuntimeError("HTTP 400: response_format not supported")
+        yield "<thinking>"
+        yield "hidden reasoning {not json}"
+        yield "</thinking>"
+        yield self.replies.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_gm_plan_uses_structured_output_and_ignores_thinking():
+    c = GMClient(['{"actions": [{"type": "MOVE", "entity": "user", "room_id": "garden"}]}'])
+    acts = await gm_planner.plan(c, "m", [{"role": "user", "content": "x"}], local=True)
+    assert acts == [{"type": "MOVE", "entity": "user", "room_id": "garden"}]
+    eb = c.calls[0]["extra_body"]
+    assert eb["response_format"]["type"] == "json_schema" and eb["reasoning_effort"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_gm_plan_falls_back_to_plain_when_schema_is_rejected():
+    c = GMClient(['Sure: {"actions": []}'], reject_schema=True)
+    assert await gm_planner.plan(c, "m", [{"role": "user", "content": "x"}], local=True) == []
+    assert len(c.calls) == 2 and "response_format" not in (c.calls[1]["extra_body"] or {})
+
+
+@pytest.mark.asyncio
+async def test_gm_plan_sends_no_extra_fields_to_a_cloud_backend_except_schema():
+    c = GMClient(['{"actions": []}'])
+    await gm_planner.plan(c, "m", [{"role": "user", "content": "x"}], local=False)
+    eb = c.calls[0]["extra_body"]
+    assert "chat_template_kwargs" not in eb and "reasoning_effort" not in eb
+
+
+def test_gm_parse_rejects_junk():
+    assert gm_planner.parse("no json here") == []
+    assert gm_planner.parse('{"actions": "move"}') == []
+    assert gm_planner.parse('{"actions": [1, {"type": "MOVE", "room_id": "x"}]}') == [{"type": "MOVE", "room_id": "x"}]
