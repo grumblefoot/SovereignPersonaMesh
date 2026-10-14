@@ -321,6 +321,13 @@ async def factory_reset():
         logger.error(f"[AdminAPI] Error executing factory reset: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+def _pid_file():
+    """The launcher's PID file (a function so tests can point it at a temp dir: a test
+    once deleted the live SPM's PID file through this path, 2026-10-14)."""
+    from pathlib import Path
+    return Path(__file__).resolve().parents[2] / "run" / "spm.pids"
+
 @router.post("/shutdown")
 async def shutdown_system():
     """Quit this SPM install — never with a machine-wide process-name kill (brief L1).
@@ -347,8 +354,7 @@ async def shutdown_system():
     # in /api/v1, so the new engine shutdown endpoint hangs off it directly).
     from proxy.api.routes import evennia_client
     engine_shutdown_url = f"{evennia_client.base_url}/world/admin/shutdown"
-    from pathlib import Path
-    pid_file = Path(__file__).resolve().parents[2] / "run" / "spm.pids"
+    pid_file = _pid_file()
 
     async def _shutdown():
         await asyncio.sleep(1)

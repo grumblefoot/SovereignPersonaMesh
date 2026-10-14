@@ -111,3 +111,15 @@ def reset_clients():
     yield
     evennia_client._client = None
     lemonade_client._client = None
+
+
+@pytest.fixture(autouse=True)
+def _no_real_pid_file(tmp_path, monkeypatch):
+    """Never let a test touch the real run/spm.pids (a shutdown test deleted the live
+    SPM's PID file when the suite ran in the live checkout, 2026-10-14)."""
+    try:
+        import proxy.api.admin_routes as admin
+        monkeypatch.setattr(admin, "_pid_file", lambda: tmp_path / "run" / "spm.pids")
+    except Exception:
+        pass
+    yield
