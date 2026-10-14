@@ -92,6 +92,8 @@ def grounded(actions: List[Dict[str, Any]], *texts: str) -> List[Dict[str, Any]]
         if ok(a) or (a.get("type") == "CREATE_ROOM" and a.get("room_id") in moves_into):
             # Only the fields the validator accepts for the type (extra fields are rejected):
             # the schema makes CREATE_ROOM carry entity "" and MOVE may carry name/desc "".
+            logger.info(f"[GMPlanner] grounded {a.get('type')} {a.get('entity', '')}->{a.get('room_id')}: "
+                        f"\"{str(a.get('evidence'))[:120]}\"")
             keep = _FIELDS.get(str(a.get("type")), set())
             kept.append({k: v for k, v in a.items() if k in keep and (k == "type" or v)})
         else:
@@ -141,7 +143,12 @@ def reuse_rooms(actions: List[Dict[str, Any]], rooms: List[Dict[str, str]]) -> L
     for a in out:
         if a.get("type") == "MOVE" and a.get("room_id") in alias:
             a["room_id"] = alias[a["room_id"]]
-    return out
+    # One move per entity: the last one is where they end up (Lian kitchen -> Vardus's room in
+    # one reply came back as two moves). Rooms only an earlier, dropped move used are dropped too.
+    last = {a.get("entity"): i for i, a in enumerate(out) if a.get("type") == "MOVE"}
+    out = [a for i, a in enumerate(out) if a.get("type") != "MOVE" or last.get(a.get("entity")) == i]
+    used = {a["room_id"] for a in out if a.get("type") == "MOVE"}
+    return [a for a in out if a.get("type") != "CREATE_ROOM" or a.get("room_id") in used or a.get("room_id") in known]
 
 
 def parse(text: str) -> List[Dict[str, Any]]:

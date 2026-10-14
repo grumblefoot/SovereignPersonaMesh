@@ -179,3 +179,10 @@ def test_gm_grounded_trims_fields_the_validator_forbids():
     out = gm_planner.grounded(acts, "Hand in hand, we step out into the garden.")
     assert out == [{"type": "CREATE_ROOM", "room_id": "garden", "name": "Garden"},
                    {"type": "MOVE", "entity": "user", "room_id": "garden"}]
+
+
+def test_gm_reuse_rooms_keeps_the_last_move_per_entity():
+    acts = [{"type": "CREATE_ROOM", "room_id": "kitchen"}, {"type": "MOVE", "entity": "lian", "room_id": "kitchen"},
+            {"type": "CREATE_ROOM", "room_id": "vardus_room"}, {"type": "MOVE", "entity": "lian", "room_id": "vardus_room"}]
+    assert gm_planner.reuse_rooms(acts, []) == [{"type": "CREATE_ROOM", "room_id": "vardus_room"},
+                                                {"type": "MOVE", "entity": "lian", "room_id": "vardus_room"}]
