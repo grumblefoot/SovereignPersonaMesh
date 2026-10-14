@@ -176,6 +176,34 @@ async def reasoning_status():
         "backend_url": url, "local": local, "resolved": resolved, "notice": notice})
 
 
+@router.get("/backend/window")
+async def backend_window():
+    """Brief W1b (OPEN-024): what context window SPM believes the configured backend
+    has for the default chat model — the detected value, the manual override, and
+    which one wins (budget.context_window precedence)."""
+    from proxy.backend_client import backend_profile
+    from proxy.backend_client.lemonade_client import DEFAULT_CHAT_MODEL
+    from config.hardware_tiers import get_hardware_config
+    from proxy.rag import budget
+    from proxy.api.routes import lemonade_client
+    s = get_settings_manager().get_settings()
+    win = await backend_profile.window_for(lemonade_client, DEFAULT_CHAT_MODEL)
+    tier = str(s.get("SPM_HARDWARE_TIER") or "SOVEREIGN")
+    hw = get_hardware_config(tier)
+    override = s.get("context_window_override")
+    try:
+        override = int(override) if override else None
+    except (TypeError, ValueError):
+        override = None
+    return JSONResponse(content={
+        "tokens": win.tokens, "source": win.source, "detail": win.detail,
+        "override": override,
+        "effective": budget.context_window(s, hw, detected=win.tokens,
+                                           detected_source=win.source),
+        "tier": tier, "model": DEFAULT_CHAT_MODEL,
+        "backend_url": lemonade_client.base_url})
+
+
 @router.post("/config")
 async def update_config(new_settings: Dict[str, Any]):
     """Update dynamic settings in config.json."""

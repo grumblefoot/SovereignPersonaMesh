@@ -116,10 +116,14 @@ class LoreExtractionWorker:
         from proxy.rag import budget
         from proxy.rag.prompt_builder import CognitivePromptBuilder
         from proxy.core import reasoning
+        from proxy.backend_client import backend_profile
         settings = get_settings_manager().get_settings()
+        # Brief W1b: size the output from the window the server reports, like the chat turn.
+        win = await backend_profile.window_for(self.llm_client, model)
         max_tokens = budget.clamp_max_tokens(
             [{"role": "user", "content": prompt}], settings,
-            CognitivePromptBuilder().config, model=model, configured_ceiling=8192)
+            CognitivePromptBuilder().config, model=model, configured_ceiling=8192,
+            detected=win.tokens, detected_source=win.source)
         # Local backends get both switches; a cloud API only the field it always got.
         no_thinking = (reasoning.extra_body("none", settings, str(getattr(self.llm_client, "base_url", "") or ""))
                        or {"chat_template_kwargs": {"enable_thinking": False}})

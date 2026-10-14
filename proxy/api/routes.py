@@ -27,6 +27,7 @@ from proxy.rag.import_worker import BulkImportWorker, get_import_worker, _comput
 from proxy.rag.tier_manager import MemoryTierManager
 from proxy.rag.lore_extractor import LoreExtractionWorker
 from proxy.backend_client.lemonade_client import LemonadeLLMClient, LLMBackendError, DEFAULT_CHAT_MODEL, SPM_VIRTUAL_MODEL_ID
+from proxy.backend_client import backend_profile
 from proxy.core.llm_scheduler import get_scheduled_client, get_scheduler, QueueFull, QueueWaitTimeout, TurnSuperseded
 from proxy.core import gm_actions as gm_validation
 from proxy.rag import budget
@@ -820,10 +821,14 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # Token budget P1 (OPEN-008): fit memories, lore and history into the window.
     # The card and the latest user turn are never trimmed; if even they don't fit,
     # refuse visibly rather than silently truncating the card (decision 16).
+    # Brief W1b (OPEN-024): one window detection per turn, from the model server
+    # itself; it feeds the allocator, the output clamp below, and the native check.
+    win = await backend_profile.window_for(lemonade_client, str(request.model))
     retrieved_memories, retrieved_lore, chat_history, budget_report = budget.allocate(
         settings=settings, hw_config=prompt_builder.config, model=str(request.model),
         system_text=system_prompt, memories=retrieved_memories, lore=retrieved_lore,
-        history=chat_history, pinned_head=pinned_head)
+        history=chat_history, pinned_head=pinned_head,
+        detected=win.tokens, detected_source=win.source)
     if budget_report.trimmed.get("history") or budget_report.trimmed.get("memories") \
             or budget_report.trimmed.get("lore"):
         logger.info(f"[TokenBudget] {budget_report.trimmed} trimmed; used={budget_report.used}")
@@ -961,12 +966,28 @@ The text after </think> must ONLY be narrative and dialogue.
     # Native thinking spends completion tokens before the reply; without room for it the
     # reply came back empty (spike 2026-10-13: 3 of 6 probes at 600 tokens). The reserve
     # goes into the ceiling, so the window clamp still applies to the total.
+    # Brief W1b review item 5: when the window (detected or not) leaves less room for
+    # output than reasoning_max_tokens, native thinking would eat the reply — run this
+    # turn as 'none' (non-native ceiling, thinking switched off) instead.
     ceiling = int(settings.get("backend_max_tokens", 2048) or 2048)
     if reasoning_mode == "native":
-        ceiling += int(settings.get("reasoning_max_tokens", 3000) or 3000)
+        window = budget.context_window(settings, prompt_builder.config,
+                                       detected=win.tokens, detected_source=win.source)
+        reasoning_reserve = int(settings.get("reasoning_max_tokens", 3000) or 3000)
+        room = (window - budget.estimate_messages(csa_messages, str(request.model))
+                - max(64, int(window * 0.05)))
+        if room < reasoning_reserve:
+            logger.warning(
+                f"[Reasoning] Native mode skipped this turn: only {room} tokens of room "
+                f"left in the {window}-token window ({win.source}), below "
+                f"reasoning_max_tokens={reasoning_reserve}; running as 'none'.")
+            reasoning_mode = "none"
+            reasoning_body = reasoning.extra_body("none", settings, lemonade_client.base_url)
+        else:
+            ceiling += reasoning_reserve
     backend_max_tokens = budget.clamp_max_tokens(
         csa_messages, settings, prompt_builder.config, model=str(request.model),
-        configured_ceiling=ceiling)
+        configured_ceiling=ceiling, detected=win.tokens, detected_source=win.source)
 
     logger.info(f"[SPMIntoBackendLog] Sending to Backend (model={request.model}): {csa_messages}")
 
@@ -1582,11 +1603,14 @@ async def _ephemeral_passthrough(request: "ChatCompletionRequest", session_id: s
     settings = get_settings_manager().get_settings()
     messages = [{"role": m.role, "content": m.content} for m in request.messages if m.content]
     _warn_if_summarize(messages, session_id)
+    # Brief W1b: this path returns before the main turn's detection, so it detects here.
+    win = await backend_profile.window_for(lemonade_client, str(request.model))
     # SillyTavern's Response Length is the ceiling here (it is the user's own
     # utility call); the window clamp still applies on top.
     ceiling = request.max_tokens or settings.get("backend_max_tokens", 2048)
     max_tokens = budget.clamp_max_tokens(messages, settings, prompt_builder.config,
-                                         model=str(request.model), configured_ceiling=ceiling)
+                                         model=str(request.model), configured_ceiling=ceiling,
+                                         detected=win.tokens, detected_source=win.source)
 
     def _stream():
         return lemonade_client.generate_stream(
