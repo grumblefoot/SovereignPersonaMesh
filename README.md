@@ -66,6 +66,14 @@ the files in `scripts/migrations/` with `.venv/bin/python scripts/apply_migratio
    python -m spm init --existing   # an existing SPM database: apply migrations only
    ```
 
+After the database step, `python -m spm init` continues with first-run setup: it asks for
+your model server URL, chat model, embedding server and embedding model, probes them
+(lists the models, warns if your chat model is not there, checks `/embeddings`), writes the
+answers to the git-ignored `config/config.local.json` (the tracked `config/config.json`
+stays untouched) and pins the chat model in `.env` as `SPM_DEFAULT_MODEL`. Use
+`--backend-url`, `--model`, `--embedding-url`, `--embedding-model` (or `none`) and `--yes`
+to answer non-interactively, or `--no-setup` for the database only.
+
 ### 3. Start SPM
 
 Start your LLM server first, then:
