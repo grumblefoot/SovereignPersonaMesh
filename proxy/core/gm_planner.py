@@ -54,7 +54,8 @@ def messages_for(rooms: List[Dict[str, str]], where: Dict[str, str], player: str
         "the narration, not dialogue.\n"
         "- evidence: copy the exact words (5-15 words) from the player's message or the reply that "
         "show the person going (walks into, steps out, arrives at, makes her way to). Where someone "
-        "already stands is not a move. No quote, no action.\n"
+        "already stands is not a move. For the player's own move, quote the player's message. "
+        "No quote, no action.\n"
         "- entity is who moves: 'user' for the player, the ids above for others. Every MOVE "
         "needs an entity, e.g. {\"type\": \"MOVE\", \"entity\": \"user\", \"room_id\": "
         "\"kitchen\", \"evidence\": \"I walk into the kitchen and sit down\"}. For CREATE_ROOM "
@@ -100,16 +101,26 @@ _MOTION = re.compile(
 _QUOTED = re.compile(r'"[^"\n]{1,600}"|\u201c[^\u201d\n]{1,600}\u201d')
 
 
-def grounded(actions: List[Dict[str, Any]], *texts: str) -> List[Dict[str, Any]]:
-    """Keep only actions whose evidence quote really appears in the exchange (checked in
-    code, not trusted from the model). An invented move (Lian 'to the kitchen' with no such
-    line, replay 2026-10-13) has no quote to point at. Evidence is dropped before dispatch."""
-    # Quoted dialogue is not evidence: an order or plan in speech ("Go to the guest room",
-    # Lian to Mei, replay 2026-10-13) moved Mei although she never left in the text.
-    hay = " ".join(_norm(_QUOTED.sub(" | ", t or "")) for t in texts)
+def grounded(actions: List[Dict[str, Any]], player_text: str, *texts: str) -> List[Dict[str, Any]]:
+    """Keep only actions the exchange supports (checked in code, not trusted from the model).
+    `player_text` is the player's message; `texts` are the replies. Evidence is dropped
+    before dispatch.
+
+    - The quote must appear in the narration. Quoted dialogue does not count: an order in
+      speech ("Go to the guest room", Lian to Mei, replay 2026-10-13) moved Mei although she
+      never left. An invented move (Lian "to the kitchen" with no such line) has no quote.
+    - A MOVE's quote must describe movement (_MOTION), not where someone already stands.
+    - The player's own MOVE also stands when the player's narration describes movement: the
+      model often quoted the reply's scenery ("the gates loom ahead") although the player wrote
+      "I go to the training grounds" (offline check: 9 of 18 moves lost).
+    - A CREATE_ROOM stands if its own quote checks out or a kept MOVE goes into it."""
+    hay = " ".join(_norm(_QUOTED.sub(" | ", t or "")) for t in (player_text, *texts))
+    player_moves = bool(_MOTION.search(_norm(_QUOTED.sub(" | ", player_text or ""))))
 
     def ok(a):
         ev = _norm(str(a.get("evidence") or ""))
+        if a.get("type") == "MOVE" and a.get("entity") == "user" and player_moves:
+            return True
         if a.get("type") == "MOVE" and not _MOTION.search(ev):
             return False
         return len(ev.split()) >= 3 and ev in hay
@@ -117,16 +128,15 @@ def grounded(actions: List[Dict[str, Any]], *texts: str) -> List[Dict[str, Any]]
     moves_into = {a.get("room_id") for a in actions if a.get("type") == "MOVE" and ok(a)}
     kept = []
     for a in actions:
-        # A new room stands if its own quote checks out, or a grounded move goes into it.
         if ok(a) or (a.get("type") == "CREATE_ROOM" and a.get("room_id") in moves_into):
-            # Only the fields the validator accepts for the type (extra fields are rejected):
-            # the schema makes CREATE_ROOM carry entity "" and MOVE may carry name/desc "".
             logger.info(f"[GMPlanner] grounded {a.get('type')} {a.get('entity', '')}->{a.get('room_id')}: "
                         f"\"{str(a.get('evidence'))[:120]}\"")
+            # Only the fields the validator accepts for the type (it rejects extra fields):
+            # the schema makes CREATE_ROOM carry entity "" and MOVE may carry name/desc "".
             keep = _FIELDS.get(str(a.get("type")), set())
             kept.append({k: v for k, v in a.items() if k in keep and (k == "type" or v)})
         else:
-            logger.info(f"[GMPlanner] dropped ungrounded action (evidence not in the text): {a}")
+            logger.info(f"[GMPlanner] dropped ungrounded action: {a}")
     return kept
 
 

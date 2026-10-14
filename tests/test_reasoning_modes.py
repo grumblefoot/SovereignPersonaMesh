@@ -193,11 +193,21 @@ def test_gm_grounded_ignores_evidence_inside_dialogue():
              'Lian walks back into the kitchen and sets the kettle down.')
     acts = [{"type": "MOVE", "entity": "mei", "room_id": "guest_room", "evidence": "Go to the guest room"},
             {"type": "MOVE", "entity": "lian", "room_id": "kitchen", "evidence": "Lian walks back into the kitchen"}]
-    assert gm_planner.grounded(acts, reply) == [{"type": "MOVE", "entity": "lian", "room_id": "kitchen"}]
+    assert gm_planner.grounded(acts, "", reply) == [{"type": "MOVE", "entity": "lian", "room_id": "kitchen"}]
 
 
 def test_gm_grounded_move_needs_a_quote_that_shows_movement():
     text = "The figure standing at the mouth of the alley watches. Then she walks into the alley."
     acts = [{"type": "MOVE", "entity": "user", "room_id": "street", "evidence": "The figure standing at the mouth of the alley"},
             {"type": "MOVE", "entity": "user", "room_id": "alley", "evidence": "she walks into the alley"}]
-    assert gm_planner.grounded(acts, text) == [{"type": "MOVE", "entity": "user", "room_id": "alley"}]
+    assert gm_planner.grounded(acts, "", text) == [{"type": "MOVE", "entity": "user", "room_id": "alley"}]
+
+
+def test_gm_grounded_player_move_stands_on_the_players_narration():
+    acts = [{"type": "MOVE", "entity": "user", "room_id": "training_grounds",
+             "evidence": "The P.E. Grounds stretch out ahead"}]
+    reply = "The P.E. Grounds stretch out ahead, a massive expanse of dirt."
+    assert gm_planner.grounded(acts, "I go to the training grounds", reply) == [
+        {"type": "MOVE", "entity": "user", "room_id": "training_grounds"}]
+    # Movement only in the player's dialogue is not a declared move.
+    assert gm_planner.grounded(acts, '"Let\'s go to the training grounds later," I say.', reply) == []
