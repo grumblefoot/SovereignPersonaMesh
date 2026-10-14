@@ -379,9 +379,16 @@ async def check_embeddings(env: dict, ctx: _Ctx) -> Check:
         details["probed_model"] = model
         started = time.monotonic()
         try:
+            # A cold embedding model can take several seconds to answer the first
+            # request (a real run failed at 5 s, then answered in 37 ms): allow 9 s.
             probe = await client.post(f"{base}/embeddings",
-                                      json={"model": model, "input": "ping"})
+                                      json={"model": model, "input": "ping"}, timeout=9.0)
         except Exception as err:
+            import httpx as _httpx
+            if isinstance(err, _httpx.TimeoutException):
+                return Check("embeddings", "warn",
+                             "embedding probe slow (over 9 s; the model may still be loading)",
+                             {**details, **_err_details(err)})
             return Check("embeddings", "fail", "embedding probe failed",
                          {**details, **_err_details(err)})
         details["latency_ms"] = round((time.monotonic() - started) * 1000)
