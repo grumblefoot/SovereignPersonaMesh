@@ -1,12 +1,14 @@
-"""argparse entry point: `python -m spm start|stop|status|init`."""
+"""argparse entry point: `python -m spm start|stop|status|init|report`."""
 
 from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from . import run
 from . import db as db_init
+from . import report as report_mod
 from . import setup as setup_mod
 
 
@@ -40,12 +42,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--yes", action="store_true",
                         help="non-interactive: accept the defaults for anything not given "
                              "as a flag (what Docker uses)")
+
+    p_report = sub.add_parser("report", help="write a bug report bundle (reports/) and "
+                                             "print a prefilled GitHub issue link")
+    p_report.add_argument("--description", default="",
+                          help="one line about what went wrong (asked interactively "
+                               "when omitted and stdin is a terminal)")
+    p_report.add_argument("--system-info", action="store_true",
+                          help="include CPU / RAM / disk / GPU information")
+    p_report.add_argument("--full-logs", action="store_true",
+                          help="include the full recent logs (PRIVATE: chat text; "
+                               "send only to the developers, never post publicly)")
+    p_report.add_argument("--yes", action="store_true",
+                          help="do not open the issue URL in a browser")
+    p_report.add_argument("--enhanced", action="store_true",
+                          help="enhanced analysis (arrives in the next build)")
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, repo_root: Path | None = None) -> int:
     args = build_parser().parse_args(argv)
-    repo_root = run.default_repo_root()
+    if repo_root is None:
+        repo_root = run.default_repo_root()
     if args.command == "start":
         return run.cmd_start(repo_root, foreground=args.foreground)
     if args.command == "stop":
@@ -63,6 +81,14 @@ def main(argv: list[str] | None = None) -> int:
             embedding_url=args.embedding_url,
             embedding_model=args.embedding_model,
             assume_yes=args.yes)
+    if args.command == "report":
+        return report_mod.cmd_report(
+            repo_root,
+            description=args.description,
+            system_info=args.system_info,
+            full_logs=args.full_logs,
+            yes=args.yes,
+            enhanced=args.enhanced)
     return 2  # unreachable: argparse enforces the subcommand
 
 
