@@ -87,3 +87,16 @@ def test_prefill_prompt_is_unchanged_legacy():
     msgs = _build("prefill")
     joined = "\n".join(m["content"] for m in msgs)
     assert "<think>" in joined and "GM_ACTION" in joined
+
+
+@pytest.mark.asyncio
+async def test_reasoning_status_reports_remote_cost_notice():
+    import json as _json
+    from config.manager import get_settings_manager
+    from proxy.api.admin_routes import reasoning_status
+    get_settings_manager().update({"BACKEND_LLM_URL": "https://api.openai.com/v1", "reasoning_mode": "auto"})
+    d = _json.loads((await reasoning_status()).body)
+    assert d["local"] is False and "charge per token" in d["notice"] and d["configured"] == "auto"
+    get_settings_manager().update({"BACKEND_LLM_URL": "http://192.168.50.207:1234/v1"})
+    d = _json.loads((await reasoning_status()).body)
+    assert d["local"] is True and d["notice"] == ""

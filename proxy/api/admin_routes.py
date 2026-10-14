@@ -155,6 +155,27 @@ async def stream_thoughts():
     return StreamingResponse(thought_event_generator(), media_type="text/event-stream")
 
 
+@router.get("/reasoning/status")
+async def reasoning_status():
+    """Native-reasoning spike: configured mode, what 'auto' resolved to per probed backend,
+    and whether the backend is local. A non-local backend gets a cost notice: hidden
+    thinking is billed as output tokens there."""
+    from proxy.core import reasoning
+    s = get_settings_manager().get_settings()
+    url = str(s.get("BACKEND_LLM_URL") or "")
+    local = reasoning._is_local(url)
+    resolved = {f"{u} ({m})": mode for (u, m), (_, mode) in reasoning._probe_cache.items()}
+    notice = "" if local else (
+        "This backend looks remote and may charge per token. Hidden reasoning is billed as "
+        "output tokens, and SPM's background jobs (lore review, memory consolidation) make "
+        "extra calls. 'Auto' uses no reasoning for remote backends; choose Native only if "
+        "you accept the extra cost.")
+    return JSONResponse(content={
+        "configured": reasoning.configured_mode(s), "effort": reasoning.effort(s),
+        "reasoning_max_tokens": int(s.get("reasoning_max_tokens", 3000) or 3000),
+        "backend_url": url, "local": local, "resolved": resolved, "notice": notice})
+
+
 @router.post("/config")
 async def update_config(new_settings: Dict[str, Any]):
     """Update dynamic settings in config.json."""
