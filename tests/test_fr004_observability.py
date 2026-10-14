@@ -97,10 +97,12 @@ class TestFR004Observability:
         from proxy.api.admin_routes import AdminState
 
         mock_conn = AsyncMock()
-        # First fetch: memory tables; second: lore tables (session delete also
-        # clears that chat's lore). Later calls (factory reset) reuse memory list.
-        mock_conn.fetch.side_effect = [[{"table_name": "csa_memory_seraphina"}], [],
-                                       [{"table_name": "csa_memory_seraphina"}], []]
+        # Session delete: one fetch (memory tables; the chat's rules go via a
+        # fixed DELETE FROM spm_chat_rules, brief C1b). Factory reset: one fetch
+        # (list_tables_info, now csa_memory_% only) — spm_chat_rules is truncated
+        # with a fixed statement, not via the table list.
+        mock_conn.fetch.side_effect = [[{"table_name": "csa_memory_seraphina"}],
+                                       [{"table_name": "csa_memory_seraphina"}]]
         mock_conn.execute.return_value = "DELETE 5"
 
         mock_cm = AsyncMock()
@@ -116,12 +118,15 @@ class TestFR004Observability:
                 # Test session deletion
                 resp_del = client.delete("/admin/api/v1/sessions/test_sess_99")
                 assert resp_del.status_code == 200
-                assert resp_del.json()["deleted_records"] == 5
+                # 5 rows from spm_chat_rules + 5 rows from csa_memory_seraphina.
+                assert resp_del.json()["deleted_records"] == 10
 
                 # Test factory reset
                 resp_reset = client.delete("/admin/api/v1/factory_reset")
                 assert resp_reset.status_code == 200
                 assert resp_reset.json()["status"] == "success"
+                executed = [c.args[0] for c in mock_conn.execute.call_args_list]
+                assert any("TRUNCATE TABLE spm_chat_rules" in sql for sql in executed)
         finally:
             AdminState.set_db_pool(None)
 

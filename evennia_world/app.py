@@ -6,6 +6,7 @@ Uses HybridWorldBuilder for dynamic world state and SpatialConstraintsMatrix for
 
 import time
 import json
+import uuid
 import asyncio
 import logging
 from collections import OrderedDict
@@ -17,7 +18,7 @@ import asyncpg
 from .models import (
     ActionPayload, ActionResponse, SensoryConsequence, GatingLevel,
     WorldStateQuery, CharacterWorldState, SessionLockPayload, RoomMetadata,
-    ActionType, BarrierType, TickRequest, TickResponse
+    ActionType, BarrierType, TickRequest, TickResponse, RoomRule
 )
 from .spatial_matrix import SpatialConstraintsMatrix
 from .session_lock import SessionLockManager, LockError
@@ -514,6 +515,145 @@ async def create_room(payload: CreateRoomPayload, background_tasks: BackgroundTa
     }
 
 
+# ── Room rules (GM rules attached to a room) ────────────────────────────
+
+RULE_TYPES = ("invariant", "conditional_trigger", "game_over")
+RULE_STATUSES = ("pending", "active")
+
+
+class RoomRulePayload(BaseModel):
+    """Payload to attach a GM rule to a room."""
+    session_id: str
+    rule_text: str
+    rule_type: str = "invariant"      # invariant | conditional_trigger | game_over
+    status: str = "pending"           # pending | active
+    source: str = "extracted"         # extracted | manual | migrated
+    template_key: str = ""
+    idempotency_key: Optional[str] = None
+    origin: str = "system"
+
+
+class RoomRuleUpdatePayload(BaseModel):
+    """Payload to edit an existing room rule (omitted fields stay as they are)."""
+    session_id: str
+    template_key: str = ""
+    rule_text: Optional[str] = None
+    rule_type: Optional[str] = None
+    status: Optional[str] = None
+    origin: str = "system"
+
+
+def _validate_rule_fields(rule_type: Optional[str] = None, status: Optional[str] = None) -> None:
+    if rule_type is not None and rule_type not in RULE_TYPES:
+        raise HTTPException(status_code=422, detail=f"rule_type must be one of {list(RULE_TYPES)}")
+    if status is not None and status not in RULE_STATUSES:
+        raise HTTPException(status_code=422, detail=f"status must be one of {list(RULE_STATUSES)}")
+
+
+@app.post("/api/v1/world/rooms/{room_id}/rules")
+async def add_room_rule(room_id: str, payload: RoomRulePayload, background_tasks: BackgroundTasks):
+    """Attach a GM rule to a room. Same text on the same room is a duplicate
+    (returns the existing rule id); an idempotency-key replay returns the same
+    response as the first call."""
+    _validate_rule_fields(payload.rule_type, payload.status)
+    if not payload.rule_text or not payload.rule_text.strip():
+        raise HTTPException(status_code=422, detail="rule_text must not be empty")
+
+    # B5: honor idempotency keys — replay returns the original result; a different
+    # payload under the same key is a 409 conflict (like create_room).
+    digest = _payload_digest(payload)
+    dup = _check_duplicate(payload.session_id, payload.idempotency_key, digest)
+    if dup is not None:
+        # The rule id is recorded inside the stored message (see rule_msg below).
+        saved_rule_id = dup.rsplit("rule_id=", 1)[-1]
+        return {"success": True, "duplicate": True, "message": dup,
+                "rule_id": saved_rule_id}
+
+    template_key = _resolve_template(payload.session_id, payload.template_key)
+    world = _ensure_world(template_key, payload.session_id)
+    room = world.get(room_id)
+    if room is None:
+        raise HTTPException(status_code=404, detail=f"Room '{room_id}' not found.")
+
+    norm = payload.rule_text.strip().lower()
+    for existing in room.rules:
+        if existing.rule_text.strip().lower() == norm:
+            msg = f"Rule already on room '{room_id}': rule_id={existing.id}"
+            return {"success": True, "duplicate": True, "message": msg,
+                    "rule_id": existing.id}
+
+    rule = RoomRule(id=uuid.uuid4().hex, rule_text=payload.rule_text,
+                    rule_type=payload.rule_type, status=payload.status,
+                    source=payload.source)
+    room.rules.append(rule)
+
+    # The rule id rides in the message so an idempotency-key replay can return it.
+    rule_msg = f"Rule added to room '{room_id}': rule_id={rule.id}"
+    _last_digest["v"] = digest
+    _record_idempotency(payload.session_id, payload.idempotency_key, rule_msg)
+    _log_mutation(payload.session_id, "ROOM_RULE_ADD", payload.origin,
+                  {"room_id": room_id, "rule_id": rule.id})
+
+    background_tasks.add_task(_persist_room, payload.session_id, template_key, room_id, room)
+
+    return {"success": True, "rule_id": rule.id}
+
+
+@app.put("/api/v1/world/rooms/{room_id}/rules/{rule_id}")
+async def update_room_rule(room_id: str, rule_id: str, payload: RoomRuleUpdatePayload,
+                           background_tasks: BackgroundTasks):
+    """Edit a room rule's text/type/status. No idempotency key: a repeated PUT is
+    harmless (it writes the same fields)."""
+    _validate_rule_fields(payload.rule_type, payload.status)
+    if payload.rule_text is not None and not payload.rule_text.strip():
+        raise HTTPException(status_code=422, detail="rule_text must not be empty")
+
+    template_key = _resolve_template(payload.session_id, payload.template_key)
+    world = _ensure_world(template_key, payload.session_id)
+    room = world.get(room_id)
+    if room is None:
+        raise HTTPException(status_code=404, detail=f"Room '{room_id}' not found.")
+    rule = next((r for r in room.rules if r.id == rule_id), None)
+    if rule is None:
+        raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found in room '{room_id}'.")
+
+    if payload.rule_text is not None:
+        rule.rule_text = payload.rule_text
+    if payload.rule_type is not None:
+        rule.rule_type = payload.rule_type
+    if payload.status is not None:
+        rule.status = payload.status
+
+    _log_mutation(payload.session_id, "ROOM_RULE_UPDATE", payload.origin,
+                  {"room_id": room_id, "rule_id": rule_id})
+    background_tasks.add_task(_persist_room, payload.session_id, template_key, room_id, room)
+
+    return {"success": True}
+
+
+@app.delete("/api/v1/world/rooms/{room_id}/rules/{rule_id}")
+async def delete_room_rule(room_id: str, rule_id: str, session_id: str,
+                           template_key: str = "", origin: str = "system",
+                           background_tasks: BackgroundTasks = None):
+    """Remove a room rule. Unknown room or rule is a 404 (so a second DELETE is 404)."""
+    template_key = _resolve_template(session_id, template_key)
+    world = _ensure_world(template_key, session_id)
+    room = world.get(room_id)
+    if room is None:
+        raise HTTPException(status_code=404, detail=f"Room '{room_id}' not found.")
+    rule = next((r for r in room.rules if r.id == rule_id), None)
+    if rule is None:
+        raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found in room '{room_id}'.")
+
+    room.rules.remove(rule)
+
+    _log_mutation(session_id, "ROOM_RULE_DELETE", origin,
+                  {"room_id": room_id, "rule_id": rule_id})
+    background_tasks.add_task(_persist_room, session_id, template_key, room_id, room)
+
+    return {"success": True}
+
+
 # ── Character management ────────────────────────────────────────────────
 
 class CharacterMovePayload(BaseModel):
@@ -846,6 +986,7 @@ async def world_snapshot(session_id: str = "default_session", template_key: str 
             "present_characters": list(room.present_characters),
             "nearby_objects": list(room.nearby_objects),
             "exits": list(room.exits),
+            "rules": [r.model_dump() for r in room.rules],
         })
         for ch in room.present_characters:
             occupants.append({"entity_id": ch, "room_id": rid, "kind": "character", "posture": []})

@@ -1,6 +1,6 @@
 """Resumable re-embed / backfill job (embeddings plan phase 2).
 
-Walks every csa_memory_* and csa_lore_rules_* table and re-embeds rows whose
+Walks every csa_memory_* table and spm_chat_rules and re-embeds rows whose
 embedding is NULL or whose embedding_space_id differs from the active space,
 in batches, stamping embedding_space_id as it goes. Each batch commits on its
 own, so the job is safe to interrupt and re-run: a rerun simply continues
@@ -145,15 +145,22 @@ async def reembed_all(
     totals["space_id"] = space_id
 
     memory_tables = await _tables_like(conn, "csa\\_memory\\_%")
-    lore_tables = await _tables_like(conn, "csa\\_lore\\_rules\\_%")
     if only_tables is not None:
         wanted = set(only_tables)
         memory_tables = [t for t in memory_tables if t in wanted]
-        lore_tables = [t for t in lore_tables if t in wanted]
+    do_lore = only_tables is None or "spm_chat_rules" in only_tables
+    lore_rows = 0
+    if do_lore:
+        lore_rows = await conn.fetchval(
+            "SELECT count(*) FROM spm_chat_rules WHERE rule_embedding IS NULL "
+            "OR embedding_space_id IS DISTINCT FROM $1;",
+            space_id,
+        )
     logger.info(
-        "[reembed] space id %d (%s/%s, dim %d); %d memory + %d lore tables%s",
+        "[reembed] space id %d (%s/%s, dim %d); %d memory tables + %d lore rows "
+        "of spm_chat_rules%s",
         space_id, service.provider_name, service.model, service.space.dim,
-        len(memory_tables), len(lore_tables), " [dry run]" if dry_run else "",
+        len(memory_tables), lore_rows, " [dry run]" if dry_run else "",
     )
 
     for table in memory_tables:
@@ -170,18 +177,21 @@ async def reembed_all(
         totals["skipped"] += stats["skipped"]
         totals["tables"] += 1
 
-    for table in lore_tables:
-        await conn.execute(
-            "SELECT create_csa_lore_rules_table($1);", table[len("csa_lore_rules_"):]
-        )
-        stats = await _reembed_table(
-            conn, service, table,
+    # Brief C1b-3: GM rules live in one table now; re-embed spm_chat_rules with
+    # the same selection rule and batching the lore sweep used per character.
+    if only_tables is None or "spm_chat_rules" in only_tables:
+        lore_stats = await _reembed_table(
+            conn, service, "spm_chat_rules",
             "coalesce(rule_text, '')",
             "rule_embedding", space_id, batch_size, dry_run,
         )
-        totals["updated"] += stats["updated"]
-        totals["skipped"] += stats["skipped"]
+        totals["updated"] += lore_stats["updated"]
+        totals["skipped"] += lore_stats["skipped"]
         totals["tables"] += 1
+        logger.info(
+            "[reembed] spm_chat_rules: %d lore rows embedded, %d skipped.",
+            lore_stats["updated"], lore_stats["skipped"],
+        )
 
     logger.info(
         "[reembed] done: %d rows embedded, %d skipped across %d tables.",

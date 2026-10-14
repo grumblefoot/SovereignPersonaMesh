@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
+# Migrations the owner applies by hand only (e.g. after wiping the database
+# for QA); apply_migrations() never runs these automatically.
+MANUAL_ONLY_MIGRATIONS = {"008_drop_char_lore_tables.sql"}
+
 _TRACKING_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS spm_schema_migrations (
     filename VARCHAR(255) PRIMARY KEY,
@@ -56,6 +60,9 @@ async def apply_migrations(conn: asyncpg.Connection) -> List[str]:
     already = set(await applied_migrations(conn))
     ran: List[str] = []
     for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        if path.name in MANUAL_ONLY_MIGRATIONS:
+            logger.info("[migrations] %s is manual-only, skipping.", path.name)
+            continue
         if path.name in already:
             logger.info("[migrations] %s already applied, skipping.", path.name)
             continue

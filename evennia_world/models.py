@@ -72,6 +72,18 @@ class WorldStateQuery(BaseModel):
     session_id: str = "default_session"
 
 
+class RoomRule(BaseModel):
+    """A GM rule attached to a room ("The castle is always dark and gloomy.").
+
+    Stored with the room, so it survives a restart via the room's JSON dump.
+    """
+    id: str                                   # uuid4().hex, set by the engine
+    rule_text: str
+    rule_type: str = "invariant"              # invariant | conditional_trigger | game_over
+    status: str = "pending"                   # pending | active
+    source: str = "extracted"                 # extracted | manual | migrated
+
+
 class RoomMetadata(BaseModel):
     room_id: str
     room_name: str
@@ -81,6 +93,8 @@ class RoomMetadata(BaseModel):
     present_characters: List[str] = Field(default_factory=list)
     nearby_objects: List[str] = Field(default_factory=list)
     flavor_text: Optional[str] = None
+    # Rooms persisted before rules existed have no "rules" key; the default handles them.
+    rules: List[RoomRule] = Field(default_factory=list)
 
 
 class CharacterWorldState(BaseModel):

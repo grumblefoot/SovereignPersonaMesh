@@ -176,6 +176,34 @@ async def reasoning_status():
         "backend_url": url, "local": local, "resolved": resolved, "notice": notice})
 
 
+@router.get("/backend/window")
+async def backend_window():
+    """Brief W1b (OPEN-024): what context window SPM believes the configured backend
+    has for the default chat model — the detected value, the manual override, and
+    which one wins (budget.context_window precedence)."""
+    from proxy.backend_client import backend_profile
+    from proxy.backend_client.lemonade_client import DEFAULT_CHAT_MODEL
+    from config.hardware_tiers import get_hardware_config
+    from proxy.rag import budget
+    from proxy.api.routes import lemonade_client
+    s = get_settings_manager().get_settings()
+    win = await backend_profile.window_for(lemonade_client, DEFAULT_CHAT_MODEL)
+    tier = str(s.get("SPM_HARDWARE_TIER") or "SOVEREIGN")
+    hw = get_hardware_config(tier)
+    override = s.get("context_window_override")
+    try:
+        override = int(override) if override else None
+    except (TypeError, ValueError):
+        override = None
+    return JSONResponse(content={
+        "tokens": win.tokens, "source": win.source, "detail": win.detail,
+        "override": override,
+        "effective": budget.context_window(s, hw, detected=win.tokens,
+                                           detected_source=win.source),
+        "tier": tier, "model": DEFAULT_CHAT_MODEL,
+        "backend_url": lemonade_client.base_url})
+
+
 @router.post("/config")
 async def update_config(new_settings: Dict[str, Any]):
     """Update dynamic settings in config.json."""
@@ -204,20 +232,21 @@ async def delete_session(session_id: str):
             # Delete from world_state_sessions
             await conn.execute(strings.get("sql.delete_session_world_state"), session_id)
 
-            # Query all csa_memory tables, plus this chat's lore (OPEN-007: a
-            # deleted chat leaves no chat-scoped rules behind; canon stays).
+            # Chat rules now live in spm_chat_rules (brief C1b): a deleted chat
+            # leaves no chat-scoped rules behind (OPEN-007).
+            res = await conn.execute(
+                "DELETE FROM spm_chat_rules WHERE session_id = $1;", session_id)
+            try:
+                deleted_count += int(res.split()[-1])
+            except (ValueError, IndexError):
+                pass
+
             tables = list(await conn.fetch(strings.get("sql.list_memory_tables")))
-            tables += [t for t in await conn.fetch(strings.get("sql.list_lore_tables"))]
             for t in tables:
                 table_name = t["table_name"]
-                if table_name.startswith("csa_lore_rules_"):
-                    res = await conn.execute(
-                        f"DELETE FROM {table_name} WHERE session_id = $1 AND scope != 'global';",
-                        session_id)
-                else:
-                    res = await conn.execute(
-                        f"DELETE FROM {table_name} WHERE session_id = $1;", session_id
-                    )
+                res = await conn.execute(
+                    f"DELETE FROM {table_name} WHERE session_id = $1;", session_id
+                )
                 # Format: "DELETE 5"
                 try:
                     num = int(res.split()[-1])
@@ -258,7 +287,9 @@ async def factory_reset():
             await conn.execute(strings.get("sql.truncate_archives"))
             await conn.execute(strings.get("sql.truncate_world_state"))
 
-            # Truncate all csa_memory and csa_lore_rules tables
+            # Truncate all csa_memory tables (brief C1b: list_tables_info now
+            # lists only csa_memory_%) plus the shared chat-rules table.
+            await conn.execute("TRUNCATE TABLE spm_chat_rules RESTART IDENTITY CASCADE;")
             tables = await conn.fetch(
                 strings.get("sql.list_tables_info")
             )
@@ -314,104 +345,6 @@ async def shutdown_system():
         "status": "success",
         "message": "Shutting down SPM and Game services gracefully."
     })
-
-@router.get("/lore/pending")
-async def get_pending_lore():
-    """Fetch all pending GM rules from all character tables."""
-    pool = AdminState.get_db_pool()
-    if pool is None:
-        return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
-    
-    pending_rules = []
-    try:
-        async with pool.acquire() as conn:
-            tables = await conn.fetch(
-                strings.get("sql.list_lore_tables")
-            )
-            for t in tables:
-                table_name = t["table_name"]
-                char_id = table_name.replace("csa_lore_rules_", "")
-                
-                # We need to gracefully handle tables without 'status' column yet
-                try:
-                    rows = await conn.fetch(
-                        f"SELECT id, rule_text, rule_type, status, created_at, session_id, scope "
-                        f"FROM {table_name} WHERE status = 'pending';")
-                    for r in rows:
-                        pending_rules.append({
-                            "char_id": char_id,
-                            "id": str(r["id"]),
-                            "rule_text": r["rule_text"],
-                            "rule_type": r["rule_type"],
-                            "status": r["status"],
-                            "session_id": r["session_id"],
-                            "scope": r["scope"],
-                            "created_at": r["created_at"].isoformat() if r["created_at"] else None
-                        })
-                except Exception:
-                    pass
-        return JSONResponse(content={"pending_rules": pending_rules})
-    except Exception as e:
-        logger.error(f"[AdminAPI] Error fetching pending lore: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/lore/{char_id}/{rule_id}/approve")
-async def approve_lore(char_id: str, rule_id: str):
-    """Approve a pending lore rule, setting its status to 'active'."""
-    pool = AdminState.get_db_pool()
-    if pool is None:
-        return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
-    
-    table_name = f"csa_lore_rules_{safe_char_id(char_id)}"
-    try:
-        async with pool.acquire() as conn:
-            res = await conn.execute(f"UPDATE {table_name} SET status = 'active' WHERE id = $1::uuid;", rule_id)
-            if res == "UPDATE 0":
-                return JSONResponse(status_code=404, content={"error": "Rule not found"})
-        return JSONResponse(content={"status": "success"})
-    except Exception as e:
-        logger.error(f"[AdminAPI] Error approving lore: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/lore/{char_id}/{rule_id}/promote")
-async def promote_lore(char_id: str, rule_id: str):
-    """Promote a chat-scoped rule to character canon (OPEN-007 §B.4): scope='global',
-    session_id cleared to the canon bucket, so every chat with this character sees it."""
-    pool = AdminState.get_db_pool()
-    if pool is None:
-        return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
-
-    table_name = f"csa_lore_rules_{safe_char_id(char_id)}"
-    try:
-        async with pool.acquire() as conn:
-            res = await conn.execute(
-                f"UPDATE {table_name} SET scope = 'global', session_id = 'canon' "
-                f"WHERE id = $1::uuid;", rule_id)
-            if res == "UPDATE 0":
-                return JSONResponse(status_code=404, content={"error": "Rule not found"})
-        return JSONResponse(content={"status": "success", "scope": "global"})
-    except Exception as e:
-        logger.error(f"[AdminAPI] Error promoting lore: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/lore/{char_id}/{rule_id}/reject")
-async def reject_lore(char_id: str, rule_id: str):
-    """Reject a pending lore rule by deleting it."""
-    pool = AdminState.get_db_pool()
-    if pool is None:
-        return JSONResponse(status_code=503, content={"error": strings.get("api.errors.db_unavailable")})
-    
-    table_name = f"csa_lore_rules_{safe_char_id(char_id)}"
-    try:
-        async with pool.acquire() as conn:
-            res = await conn.execute(f"DELETE FROM {table_name} WHERE id = $1::uuid;", rule_id)
-            if res == "DELETE 0":
-                return JSONResponse(status_code=404, content={"error": "Rule not found"})
-        return JSONResponse(content={"status": "success"})
-    except Exception as e:
-        logger.error(f"[AdminAPI] Error rejecting lore: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/lore/test_connection")
 async def test_lore_connection(body: dict):
@@ -516,3 +449,261 @@ async def put_chat_settings(session_id: str, body: dict):
             "SET narrator_mode = EXCLUDED.narrator_mode, updated_at = CURRENT_TIMESTAMP",
             session_id, mode)
     return JSONResponse(content={"session_id": session_id, "narrator_mode": mode})
+
+
+# ── Brief C1a: per-chat rules admin API ─────────────────────────────────────
+# Chat-level rules live in spm_chat_rules (via proxy/rag/chat_rules.py); room
+# rules live in the world engine. 'location' is the API-level level for the
+# engine path; chat_rules itself knows only its three DB levels.
+
+_CHAT_RULE_LEVELS = ("world", "character_internal", "character_external", "location")
+_DB_RULE_FIELDS = ("rule_text", "rule_type", "level", "character_id", "status")
+_ROOM_RULE_FIELDS = ("rule_text", "rule_type", "status")
+
+
+def _rules_db_503() -> JSONResponse:
+    return JSONResponse(status_code=503,
+                        content={"error": strings.get("api.errors.db_unavailable")})
+
+
+def _engine_error_response(e: Exception, not_found_detail: str) -> JSONResponse:
+    """Map an engine client failure: 404 -> 404, 422 -> 422, anything else -> 500."""
+    import httpx
+    if isinstance(e, httpx.HTTPStatusError):
+        code = e.response.status_code
+        if code == 404:
+            return JSONResponse(status_code=404, content={"error": not_found_detail})
+        if code == 422:
+            return JSONResponse(status_code=422, content={"error": str(e)})
+    raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/chats")
+async def list_chats():
+    """All chats for the rules admin, newest activity first. A session shows up if
+    it has perception rows OR chat rules (a chat that only ever got a manual rule
+    still needs an entry point). Characters = who perceived something, minus the
+    player; rule counts from spm_chat_rules; last activity = max created_at over
+    both tables."""
+    pool = get_admin_db_pool()
+    if pool is None:
+        return _rules_db_503()
+    sql = """
+        WITH sessions AS (
+            SELECT DISTINCT session_id FROM spm_perception
+            UNION
+            SELECT DISTINCT session_id FROM spm_chat_rules
+        ),
+        chars AS (
+            SELECT session_id,
+                   array_agg(DISTINCT recipient_id ORDER BY recipient_id) AS characters
+            FROM spm_perception
+            WHERE recipient_id <> 'user'
+            GROUP BY session_id
+        ),
+        counts AS (
+            SELECT session_id,
+                   COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+                   COUNT(*) FILTER (WHERE status = 'active') AS active
+            FROM spm_chat_rules
+            GROUP BY session_id
+        ),
+        activity AS (
+            SELECT session_id, MAX(created_at) AS last_activity FROM (
+                SELECT session_id, created_at FROM spm_perception
+                UNION ALL
+                SELECT session_id, created_at FROM spm_chat_rules
+            ) all_rows
+            GROUP BY session_id
+        )
+        SELECT s.session_id, COALESCE(c.characters, '{}'::text[]) AS characters,
+               COALESCE(n.pending, 0) AS pending, COALESCE(n.active, 0) AS active,
+               a.last_activity
+        FROM sessions s
+        LEFT JOIN chars c USING (session_id)
+        LEFT JOIN counts n USING (session_id)
+        LEFT JOIN activity a USING (session_id)
+        ORDER BY a.last_activity DESC NULLS LAST
+    """
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(sql)
+    except Exception as e:
+        logger.error(f"[AdminAPI] list chats failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    return JSONResponse(content=[
+        {
+            "session_id": r["session_id"],
+            "characters": list(r["characters"]),
+            "rules": {"pending": r["pending"], "active": r["active"]},
+            "last_activity": r["last_activity"].isoformat() if r["last_activity"] else None,
+        }
+        for r in rows])
+
+
+@router.get("/chats/{session_id}/rules")
+async def get_chat_rules_view(session_id: str):
+    """One chat's rules, grouped for the admin UI: world rules, per-character
+    internal/external rules, and the room rules from the world engine snapshot
+    (all rooms, including rooms without rules). An engine outage still returns
+    the DB rules with locations=[] and an engine_error message."""
+    pool = get_admin_db_pool()
+    if pool is None:
+        return _rules_db_503()
+    from proxy.rag import chat_rules
+    from proxy.api.routes import evennia_client
+    try:
+        async with pool.acquire() as conn:
+            rules = await chat_rules.list_rules(conn, session_id)   # includes created_at
+    except Exception as e:
+        logger.error(f"[AdminAPI] rules view failed for {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    world: list = []
+    characters: Dict[str, Dict[str, list]] = {}
+    for rule in rules:
+        if rule["level"] == "world":
+            world.append(rule)
+            continue
+        bucket = characters.setdefault(rule["character_id"],
+                                       {"internal": [], "external": []})
+        bucket["internal" if rule["level"] == "character_internal"
+               else "external"].append(rule)
+
+    content: Dict[str, Any] = {"world": world, "characters": characters,
+                               "locations": []}
+    try:
+        snap = await evennia_client.get_snapshot(session_id=session_id,
+                                                 template_key="")
+        content["locations"] = [
+            {"room_id": room.get("room_id"), "name": room.get("name"),
+             "rules": list(room.get("rules") or [])}
+            for room in snap.get("rooms", [])]
+    except Exception as e:
+        logger.warning(f"[AdminAPI] world engine unavailable for {session_id}: {e}")
+        content["engine_error"] = str(e)
+    return JSONResponse(content=content)
+
+
+@router.post("/chats/{session_id}/rules")
+async def add_chat_rule(session_id: str, body: dict):
+    """Add a manual rule to a chat (status='active', source='manual'). Level
+    'location' goes to the world engine as a room rule; the other three levels
+    go to spm_chat_rules. Manual rules carry no embedding — trigger rules then
+    match only via text-free paths (that is accepted)."""
+    level = str(body.get("level") or "")
+    if level not in _CHAT_RULE_LEVELS:
+        return JSONResponse(status_code=422, content={
+            "error": f"level must be one of {list(_CHAT_RULE_LEVELS)}"})
+    rule_text = str(body.get("rule_text") or "")
+    if not rule_text.strip():
+        return JSONResponse(status_code=422, content={"error": "rule_text must not be empty"})
+    rule_type = str(body.get("rule_type") or "invariant")
+    from proxy.rag import chat_rules
+    if rule_type not in chat_rules.RULE_TYPES:
+        return JSONResponse(status_code=422, content={
+            "error": f"rule_type must be one of {list(chat_rules.RULE_TYPES)}"})
+
+    if level == "location":
+        room_id = body.get("room_id")
+        if not room_id:
+            return JSONResponse(status_code=422,
+                                content={"error": "level 'location' requires a room_id"})
+        from proxy.api.routes import evennia_client
+        try:
+            res = await evennia_client.add_room_rule(
+                str(room_id), rule_text, session_id, rule_type=rule_type,
+                status="active", source="manual", origin="user")
+        except Exception as e:
+            return _engine_error_response(e, f"room {room_id} not found")
+        if res.get("duplicate"):
+            return JSONResponse(status_code=409,
+                                content={"error": "duplicate of a rule already on this room"})
+        return JSONResponse(content={"id": res.get("rule_id"), "level": "location"})
+
+    pool = get_admin_db_pool()
+    if pool is None:
+        return _rules_db_503()
+    try:
+        async with pool.acquire() as conn:
+            rule_id = await chat_rules.add_rule(
+                conn, session_id=session_id, level=level,
+                character_id=body.get("character_id"), rule_text=rule_text,
+                rule_type=rule_type, status="active", source="manual")
+    except ValueError as e:
+        return JSONResponse(status_code=422, content={"error": str(e)})
+    except Exception as e:
+        logger.error(f"[AdminAPI] add chat rule failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    if rule_id is None:
+        return JSONResponse(status_code=409,
+                            content={"error": "duplicate of an existing rule in this chat"})
+    return JSONResponse(content={"id": rule_id, "level": level})
+
+
+@router.put("/chats/{session_id}/rules/{rule_id}")
+async def edit_chat_rule(session_id: str, rule_id: str, body: dict,
+                         room_id: Optional[str] = None):
+    """Edit a rule. Body may carry any of rule_text, rule_type, level,
+    character_id, status. Pass ?room_id= to edit a room rule in the world
+    engine instead of a chat rule."""
+    from proxy.rag import chat_rules
+    if room_id:
+        fields = {k: body[k] for k in _ROOM_RULE_FIELDS if k in body}
+        if not fields:
+            return JSONResponse(status_code=422, content={
+                "error": f"nothing to update; expected any of {list(_ROOM_RULE_FIELDS)}"})
+        from proxy.api.routes import evennia_client
+        try:
+            await evennia_client.update_room_rule(room_id, rule_id, session_id, **fields)
+        except Exception as e:
+            return _engine_error_response(e, "room rule not found")
+        return JSONResponse(content={"status": "success", "id": rule_id,
+                                     "level": "location"})
+
+    pool = get_admin_db_pool()
+    if pool is None:
+        return _rules_db_503()
+    fields = {k: body[k] for k in _DB_RULE_FIELDS if k in body}
+    if not fields:
+        return JSONResponse(status_code=422, content={
+            "error": f"nothing to update; expected any of {list(_DB_RULE_FIELDS)}"})
+    try:
+        async with pool.acquire() as conn:
+            ok = await chat_rules.update_rule(conn, session_id, rule_id, **fields)
+    except ValueError as e:
+        return JSONResponse(status_code=422, content={"error": str(e)})
+    except Exception as e:
+        logger.error(f"[AdminAPI] update chat rule failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    if not ok:
+        return JSONResponse(status_code=404, content={"error": "rule not found"})
+    return JSONResponse(content={"status": "success", "id": rule_id})
+
+
+@router.delete("/chats/{session_id}/rules/{rule_id}")
+async def remove_chat_rule(session_id: str, rule_id: str,
+                           room_id: Optional[str] = None):
+    """Delete a rule. Pass ?room_id= to delete a room rule from the world
+    engine instead of a chat rule."""
+    if room_id:
+        from proxy.api.routes import evennia_client
+        try:
+            await evennia_client.delete_room_rule(room_id, rule_id, session_id)
+        except Exception as e:
+            return _engine_error_response(e, "room rule not found")
+        return JSONResponse(content={"status": "success"})
+
+    pool = get_admin_db_pool()
+    if pool is None:
+        return _rules_db_503()
+    from proxy.rag import chat_rules
+    try:
+        async with pool.acquire() as conn:
+            deleted = await chat_rules.delete_rule(conn, session_id, rule_id)
+    except Exception as e:
+        logger.error(f"[AdminAPI] delete chat rule failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    if not deleted:
+        return JSONResponse(status_code=404, content={"error": "rule not found"})
+    return JSONResponse(content={"status": "success"})

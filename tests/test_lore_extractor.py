@@ -2,209 +2,205 @@ import logging
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from proxy.rag.lore_extractor import LoreExtractionWorker
+from proxy.rag.lore_extractor import LoreExtractionWorker, _place_rule
+
+
+def _fake_pool(conn_mock):
+    """db_pool mock whose `async with pool.acquire() as conn` yields conn_mock."""
+    db_pool_mock = MagicMock()
+    acquire_cm = AsyncMock()
+    acquire_cm.__aenter__.return_value = conn_mock
+    acquire_cm.__aexit__.return_value = False
+    db_pool_mock.acquire = MagicMock(return_value=acquire_cm)
+    return db_pool_mock
+
+
+def _insert_calls(conn_mock):
+    """chat_rules.add_rule INSERTs through conn.fetchval, not conn.execute."""
+    return [c for c in conn_mock.fetchval.call_args_list
+            if "INSERT INTO spm_chat_rules" in c[0][0]]
 
 
 @pytest.mark.asyncio
 async def test_extract_initial_rules():
-    """Test that extract_initial_rules calls LLM, parses rules, and persists them to DB."""
-    db_pool_mock = MagicMock()
+    """Extracted rules land in spm_chat_rules (brief B1: no more per-character tables)."""
     conn_mock = AsyncMock()
-    acquire_cm = AsyncMock()
-    acquire_cm.__aenter__.return_value = conn_mock
-    acquire_cm.__aexit__.return_value = False
-    db_pool_mock.acquire = MagicMock(return_value=acquire_cm)
     conn_mock.fetchval = AsyncMock(return_value=None)
+    extractor = LoreExtractionWorker(_fake_pool(conn_mock))
 
-    extractor = LoreExtractionWorker(db_pool_mock)
-    
     async def mock_gen():
         yield "```json\n"
         yield '[{"rule_text": "Character is scared of fire.", "rule_type": "invariant"}]\n'
         yield "```"
-    
-    with patch.object(extractor, '_clean_llm_json_response', return_value=[
-        {"rule_text": "Character is scared of fire.", "rule_type": "invariant"}
-    ]):
-        with patch.object(extractor.embedding_engine, 'generate_embedding', new_callable=AsyncMock) as embed_mock:
-            embed_mock.return_value = [0.1, 0.2, 0.3]
+
+    with patch.object(extractor.embedding_engine, 'generate_embedding', new_callable=AsyncMock) as embed_mock:
+        embed_mock.return_value = [0.1, 0.2, 0.3]
+        with patch('proxy.rag.lore_extractor._space_id_for', new_callable=AsyncMock, return_value=None):
             with patch.object(extractor.llm_client, 'generate_stream', return_value=mock_gen()):
                 await extractor.extract_initial_rules("session123", "Tester", "context")
-                
-                conn_mock.execute.assert_any_call("SELECT create_csa_lore_rules_table($1);", "tester")
-                insert_calls = [c for c in conn_mock.execute.call_args_list if "INSERT INTO csa_lore_rules_tester" in c[0][0]]
-                assert len(insert_calls) == 1
-                assert "Character is scared of fire." in insert_calls[0][0][1]
+
+                # The old per-character table must no longer be touched at all.
+                for mock in (conn_mock.execute, conn_mock.fetchval):
+                    assert not [c for c in mock.call_args_list
+                                if "csa_lore_rules" in c[0][0]]
+                inserts = _insert_calls(conn_mock)
+                assert len(inserts) == 1
+                # add_rule INSERT binds (sql, session, level, character_id, rule_text,
+                # rule_type, status, source, embedding, space_id). No level from the
+                # model -> default 'world', character NULL.
+                args = inserts[0][0]
+                assert args[1] == "session123"
+                assert args[2] == "world"
+                assert args[3] is None
+                assert args[4] == "Character is scared of fire."
+                assert args[6] == "pending"
+                assert args[7] == "extracted"
 
 
 @pytest.mark.asyncio
 async def test_extract_initial_rules_skips_existing():
-    """Test that duplicate rule_text is not inserted (idempotency)."""
-    db_pool_mock = MagicMock()
+    """add_rule returns None for a duplicate -> no INSERT (idempotency)."""
     conn_mock = AsyncMock()
-    acquire_cm = AsyncMock()
-    acquire_cm.__aenter__.return_value = conn_mock
-    acquire_cm.__aexit__.return_value = False
-    db_pool_mock.acquire = MagicMock(return_value=acquire_cm)
-    conn_mock.fetchval = AsyncMock(return_value="existing-id")
+    # add_rule's exact-duplicate fetchval hits; the INSERT never runs.
+    conn_mock.fetchval = AsyncMock(return_value="1")
+    extractor = LoreExtractionWorker(_fake_pool(conn_mock))
 
-    extractor = LoreExtractionWorker(db_pool_mock)
-    
     async def mock_gen():
         yield "```json\n"
         yield '[{"rule_text": "Character is scared of fire.", "rule_type": "invariant"}]\n'
         yield "```"
-    
-    with patch.object(extractor, '_clean_llm_json_response', return_value=[
-        {"rule_text": "Character is scared of fire.", "rule_type": "invariant"}
-    ]):
-        with patch.object(extractor.embedding_engine, 'generate_embedding', new_callable=AsyncMock) as embed_mock:
-            embed_mock.return_value = [0.1, 0.2, 0.3]
+
+    with patch.object(extractor.embedding_engine, 'generate_embedding', new_callable=AsyncMock) as embed_mock:
+        embed_mock.return_value = [0.1, 0.2, 0.3]
+        with patch('proxy.rag.lore_extractor._space_id_for', new_callable=AsyncMock, return_value=None):
             with patch.object(extractor.llm_client, 'generate_stream', return_value=mock_gen()):
                 await extractor.extract_initial_rules("session123", "Tester", "context")
-                
-                select_calls = [c for c in conn_mock.execute.call_args_list if "create_csa_lore_rules_table" in c[0][0]]
-                assert len(select_calls) == 1
-                insert_calls = [c for c in conn_mock.execute.call_args_list if "INSERT INTO" in c[0][0]]
-                assert len(insert_calls) == 0
+
+                assert len(_insert_calls(conn_mock)) == 0
 
 
 @pytest.mark.asyncio
 async def test_extract_initial_rules_multiple_rules():
     """Test that multiple rules are extracted and persisted."""
-    db_pool_mock = MagicMock()
     conn_mock = AsyncMock()
-    acquire_cm = AsyncMock()
-    acquire_cm.__aenter__.return_value = conn_mock
-    acquire_cm.__aexit__.return_value = False
-    db_pool_mock.acquire = MagicMock(return_value=acquire_cm)
     conn_mock.fetchval = AsyncMock(return_value=None)
+    extractor = LoreExtractionWorker(_fake_pool(conn_mock))
 
-    extractor = LoreExtractionWorker(db_pool_mock)
-    
     async def mock_gen():
         yield "```json\n"
         yield '[{"rule_text": "Rule 1", "rule_type": "invariant"}, {"rule_text": "Rule 2", "rule_type": "trigger"}]\n'
         yield "```"
-    
+
     with patch.object(extractor.embedding_engine, 'generate_embedding', new_callable=AsyncMock) as embed_mock:
         embed_mock.return_value = [0.1, 0.2, 0.3]
-        with patch.object(extractor.llm_client, 'generate_stream', return_value=mock_gen()):
-            await extractor.extract_initial_rules("session123", "Tester", "context")
-            
-            insert_calls = [c for c in conn_mock.execute.call_args_list if "INSERT INTO" in c[0][0]]
-            assert len(insert_calls) == 2
-            # Trigger should be converted to conditional_trigger
-            # INSERT args: (sql, rule_text, rule_type, emb_str)
-            assert "conditional_trigger" in insert_calls[1][0][2]
+        with patch('proxy.rag.lore_extractor._space_id_for', new_callable=AsyncMock, return_value=None):
+            with patch.object(extractor.llm_client, 'generate_stream', return_value=mock_gen()):
+                await extractor.extract_initial_rules("session123", "Tester", "context")
+
+                inserts = _insert_calls(conn_mock)
+                assert len(inserts) == 2
+                # Trigger should be converted to conditional_trigger
+                assert inserts[1][0][5] == "conditional_trigger"
 
 
 @pytest.mark.asyncio
 async def test_periodic_review_rules():
     """Test that periodic_review_rules builds messages string and extracts rules."""
-    db_pool_mock = MagicMock()
     conn_mock = AsyncMock()
-    acquire_cm = AsyncMock()
-    acquire_cm.__aenter__.return_value = conn_mock
-    acquire_cm.__aexit__.return_value = False
-    db_pool_mock.acquire = MagicMock(return_value=acquire_cm)
     conn_mock.fetchval = AsyncMock(return_value=None)
+    extractor = LoreExtractionWorker(_fake_pool(conn_mock))
 
-    extractor = LoreExtractionWorker(db_pool_mock)
-    
     async def mock_gen():
         yield "```json\n"
         yield '[{"rule_text": "New rule from periodic review", "rule_type": "invariant"}]\n'
         yield "```"
-    
+
     recent_messages = [
         {"role": "user", "content": "Hello"},
         {"role": "assistant", "content": "Hi there"},
         {"role": "user", "content": "What is this place?"}
     ]
-    
+
     with patch.object(extractor.embedding_engine, 'generate_embedding', new_callable=AsyncMock) as embed_mock:
         embed_mock.return_value = [0.1, 0.2, 0.3]
-        with patch.object(extractor.llm_client, 'generate_stream', return_value=mock_gen()):
-            with patch('proxy.rag.lore_extractor.strings') as mock_strings:
-                mock_strings.get.return_value = "mock prompt"
-                await extractor.periodic_review_rules("session123", "Tester", recent_messages)
-                
-                mock_strings.get.assert_called()
-                first_call = mock_strings.get.call_args_list[0]
-                assert "recent_messages" in first_call[1]
-                assert "Hello" in first_call[1]["recent_messages"]
-                assert "Hi there" in first_call[1]["recent_messages"]
-                assert "What is this place?" in first_call[1]["recent_messages"]
+        with patch('proxy.rag.lore_extractor._space_id_for', new_callable=AsyncMock, return_value=None):
+            with patch.object(extractor.llm_client, 'generate_stream', return_value=mock_gen()):
+                with patch('proxy.rag.lore_extractor.strings') as mock_strings:
+                    mock_strings.get.return_value = "mock prompt"
+                    await extractor.periodic_review_rules("session123", "Tester", recent_messages)
+
+                    mock_strings.get.assert_called()
+                    first_call = mock_strings.get.call_args_list[0]
+                    assert "recent_messages" in first_call[1]
+                    assert "Hello" in first_call[1]["recent_messages"]
+                    assert "Hi there" in first_call[1]["recent_messages"]
+                    assert "What is this place?" in first_call[1]["recent_messages"]
+                    assert "characters" in first_call[1]
+                    assert "rooms" in first_call[1]
 
 
 @pytest.mark.asyncio
 async def test_periodic_review_rules_empty_messages():
     """Test that periodic_review_rules handles empty message list."""
-    db_pool_mock = MagicMock()
     conn_mock = AsyncMock()
-    acquire_cm = AsyncMock()
-    acquire_cm.__aenter__.return_value = conn_mock
-    acquire_cm.__aexit__.return_value = False
-    db_pool_mock.acquire = MagicMock(return_value=acquire_cm)
     conn_mock.fetchval = AsyncMock(return_value=None)
+    extractor = LoreExtractionWorker(_fake_pool(conn_mock))
 
-    extractor = LoreExtractionWorker(db_pool_mock)
-    
     async def mock_gen():
         yield "```json\n"
         yield '[{"rule_text": "Empty review rule", "rule_type": "invariant"}]\n'
         yield "```"
-    
+
     with patch.object(extractor.embedding_engine, 'generate_embedding', new_callable=AsyncMock) as embed_mock:
         embed_mock.return_value = [0.1, 0.2, 0.3]
-        with patch.object(extractor.llm_client, 'generate_stream', return_value=mock_gen()):
-            with patch('proxy.rag.lore_extractor.strings') as mock_strings:
-                mock_strings.get.return_value = "mock prompt"
-                await extractor.periodic_review_rules("session123", "Tester", [])
-                
-                mock_strings.get.assert_called()
-                first_call = mock_strings.get.call_args_list[0]
-                assert first_call[1]["recent_messages"] == ""
+        with patch('proxy.rag.lore_extractor._space_id_for', new_callable=AsyncMock, return_value=None):
+            with patch.object(extractor.llm_client, 'generate_stream', return_value=mock_gen()):
+                with patch('proxy.rag.lore_extractor.strings') as mock_strings:
+                    mock_strings.get.return_value = "mock prompt"
+                    await extractor.periodic_review_rules("session123", "Tester", [])
+
+                    mock_strings.get.assert_called()
+                    first_call = mock_strings.get.call_args_list[0]
+                    assert first_call[1]["recent_messages"] == ""
 
 
 class TestCleanLLMJSONResponse:
     """Tests for _clean_llm_json_response method."""
-    
+
     def setup_method(self):
         db_pool_mock = MagicMock()
         self.extractor = LoreExtractionWorker(db_pool_mock)
-    
+
     def test_clean_json_with_fenced_block(self):
         raw = "```json\n[{\"rule_text\": \"test\"}]\n```"
         result = self.extractor._clean_llm_json_response(raw)
         assert len(result) == 1
         assert result[0]["rule_text"] == "test"
-    
+
     def test_clean_json_with_plain_code_block(self):
         raw = "```\n[{\"rule_text\": \"test\"}]\n```"
         result = self.extractor._clean_llm_json_response(raw)
         assert len(result) == 1
         assert result[0]["rule_text"] == "test"
-    
+
     def test_clean_json_without_wrapping(self):
         raw = '[{"rule_text": "test"}]'
         result = self.extractor._clean_llm_json_response(raw)
         assert len(result) == 1
         assert result[0]["rule_text"] == "test"
-    
+
     def test_clean_json_single_dict(self):
         raw = '{"rule_text": "single rule"}'
         result = self.extractor._clean_llm_json_response(raw)
         assert isinstance(result, list)
         assert len(result) == 1
         assert result[0]["rule_text"] == "single rule"
-    
+
     def test_clean_json_invalid_returns_empty_list(self):
         raw = "not valid json {{{"
         result = self.extractor._clean_llm_json_response(raw)
         assert result == []
-    
+
     def test_clean_json_empty_string(self):
         result = self.extractor._clean_llm_json_response("")
         assert result == []
@@ -212,101 +208,79 @@ class TestCleanLLMJSONResponse:
 
 class TestLoreTypeNormalization:
     """Tests for lore rule type normalization in _execute_extraction."""
-    
+
     @pytest.mark.asyncio
     async def test_trigger_converted_to_conditional_trigger(self):
         """Test that 'trigger' type is normalized to 'conditional_trigger'."""
-        db_pool_mock = MagicMock()
         conn_mock = AsyncMock()
-        acquire_cm = AsyncMock()
-        acquire_cm.__aenter__.return_value = conn_mock
-        acquire_cm.__aexit__.return_value = False
-        db_pool_mock.acquire = MagicMock(return_value=acquire_cm)
         conn_mock.fetchval = AsyncMock(return_value=None)
+        extractor = LoreExtractionWorker(_fake_pool(conn_mock))
 
-        extractor = LoreExtractionWorker(db_pool_mock)
-        
         async def mock_gen():
             yield "```json\n"
             yield '[{"rule_text": "trigger rule", "rule_type": "trigger"}]\n'
             yield "```"
-        
+
         with patch.object(extractor.embedding_engine, 'generate_embedding', new_callable=AsyncMock) as embed_mock:
             embed_mock.return_value = [0.1, 0.2, 0.3]
-            with patch.object(extractor.llm_client, 'generate_stream', return_value=mock_gen()):
-                await extractor.extract_initial_rules("session1", "char", "ctx")
-                
-                insert_calls = [c for c in conn_mock.execute.call_args_list if "INSERT INTO" in c[0][0]]
-                assert len(insert_calls) == 1
-                # INSERT args: (sql, rule_text, rule_type, emb_str)
-                assert "conditional_trigger" in insert_calls[0][0][2]
-    
+            with patch('proxy.rag.lore_extractor._space_id_for', new_callable=AsyncMock, return_value=None):
+                with patch.object(extractor.llm_client, 'generate_stream', return_value=mock_gen()):
+                    await extractor.extract_initial_rules("session1", "char", "ctx")
+
+                    inserts = _insert_calls(conn_mock)
+                    assert len(inserts) == 1
+                    # INSERT binds (..., rule_text, rule_type, ...)
+                    assert inserts[0][0][5] == "conditional_trigger"
+
     @pytest.mark.asyncio
     async def test_invalid_rule_type_defaults_to_invariant(self):
         """Test that invalid rule_type defaults to 'invariant'."""
-        db_pool_mock = MagicMock()
         conn_mock = AsyncMock()
-        acquire_cm = AsyncMock()
-        acquire_cm.__aenter__.return_value = conn_mock
-        acquire_cm.__aexit__.return_value = False
-        db_pool_mock.acquire = MagicMock(return_value=acquire_cm)
         conn_mock.fetchval = AsyncMock(return_value=None)
+        extractor = LoreExtractionWorker(_fake_pool(conn_mock))
 
-        extractor = LoreExtractionWorker(db_pool_mock)
-        
         async def mock_gen():
             yield "```json\n"
             yield '[{"rule_text": "bad type", "rule_type": "invalid_type"}]\n'
             yield "```"
-        
+
         with patch.object(extractor.embedding_engine, 'generate_embedding', new_callable=AsyncMock) as embed_mock:
             embed_mock.return_value = [0.1, 0.2, 0.3]
-            with patch.object(extractor.llm_client, 'generate_stream', return_value=mock_gen()):
-                await extractor.extract_initial_rules("session1", "char", "ctx")
-                
-                insert_calls = [c for c in conn_mock.execute.call_args_list if "INSERT INTO" in c[0][0]]
-                assert len(insert_calls) == 1
-                assert "invariant" in insert_calls[0][0][2]
-    
+            with patch('proxy.rag.lore_extractor._space_id_for', new_callable=AsyncMock, return_value=None):
+                with patch.object(extractor.llm_client, 'generate_stream', return_value=mock_gen()):
+                    await extractor.extract_initial_rules("session1", "char", "ctx")
+
+                    inserts = _insert_calls(conn_mock)
+                    assert len(inserts) == 1
+                    assert inserts[0][0][5] == "invariant"
+
     @pytest.mark.asyncio
     async def test_skips_rules_without_rule_text(self):
         """Test that rules missing 'rule_text' are skipped."""
-        db_pool_mock = MagicMock()
         conn_mock = AsyncMock()
-        acquire_cm = AsyncMock()
-        acquire_cm.__aenter__.return_value = conn_mock
-        acquire_cm.__aexit__.return_value = False
-        db_pool_mock.acquire = MagicMock(return_value=acquire_cm)
         conn_mock.fetchval = AsyncMock(return_value=None)
+        extractor = LoreExtractionWorker(_fake_pool(conn_mock))
 
-        extractor = LoreExtractionWorker(db_pool_mock)
-        
         async def mock_gen():
             yield "```json\n"
             yield '[{"rule_type": "invariant"}, {"rule_text": "valid rule", "rule_type": "invariant"}]\n'
             yield "```"
-        
+
         with patch.object(extractor.embedding_engine, 'generate_embedding', new_callable=AsyncMock) as embed_mock:
             embed_mock.return_value = [0.1, 0.2, 0.3]
-            with patch.object(extractor.llm_client, 'generate_stream', return_value=mock_gen()):
-                await extractor.extract_initial_rules("session1", "char", "ctx")
-                
-                insert_calls = [c for c in conn_mock.execute.call_args_list if "INSERT INTO" in c[0][0]]
-                assert len(insert_calls) == 1
+            with patch('proxy.rag.lore_extractor._space_id_for', new_callable=AsyncMock, return_value=None):
+                with patch.object(extractor.llm_client, 'generate_stream', return_value=mock_gen()):
+                    await extractor.extract_initial_rules("session1", "char", "ctx")
+
+                    assert len(_insert_calls(conn_mock)) == 1
 
 
 @pytest.mark.asyncio
 async def test_reasoning_text_is_skipped_and_reasoning_disabled():
     """Live 2026-10-03 (Qwen3.8-27B): reasoning prose landed before the JSON, so no rules were ever extracted."""
-    db_pool_mock = MagicMock()
     conn_mock = AsyncMock()
-    acquire_cm = AsyncMock()
-    acquire_cm.__aenter__.return_value = conn_mock
-    acquire_cm.__aexit__.return_value = False
-    db_pool_mock.acquire = MagicMock(return_value=acquire_cm)
     conn_mock.fetchval = AsyncMock(return_value=None)
-
-    extractor = LoreExtractionWorker(db_pool_mock)
+    extractor = LoreExtractionWorker(_fake_pool(conn_mock))
 
     async def mock_gen():
         yield "<thinking>"
@@ -315,13 +289,14 @@ async def test_reasoning_text_is_skipped_and_reasoning_disabled():
         yield '[{"rule_text": "Mira Vale is the tavern keeper.", "rule_type": "invariant"}]'
 
     with patch.object(extractor.embedding_engine, "generate_embedding", new_callable=AsyncMock, return_value=[0.1]), \
+         patch('proxy.rag.lore_extractor._space_id_for', new_callable=AsyncMock, return_value=None), \
          patch.object(extractor.llm_client, "generate_stream", return_value=mock_gen()) as gen:
         await extractor.extract_initial_rules("s", "mira_vale", "context")
 
     assert gen.call_args.kwargs["extra_body"] == {"reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False}}
-    inserts = [c for c in conn_mock.execute.call_args_list if "INSERT INTO csa_lore_rules_mira_vale" in c[0][0]]
+    inserts = _insert_calls(conn_mock)
     assert len(inserts) == 1
-    assert inserts[0][0][1] == "Mira Vale is the tavern keeper."
+    assert inserts[0][0][4] == "Mira Vale is the tavern keeper."
 
 
 @pytest.mark.asyncio
@@ -344,3 +319,224 @@ async def test_extraction_output_fits_the_window_and_local_gets_both_switches(mo
     await w._execute_extraction("x " * 2000, "s", "c", "m")
     assert seen["max_tokens"] < 8192 - 1000
     assert seen["extra_body"] == {"reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False}}
+
+
+# --- _place_rule (brief B1 spec 3): pure placement decisions --------------------
+
+ROOMS = {"principals_office": "Principal's Office",
+         "ua_high_school": "U.A. High School"}
+
+
+class TestPlaceRule:
+    def _place(self, rule, **kw):
+        opts = dict(character_id="turn_char", characters=("turn_char", "mira_vale"),
+                    rooms=ROOMS, default_level="world")
+        opts.update(kw)
+        return _place_rule(rule, **opts)
+
+    def test_world_level(self):
+        assert self._place({"level": "world"}) == ("world", None, None)
+
+    def test_character_internal_known(self):
+        assert self._place({"level": "character_internal", "character": "Mira Vale"}) == \
+            ("character_internal", "mira_vale", None)
+
+    def test_character_external_known(self):
+        assert self._place({"level": "character_external", "character": "MIRA VALE"}) == \
+            ("character_external", "mira_vale", None)
+
+    def test_character_name_other_script_maps_to_id(self):
+        """A non-Latin name reduces to its stable hash id, which is how it is known."""
+        from core.identifiers import safe_char_id
+        name = "美美"
+        cid = safe_char_id(name)
+        assert self._place({"level": "character_internal", "character": name},
+                           characters=("turn_char", cid)) == \
+            ("character_internal", cid, None)
+
+    def test_unknown_character_falls_back_to_turn_character(self):
+        assert self._place({"level": "character_internal", "character": "Nobody"}) == \
+            ("character_internal", "turn_char", None)
+
+    def test_missing_level_uses_default_world(self):
+        assert self._place({"rule_text": "x"}) == ("world", None, None)
+
+    def test_unknown_level_uses_default_world(self):
+        assert self._place({"level": "galaxy"}) == ("world", None, None)
+
+    def test_missing_level_uses_default_character_internal(self):
+        assert self._place({}, default_level="character_internal") == \
+            ("character_internal", "turn_char", None)
+
+    def test_unknown_level_uses_default_character_internal(self):
+        assert self._place({"level": "nonsense"}, default_level="character_internal") == \
+            ("character_internal", "turn_char", None)
+
+    def test_location_exact_room_id(self):
+        assert self._place({"level": "location", "location": "principals_office"}) == \
+            ("location", None, "principals_office")
+
+    def test_location_by_name(self):
+        """'Principal's Office' matches the room whose name it is."""
+        assert self._place({"level": "location", "location": "Principal's Office"}) == \
+            ("location", None, "principals_office")
+
+    def test_location_by_name_wordforms(self):
+        assert self._place({"level": "location", "location": "Principals Office"}) == \
+            ("location", None, "principals_office")
+
+    def test_unknown_location_becomes_world(self):
+        assert self._place({"level": "location", "location": "the void"}) == \
+            ("world", None, None)
+
+    def test_location_without_rooms_becomes_world(self):
+        assert self._place({"level": "location", "location": "Principal's Office"},
+                           rooms=None) == ("world", None, None)
+
+    def test_location_empty_value_becomes_world(self):
+        assert self._place({"level": "location"}) == ("world", None, None)
+
+
+# --- end-to-end extraction: levels land where the brief says --------------------
+
+@pytest.mark.asyncio
+async def test_extraction_stores_each_level_in_its_place():
+    """Fake LLM answer with one rule per level: world/character rules go to
+    spm_chat_rules with the right level and character (real test DB), the
+    location rule reaches the engine (fake). Brief B1 tests."""
+    import asyncpg
+    from tests._testdb import TEST_DB_CONFIG
+
+    conn = await asyncpg.connect(**TEST_DB_CONFIG)
+    try:
+        await conn.execute("DELETE FROM spm_chat_rules;")
+
+        class _Pool:
+            def __init__(self, conn):
+                self.conn = conn
+
+            def acquire(self):
+                outer = self
+
+                class _Ctx:
+                    async def __aenter__(self):
+                        return outer.conn
+
+                    async def __aexit__(self, *exc):
+                        return False
+                return _Ctx()
+
+        extractor = LoreExtractionWorker(_Pool(conn))
+
+        rules_json = ('['
+                      '{"rule_text": "Magic hums at dusk.", "rule_type": "invariant", "level": "world"},'
+                      '{"rule_text": "She hides the heirloom.", "rule_type": "invariant",'
+                      ' "level": "character_internal", "character": "Mira Vale"},'
+                      '{"rule_text": "He limps when it rains.", "rule_type": "invariant",'
+                      ' "level": "character_external", "character": "Bramwell"},'
+                      '{"rule_text": "The floorboard creaks.", "rule_type": "trigger",'
+                      ' "level": "location", "location": "Principal\'s Office"}'
+                      ']')
+
+        async def mock_gen(**kw):
+            yield rules_json
+
+        class FakeEngine:
+            def __init__(self):
+                self.calls = []
+
+            async def add_room_rule(self, room_id, rule_text, session_id, **kw):
+                self.calls.append((room_id, rule_text, session_id, kw))
+
+        engine = FakeEngine()
+
+        with patch.object(extractor.embedding_engine, "generate_embedding",
+                          new_callable=AsyncMock, return_value=[0.1, 0.2, 0.3]), \
+             patch("proxy.rag.lore_extractor._space_id_for", new_callable=AsyncMock, return_value=None), \
+             patch.object(extractor.llm_client, "generate_stream", new=mock_gen):
+            await extractor.extract_initial_rules(
+                "b1-e2e-session", "turn_char", "ctx",
+                characters=("turn_char", "mira_vale"),
+                rooms={"principals_office": "Principal's Office"},
+                engine=engine)
+
+        rows = await conn.fetch(
+            "SELECT level, character_id, rule_text, rule_type, status, source "
+            "FROM spm_chat_rules WHERE session_id = $1 ORDER BY rule_text",
+            "b1-e2e-session")
+        by_text = {r["rule_text"]: dict(r) for r in rows}
+
+        assert set(by_text) == {"Magic hums at dusk.",
+                                "She hides the heirloom.",
+                                "He limps when it rains."}
+        w = by_text["Magic hums at dusk."]
+        assert (w["level"], w["character_id"], w["status"], w["source"]) == \
+            ("world", None, "pending", "extracted")
+        ci = by_text["She hides the heirloom."]
+        assert (ci["level"], ci["character_id"]) == ("character_internal", "mira_vale")
+        ce = by_text["He limps when it rains."]
+        # 'Bramwell' is not in the chat -> the character whose turn it was.
+        assert (ce["level"], ce["character_id"]) == ("character_external", "turn_char")
+
+        assert len(engine.calls) == 1
+        room_id, rule_text, session_id, kw = engine.calls[0]
+        assert (room_id, rule_text, session_id) == \
+            ("principals_office", "The floorboard creaks.", "b1-e2e-session")
+        assert kw["rule_type"] == "conditional_trigger"
+        assert kw["status"] == "pending" and kw["source"] == "extracted"
+    finally:
+        await conn.execute("DELETE FROM spm_chat_rules;")
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_location_rule_without_engine_is_stored_as_world():
+    """Spec 3: no engine -> the location rule is kept as world (pending), not lost."""
+    conn_mock = AsyncMock()
+    conn_mock.fetchval = AsyncMock(return_value=None)
+    extractor = LoreExtractionWorker(_fake_pool(conn_mock))
+
+    async def mock_gen():
+        yield ('[{"rule_text": "The floorboard creaks.", "rule_type": "invariant",'
+               ' "level": "location", "location": "principals_office"}]')
+
+    with patch.object(extractor.embedding_engine, "generate_embedding",
+                      new_callable=AsyncMock, return_value=[0.1, 0.2, 0.3]), \
+         patch('proxy.rag.lore_extractor._space_id_for', new_callable=AsyncMock, return_value=None), \
+         patch.object(extractor.llm_client, "generate_stream", return_value=mock_gen()):
+        await extractor.extract_initial_rules(
+            "s", "turn_char", "ctx",
+            characters=("turn_char",), rooms={"principals_office": "Principal's Office"})
+
+    inserts = _insert_calls(conn_mock)
+    assert len(inserts) == 1
+    assert inserts[0][0][2] == "world"
+
+
+@pytest.mark.asyncio
+async def test_engine_error_skips_rule_and_never_raises():
+    """Spec 4: an engine error is logged and the rule skipped; extraction continues."""
+    conn_mock = AsyncMock()
+    conn_mock.fetchval = AsyncMock(return_value=None)
+    extractor = LoreExtractionWorker(_fake_pool(conn_mock))
+
+    async def mock_gen():
+        yield ('[{"rule_text": "Room rule that fails.", "rule_type": "invariant",'
+               ' "level": "location", "location": "principals_office"},'
+               ' {"rule_text": "Still stored.", "rule_type": "invariant", "level": "world"}]')
+
+    class BoomEngine:
+        async def add_room_rule(self, *a, **kw):
+            raise RuntimeError("engine offline")
+
+    with patch.object(extractor.embedding_engine, "generate_embedding",
+                      new_callable=AsyncMock, return_value=[0.1, 0.2, 0.3]), \
+         patch('proxy.rag.lore_extractor._space_id_for', new_callable=AsyncMock, return_value=None), \
+         patch.object(extractor.llm_client, "generate_stream", return_value=mock_gen()):
+        await extractor.extract_initial_rules(
+            "s", "turn_char", "ctx", characters=("turn_char",),
+            rooms={"principals_office": "Principal's Office"}, engine=BoomEngine())
+
+    inserts = _insert_calls(conn_mock)
+    assert len(inserts) == 1
+    assert inserts[0][0][4] == "Still stored."

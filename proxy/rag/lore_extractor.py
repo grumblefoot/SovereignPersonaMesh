@@ -1,21 +1,69 @@
 import asyncio
 import json
 import logging
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import asyncpg
 
 from proxy.backend_client.lemonade_client import LemonadeLLMClient, DEFAULT_CHAT_MODEL
 from scripts.onnx_embedder import CPUEmbeddingEngine
 from proxy.embeddings import space_id_for as _space_id_for
+from proxy.rag import chat_rules
 
 # Cosine distance below which a new rule restates an existing one (QA O4, 2026-10-06).
+# Kept for the lore-scope SQL tests; the extractor itself now dedupes via
+# chat_rules.add_rule (brief B1).
 NEAR_DUPLICATE_DISTANCE = 0.20
 
 logger = logging.getLogger(__name__)
 
 from core.resource_manager import strings
 from core.identifiers import safe_char_id
+
+# Levels a rule may carry. `location` never lands in spm_chat_rules (it goes on
+# the room in the world engine), but the model emits it, so it is valid input.
+RULE_LEVELS = ("world", "location", "character_internal", "character_external")
+CHARACTER_LEVELS = ("character_internal", "character_external")
+
+
+def _place_rule(rule: Dict[str, Any], *, character_id: str,
+                characters, rooms, default_level: str) -> Tuple[str, Optional[str], Optional[str]]:
+    """Decide where one extracted rule belongs: (level, character_id, room_id).
+
+    Pure and unit-testable; the engine is deliberately not an argument — a
+    `location` rule whose room cannot be matched (unknown name, no rooms, no
+    engine wired in) is stored as `world` (pending, so the owner sees it)
+    instead of being lost (brief B1 spec 3).
+    """
+    level = (rule.get("level") or "").strip().lower()
+    if level not in RULE_LEVELS:
+        level = default_level
+
+    if level in CHARACTER_LEVELS:
+        target = safe_char_id(str(rule.get("character") or ""))
+        known = {safe_char_id(str(c)) for c in (characters or ())}
+        if target and (target in known or target == character_id):
+            return level, target, None
+        # A name we do not recognise: the character whose turn it was.
+        return level, character_id, None
+
+    if level == "location":
+        from proxy.core import gm_planner
+        wanted = str(rule.get("location") or "").strip()
+        matched = None
+        if wanted and rooms:
+            if wanted in rooms:
+                matched = wanted
+            else:
+                wanted_id = safe_char_id(wanted)
+                matched = next(
+                    (rid for rid, name in rooms.items()
+                     if gm_planner._same_place(wanted_id, wanted, rid, name or rid)), None)
+        if matched is not None and rooms is not None:
+            return "location", None, matched
+        return "world", None, None
+
+    return "world", None, None
 
 
 class LoreExtractionWorker:
@@ -51,7 +99,9 @@ class LoreExtractionWorker:
             self.logger.warning(f"Failed to parse LLM JSON output: {e}\nRaw output: {raw_response}")
             return []
 
-    async def _execute_extraction(self, prompt: str, session_id: str, character_id: str, model: str):
+    async def _execute_extraction(self, prompt: str, session_id: str, character_id: str, model: str,
+                                  characters=(), rooms=None, engine=None,
+                                  default_level: str = "world"):
         self.logger.info(f"Executing extraction for session={session_id}, character={character_id} using model={model}")
         
         # Stream=False generates a full response via process_token_stream conceptually,
@@ -66,10 +116,14 @@ class LoreExtractionWorker:
         from proxy.rag import budget
         from proxy.rag.prompt_builder import CognitivePromptBuilder
         from proxy.core import reasoning
+        from proxy.backend_client import backend_profile
         settings = get_settings_manager().get_settings()
+        # Brief W1b: size the output from the window the server reports, like the chat turn.
+        win = await backend_profile.window_for(self.llm_client, model)
         max_tokens = budget.clamp_max_tokens(
             [{"role": "user", "content": prompt}], settings,
-            CognitivePromptBuilder().config, model=model, configured_ceiling=8192)
+            CognitivePromptBuilder().config, model=model, configured_ceiling=8192,
+            detected=win.tokens, detected_source=win.source)
         # Local backends get both switches; a cloud API only the field it always got.
         no_thinking = (reasoning.extra_body("none", settings, str(getattr(self.llm_client, "base_url", "") or ""))
                        or {"chat_template_kwargs": {"enable_thinking": False}})
@@ -120,50 +174,84 @@ class LoreExtractionWorker:
                 
             if rule_type == "trigger":
                 rule_type = "conditional_trigger"
-                
+
+            level, rule_char, room_id = _place_rule(
+                rule, character_id=character_id, characters=characters,
+                rooms=rooms, default_level=default_level)
+
+            if level == "location" and engine is None:
+                # Spec 3: without an engine there is no room to attach to; the
+                # rule is still worth keeping, visible to the owner as world.
+                level, room_id = "world", None
+
+            if level == "location":
+                # Location rules live on the room in the world engine (brief D1),
+                # not in spm_chat_rules; no embedding. An engine error skips the
+                # rule — extraction must never raise out of a background task.
+                if engine is None:
+                    self.logger.warning(
+                        f"No engine for location rule, skipping: {rule_text[:80]}")
+                    continue
+                try:
+                    await engine.add_room_rule(room_id, rule_text, session_id,
+                                               rule_type=rule_type, status="pending",
+                                               source="extracted")
+                except Exception as e:
+                    self.logger.error(
+                        f"Error storing room rule '{rule_text}' on {room_id}: {e}")
+                continue
+
             try:
                 emb = await self.embedding_engine.generate_embedding(rule_text)
-                emb_str = None if emb is None else "[" + ",".join(map(str, emb)) + "]"
-                
-                table_name = f"csa_lore_rules_{safe_char_id(character_id)}"
-                
+                space_id = None
                 async with self.db_pool.acquire() as conn:
-                    await conn.execute(strings.get("sql.create_csa_lore_rules_table"), safe_char_id(character_id))
-                    
-                    # Dedupe within this chat (or against character canon): the same
-                    # rule may legitimately exist in two different chats (OPEN-007).
-                    existing = await conn.fetchval(
-                        strings.get("sql.check_lore_rule_exists").format(table_name=table_name),
-                        rule_text, session_id)
-                    space_id = await _space_id_for(self.embedding_engine, conn) if emb_str is not None else None
-                    # Reworded restatements of a rule we already hold ("Characters can/may
-                    # experience sudden bursts of strength") are duplicates too. Measured on
-                    # the MHA lorebook: paraphrases <= 0.17, distinct rules >= 0.25 (QA O4).
-                    if not existing and emb_str is not None and space_id is not None:
-                        existing = await conn.fetchval(
-                            strings.get("sql.check_lore_rule_near_duplicate").format(table_name=table_name),
-                            emb_str, session_id, space_id, NEAR_DUPLICATE_DISTANCE)
-                        if existing:
-                            self.logger.info(f"Skipping near-duplicate lore rule: {rule_text[:80]}")
-                    if not existing:
-                        await conn.execute(
-                            f"""
-                            INSERT INTO {table_name} (rule_text, rule_type, rule_embedding,
-                                                      embedding_space_id, status, session_id, scope)
-                            VALUES ($1, $2, $3::vector, $4, 'pending', $5, 'chat');
-                            """,
-                            rule_text, rule_type, emb_str, space_id, session_id
-                        )
+                    if emb is not None:
+                        space_id = await _space_id_for(self.embedding_engine, conn)
+                    # add_rule does the exact/near-duplicate checks itself
+                    # (brief A1a): it returns None when the rule restates one
+                    # this chat already holds.
+                    stored = await chat_rules.add_rule(
+                        conn, session_id=session_id, level=level,
+                        character_id=rule_char, rule_text=rule_text,
+                        rule_type=rule_type, status="pending", source="extracted",
+                        embedding=emb, space_id=space_id)
+                    if stored is None:
+                        self.logger.info(f"Skipping duplicate lore rule: {rule_text[:80]}")
             except Exception as e:
                 self.logger.error(f"Error persisting rule '{rule_text}': {e}")
                 
         self.logger.info(f"Successfully processed extraction for {character_id}")
 
-    async def extract_initial_rules(self, session_id: str, character_id: str, context_text: str, model: str = DEFAULT_CHAT_MODEL):
-        prompt = strings.get("rag.lore_extractor.initial_rules_prompt", context_text=context_text)
-        await self._execute_extraction(prompt, session_id, character_id, model)
+    async def extract_initial_rules(self, session_id: str, character_id: str, context_text: str,
+                                    model: str = DEFAULT_CHAT_MODEL,
+                                    characters=(), rooms=None, engine=None):
+        prompt = strings.get("rag.lore_extractor.initial_rules_prompt",
+                             context_text=context_text,
+                             characters=_name_list(characters),
+                             rooms=_room_list(rooms))
+        await self._execute_extraction(prompt, session_id, character_id, model,
+                                       characters=characters, rooms=rooms, engine=engine,
+                                       default_level="world")
 
-    async def periodic_review_rules(self, session_id: str, character_id: str, recent_messages: List[Dict], model: str = DEFAULT_CHAT_MODEL):
+    async def periodic_review_rules(self, session_id: str, character_id: str, recent_messages: List[Dict],
+                                    model: str = DEFAULT_CHAT_MODEL,
+                                    characters=(), rooms=None, engine=None):
         messages_str = "\n".join([f"{m.get('role', 'user')}: {m.get('content', '')}" for m in recent_messages])
-        prompt = strings.get("rag.lore_extractor.periodic_rules_prompt", recent_messages=messages_str)
-        await self._execute_extraction(prompt, session_id, character_id, model)
+        prompt = strings.get("rag.lore_extractor.periodic_rules_prompt",
+                             recent_messages=messages_str,
+                             characters=_name_list(characters),
+                             rooms=_room_list(rooms))
+        await self._execute_extraction(prompt, session_id, character_id, model,
+                                       characters=characters, rooms=rooms, engine=engine,
+                                       default_level="character_internal")
+
+
+def _name_list(characters) -> str:
+    names = [str(c) for c in (characters or ()) if c]
+    return ", ".join(names) if names else "none yet"
+
+
+def _room_list(rooms) -> str:
+    if not rooms:
+        return "none yet"
+    return ", ".join(f"{name or rid} ({rid})" for rid, name in rooms.items())

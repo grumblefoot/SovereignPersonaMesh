@@ -15,6 +15,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from config.hardware_tiers import HardwareConfig
+from proxy.backend_client.backend_profile import REPORTED_SOURCES
 
 logger = logging.getLogger(__name__)
 
@@ -54,15 +55,23 @@ def estimate_messages(messages: List[Dict[str, Any]], model: str = "") -> int:
     return total
 
 
-def context_window(settings: Dict[str, Any], hw_config: HardwareConfig) -> int:
-    """Window precedence (plan §1): explicit override > hardware tier. Backend
-    detection (BackendProfile) joins in P1; the tier fallback is the PRD value."""
+def context_window(settings: Dict[str, Any], hw_config: HardwareConfig,
+                   detected: Optional[int] = None, detected_source: str = "") -> int:
+    """Window precedence (plan review item 4): a manual override caps only a REPORTED
+    window (min); against a guess — LM Studio's just-in-time default or no detection at
+    all — the override wins; detected-only uses the detection; neither falls back to the
+    hardware tier (the PRD value)."""
     override = settings.get("context_window_override")
     try:
-        if override:
-            return int(override)
+        override = int(override) if override else None
     except (TypeError, ValueError):
-        pass
+        override = None
+    if override and detected and detected_source in REPORTED_SOURCES:
+        return min(override, int(detected))
+    if override:
+        return override
+    if detected:
+        return int(detected)
     return int(hw_config.max_context_tokens)
 
 
@@ -72,6 +81,8 @@ def clamp_max_tokens(
     hw_config: HardwareConfig,
     model: str = "",
     configured_ceiling: Optional[int] = None,
+    detected: Optional[int] = None,
+    detected_source: str = "",
 ) -> int:
     """P0: the max_tokens actually sent to the backend.
 
@@ -80,7 +91,7 @@ def clamp_max_tokens(
     warning logged — refusing the turn outright is the P1 allocator's job, once it
     can tell trimmable history from the untrimmable card.
     """
-    window = context_window(settings, hw_config)
+    window = context_window(settings, hw_config, detected=detected, detected_source=detected_source)
     margin = max(64, int(window * 0.05))
     prompt = estimate_messages(messages, model)
     room = window - prompt - margin
@@ -134,6 +145,8 @@ def allocate(
     lore: Dict[str, List[Dict[str, Any]]],
     history: List[Dict[str, str]],
     pinned_head: int = 0,
+    detected: Optional[int] = None,
+    detected_source: str = "",
 ):
     """Fit memories, lore and history into the window (plan §4). Returns
     (memories', lore', history', report).
@@ -149,7 +162,8 @@ def allocate(
     before any pair is dropped. The first `pinned_head` history messages (the
     scenario's opening: greeting and first exchange) are never dropped (QA N14).
     """
-    report = BudgetReport(window=context_window(settings, hw_config))
+    report = BudgetReport(window=context_window(settings, hw_config,
+                                                detected=detected, detected_source=detected_source))
     window_eff = report.window - max(64, int(report.window * 0.05))
     pct = lambda name: int(report.window * PARTITIONS_PCT[name] / 100)
 

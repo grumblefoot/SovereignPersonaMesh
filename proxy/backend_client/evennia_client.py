@@ -135,3 +135,41 @@ class EvenniaWorldClient:
         resp = await self.client.post(endpoint, json=payload, headers=headers)
         resp.raise_for_status()
         return resp.json()
+
+    async def add_room_rule(self, room_id: str, rule_text: str, session_id: str,
+                            rule_type: str = "invariant", status: str = "pending",
+                            source: str = "extracted", idempotency_key: Optional[str] = None,
+                            origin: str = "system", template_key: str = "") -> Dict[str, Any]:
+        """Attach a GM rule to a room (template_key="" asks the server to resolve it)."""
+        payload = {
+            "session_id": session_id,
+            "rule_text": rule_text,
+            "rule_type": rule_type,
+            "status": status,
+            "source": source,
+            "template_key": template_key,
+            "origin": origin,
+        }
+        if idempotency_key:
+            payload["idempotency_key"] = idempotency_key
+        resp = await self.client.post(f"{self.base_url}/world/rooms/{room_id}/rules", json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def update_room_rule(self, room_id: str, rule_id: str, session_id: str,
+                               template_key: str = "", **fields) -> Dict[str, Any]:
+        """Edit a room rule; pass rule_text / rule_type / status as keyword fields."""
+        payload = {"session_id": session_id, "template_key": template_key, **fields}
+        resp = await self.client.put(
+            f"{self.base_url}/world/rooms/{room_id}/rules/{rule_id}", json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def delete_room_rule(self, room_id: str, rule_id: str, session_id: str,
+                               template_key: str = "") -> Dict[str, Any]:
+        """Remove a room rule (a second delete of the same rule is a 404)."""
+        resp = await self.client.delete(
+            f"{self.base_url}/world/rooms/{room_id}/rules/{rule_id}",
+            params={"session_id": session_id, "template_key": template_key})
+        resp.raise_for_status()
+        return resp.json()
