@@ -43,7 +43,7 @@ def _is_local(url: str) -> bool:
 
 
 def configured_mode(settings: Dict[str, Any]) -> str:
-    raw = str(settings.get("reasoning_mode") or "auto").strip().lower()
+    raw = str(settings.get("reasoning_mode") or "none").strip().lower()
     return raw if raw in MODES + ("auto",) else "auto"
 
 

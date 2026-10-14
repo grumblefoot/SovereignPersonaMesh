@@ -101,6 +101,22 @@ _MOTION = re.compile(
 
 # Dialogue may run over several lines (review C3); an unpaired quote strips more narration,
 # which only loses a move (the safe direction).
+# Leaving says where someone WAS, not where they go: "I bow and open the door to leave his
+# office" moved the player INTO the office (tester session 2026-10-13, T5). A quote that
+# leaves and never arrives anywhere moves nobody.
+_LEAVING = re.compile(r"\b(?:leav(?:e|es|ing)|left|exit(?:s|ed|ing)?|depart\w*|out of|away from)\b")
+_ARRIVING = re.compile(
+    r"\b(?:enter\w*|into|inside|arriv\w*|reach\w*|towards?|"
+    r"(?:go|goes|going|went|head\w*|walk\w*|run|runs|ran|running|return\w*|step\w*|come|comes|came|"
+    r"coming|move\w*|lead\w*|led|follow\w*) (?:to|in|into|over|back|up|down|inside|for)|"
+    r"(?:leave|leaves|leaving|left|depart\w*) for|"
+    r"(?:make|makes|made|making) \w+ way)\b")
+
+
+def _departure_only(text: str) -> bool:
+    return bool(_LEAVING.search(text)) and not _ARRIVING.search(text)
+
+
 _QUOTED = re.compile(r'"[^"]{1,600}"|\u201c[^\u201d]{1,600}\u201d')
 
 
@@ -119,7 +135,7 @@ def grounded(actions: List[Dict[str, Any]], player_text: str, *texts: str) -> Li
     - A CREATE_ROOM stands if its own quote checks out or a kept MOVE goes into it."""
     hay = " ".join(_norm(_QUOTED.sub(" | ", t or "")) for t in (player_text, *texts))
     said = _norm(_QUOTED.sub(" | ", player_text or ""))
-    player_moves = bool(_MOTION.search(said))
+    player_moves = bool(_MOTION.search(said)) and not _departure_only(said)
     said_words = set(_words(said))
 
     def ok(a):
@@ -135,7 +151,7 @@ def grounded(actions: List[Dict[str, Any]], player_text: str, *texts: str) -> Li
             # The player's narration moves them AND names the place ("I go to the training
             # grounds" -> pe_grounds). "The key is back in the box" names no place (review C1).
             return True
-        if a.get("type") == "MOVE" and not _MOTION.search(ev):
+        if a.get("type") == "MOVE" and (not _MOTION.search(ev) or _departure_only(ev)):
             return False
         return len(ev.split()) >= 3 and ev in hay
 
@@ -207,6 +223,15 @@ def reuse_rooms(actions: List[Dict[str, Any]], rooms: List[Dict[str, str]]) -> L
     out = [a for i, a in enumerate(out) if a.get("type") != "MOVE" or last.get(a.get("entity")) == i]
     used = {a["room_id"] for a in out if a.get("type") == "MOVE"}
     return [a for a in out if a.get("type") != "CREATE_ROOM" or a.get("room_id") in used or a.get("room_id") in known]
+
+
+def drop_no_ops(actions: List[Dict[str, Any]], where: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Drop a MOVE into the room the entity is already in (tester session T6: the player was
+    'moved' into Class 1-A twice), and a new room nobody then moves into."""
+    out = [a for a in actions if not (a.get("type") == "MOVE" and a.get("entity") in where
+                                      and where[a["entity"]] == a.get("room_id"))]
+    used = {a.get("room_id") for a in out if a.get("type") == "MOVE"}
+    return [a for a in out if a.get("type") != "CREATE_ROOM" or a.get("room_id") in used]
 
 
 def parse(text: str) -> List[Dict[str, Any]]:

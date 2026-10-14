@@ -279,3 +279,23 @@ async def test_failed_probe_is_retried_soon_and_shared(monkeypatch):
     when, mode, ttl = reasoning._probe_cache[(c.base_url, "m")]
     assert mode == "none" and ttl == reasoning.PROBE_RETRY_S < reasoning.PROBE_TTL_S
     reasoning.reset_cache()
+
+
+def test_gm_grounded_leaving_a_place_moves_nobody_into_it():
+    """Tester session 2026-10-13 (T5): 'open the door to leave his office' moved the
+    player INTO the office."""
+    acts = [{"type": "MOVE", "entity": "user", "room_id": "principals_office",
+             "evidence": "I bow and open the door to leave his office"}]
+    assert gm_planner.grounded(acts, "I bow and open the door to leave his office", "He nods.") == []
+    went = [{"type": "MOVE", "entity": "user", "room_id": "training_grounds",
+             "evidence": "He left for the training grounds at dawn"}]
+    assert gm_planner.grounded(went, "", "He left for the training grounds at dawn.") == [
+        {"type": "MOVE", "entity": "user", "room_id": "training_grounds"}]
+
+
+def test_gm_drop_no_ops_skips_moves_into_the_current_room():
+    acts = [{"type": "CREATE_ROOM", "room_id": "class_1a"},
+            {"type": "MOVE", "entity": "user", "room_id": "class_1a"},
+            {"type": "MOVE", "entity": "mei", "room_id": "garden"}]
+    assert gm_planner.drop_no_ops(acts, {"user": "class_1a", "mei": "kitchen"}) == [
+        {"type": "MOVE", "entity": "mei", "room_id": "garden"}]

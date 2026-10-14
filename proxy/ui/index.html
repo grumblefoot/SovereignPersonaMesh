@@ -242,9 +242,9 @@
       <div class="form-group">
         <label>Private reasoning</label>
         <select id="cfg-reasoning-mode">
+          <option value="none">None: no hidden reasoning (recommended)</option>
           <option value="auto">Auto (detect the backend)</option>
           <option value="native">Native (the model's own thinking)</option>
-          <option value="none">None (no hidden reasoning)</option>
           <option value="prefill">Legacy text scratchpad</option>
         </select>
         <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;" id="reasoning-status">
@@ -563,7 +563,7 @@
         document.getElementById('cfg-use-alt').checked = data.use_alternate_extraction_model === 'true' || data.use_alternate_extraction_model === true;
         document.getElementById('cfg-alternate-model').value = data.alternate_extraction_model_name || 'google/gemma-4-26B-A4B-it';
         document.getElementById('cfg-gm-actions-mode').value = data.gm_actions_mode || 'full';
-        document.getElementById('cfg-reasoning-mode').value = data.reasoning_mode || 'auto';
+        document.getElementById('cfg-reasoning-mode').value = data.reasoning_mode || 'none';
         document.getElementById('cfg-reasoning-effort').value = data.reasoning_effort || 'low';
         document.getElementById('cfg-reasoning-max-tokens').value = data.reasoning_max_tokens ?? 3000;
         loadReasoningStatus();

@@ -75,11 +75,11 @@ _DEFAULT_VALUES: Dict[str, Any] = {
     "gm_actions_max_per_turn": 4,
     "gm_actions_max_rooms_per_session": 40,
     # ── Reasoning (native-reasoning spike, 2026-10-13; docs/plans/backend_matrix.md) ──
-    # auto | native | none | prefill. native: the server separates the model's own
+    # none (default) | auto | native | prefill. native: the server separates the model's own
     # thinking (reasoning field); none: no private block; prefill: the legacy text <think>
     # scratchpad with inline GM actions. auto probes the backend: native if it returns a
     # reasoning field, else none; a cloud URL resolves to none (thinking costs money).
-    "reasoning_mode": "auto",
+    "reasoning_mode": "none",          # replay + live test 2026-10-13: fastest, no leaks
     # low | medium | high: how much a native reasoner may think (reasoning_effort).
     "reasoning_effort": "low",
     # Extra completion tokens reserved for native thinking on top of the reply.
