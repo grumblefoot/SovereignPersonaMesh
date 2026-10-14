@@ -107,17 +107,20 @@ async def test_live_extraction_goal_and_physical(real_payload):
     clean_context = parse_sillytavern_context(real_payload)
     
     try:
-        await extractor.extract_initial_rules("test_session", "arvenia", clean_context, model="google/gemma-4-26B-A4B-it")
+        with patch('proxy.rag.lore_extractor._space_id_for', new_callable=AsyncMock, return_value=None):
+            await extractor.extract_initial_rules("test_session", "arvenia", clean_context, model="google/gemma-4-26B-A4B-it")
     except Exception as e:
         pytest.fail(f"Live LLM call failed. Is the local model running? Error: {e}")
         
-    # Check what was sent to conn_mock.execute during the INSERT
-    insert_calls = [c for c in conn_mock.execute.call_args_list if "INSERT INTO csa_lore_rules_arvenia" in c[0][0]]
+    # Check what was sent to conn_mock.fetchval during the INSERT (brief B1:
+    # rules now land in spm_chat_rules, not csa_lore_rules_arvenia)
+    insert_calls = [c for c in conn_mock.fetchval.call_args_list if "INSERT INTO spm_chat_rules" in c[0][0]]
     
     assert len(insert_calls) > 0, "No rules were extracted by the live LLM"
-    
+
     # Combine all rules into one text corpus to search for key words
-    all_rules_text = " ".join([c[0][1] for c in insert_calls]).lower()
+    # add_rule INSERT binds (sql, session, level, character_id, rule_text, ...)
+    all_rules_text = " ".join([c[0][4] for c in insert_calls]).lower()
     
     # Verify the LLM found the goals and/or physical traits
     assert "soul" in all_rules_text or "heirloom" in all_rules_text, "LLM failed to extract goal (soul/heirloom)"

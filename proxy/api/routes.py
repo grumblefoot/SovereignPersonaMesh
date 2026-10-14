@@ -1383,23 +1383,44 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
     # Initial extraction on the session's first turn as SPM sees it (a branch carries
     # history, so 'one user message' missed it); periodic review otherwise.
     first_turn = is_new_session if is_new_session is not None else user_msg_count <= 1
-    if first_turn:
-        extraction = extractor.extract_initial_rules(session_id, target_char, "\n".join(f"{m['role']}: {m.get('content', '')}" for m in full_turn_history), model=ext_model)
 
-        async def _initial():
-            await extraction
+    async def _run_extraction():
+        # Brief B1: rules are stored per level, so the extractor needs the world —
+        # which characters are in this chat, and which rooms exist.
+        characters, rooms = (target_char,), None
+        try:
+            snap = await evennia_client.get_snapshot(session_id=session_id, template_key="")
+            rooms = {r["room_id"]: r.get("name") or r["room_id"] for r in snap.get("rooms", [])}
+            seen = []
+            for o in snap.get("occupants", []):
+                eid = o.get("entity_id")
+                if eid and eid.lower() != "user" and eid not in seen:
+                    seen.append(eid)
+            if seen:
+                characters = tuple(seen)
+        except Exception as e:
+            logger.warning(f"[lore] snapshot failed for {session_id}: {e}; extracting with turn character only")
+        if first_turn:
+            await extractor.extract_initial_rules(
+                session_id, target_char,
+                "\n".join(f"{m['role']}: {m.get('content', '')}" for m in full_turn_history),
+                model=ext_model, characters=characters, rooms=rooms, engine=evennia_client)
             await _mark_initial_lore_done(session_id)   # not reached if cancelled: re-runs next turn
-        task = asyncio.create_task(_initial())
+        else:
+            recent = full_turn_history[-(cadence * 2):]
+            await extractor.periodic_review_rules(
+                session_id, target_char, recent, model=ext_model,
+                characters=characters, rooms=rooms, engine=evennia_client)
+
+    if first_turn:
+        task = asyncio.create_task(_run_extraction())
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
         task.add_done_callback(_log_task_done)
     elif user_msg_count > 1 and ((user_msg_count - 1) % cadence == 0
                                  or session_id in _lore_review_pending):
         _lore_review_pending.discard(session_id)
-        recent = full_turn_history[-(cadence * 2):]
-        task = asyncio.create_task(
-            extractor.periodic_review_rules(session_id, target_char, recent, model=ext_model)
-        )
+        task = asyncio.create_task(_run_extraction())
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
         task.add_done_callback(_log_task_done)

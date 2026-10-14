@@ -28,6 +28,14 @@ def clean_background_tasks():
     _background_tasks.clear()
 
 
+@pytest.fixture(autouse=True)
+def fake_evennia_world():
+    """Brief B1: dispatch reads the world snapshot inside the background task before
+    extracting; stub the client (empty world) for the duration of each test."""
+    with patch('proxy.api.routes.evennia_client', _fake_evennia()):
+        yield
+
+
 @pytest.fixture
 def mock_db_pool():
     """Create a mock db_pool for testing."""
@@ -57,6 +65,20 @@ def _make_messages(user_count=1, include_system=True):
     for i in range(user_count):
         msgs.append(ChatCompletionMessage(role="user", content=f"User message {i+1}"))
     return msgs
+
+
+def _fake_evennia():
+    """Brief B1: dispatch fetches the world snapshot before extracting; stub it empty."""
+    ev = MagicMock()
+    ev.get_snapshot = AsyncMock(return_value={"rooms": [], "occupants": []})
+    return ev
+
+
+async def _drain_background():
+    """Brief B1: extraction now happens inside the background task, so tests must
+    let the dispatched tasks run before asserting on the extractor mocks."""
+    while _background_tasks:
+        await asyncio.gather(*list(_background_tasks), return_exceptions=True)
 
 
 # ============================================================
@@ -101,6 +123,7 @@ class TestDispatchInitialExtraction:
                 mock_worker_cls.return_value = mock_extractor
 
                 _dispatch_lore_extraction(req, "s1", "char", "thoughts", "response")
+                await _drain_background()
 
                 # LoreExtractionWorker must be instantiated
                 assert mock_worker_cls.call_count == 1
@@ -131,6 +154,7 @@ class TestDispatchInitialExtraction:
                     "I should greet the user.",
                     "Hello there, traveler!"
                 )
+                await _drain_background()
 
                 # Get the context string passed to extract_initial_rules
                 call_args = mock_extractor.extract_initial_rules.call_args
@@ -189,6 +213,7 @@ class TestDispatchPeriodicExtraction:
                 mock_worker_cls.return_value = mock_extractor
 
                 _dispatch_lore_extraction(req, "s1", "char", "t", "r")
+                await _drain_background()
 
                 assert mock_worker_cls.call_count == 1
                 assert mock_extractor.periodic_review_rules.called
@@ -234,6 +259,7 @@ class TestDispatchPeriodicExtraction:
                 mock_worker_cls.return_value = mock_extractor
 
                 _dispatch_lore_extraction(req, "s1", "char", "t", "r")
+                await _drain_background()
 
                 # recent = last cadence*2 = 6 messages
                 # But we only have 4 messages total + 1 assistant = 5
@@ -266,6 +292,7 @@ class TestDispatchModelSelection:
                 mock_worker_cls.return_value = mock_extractor
 
                 _dispatch_lore_extraction(req, "s1", "char", "t", "r")
+                await _drain_background()
 
                 # ext_model should be "alt-model-v2"
                 call_args = mock_extractor.extract_initial_rules.call_args
@@ -289,6 +316,7 @@ class TestDispatchModelSelection:
                 mock_worker_cls.return_value = mock_extractor
 
                 _dispatch_lore_extraction(req, "s1", "char", "t", "r")
+                await _drain_background()
 
                 call_args = mock_extractor.extract_initial_rules.call_args
                 assert call_args.kwargs['model'] == "main-model"
@@ -318,6 +346,7 @@ class TestDispatchAssistantTurnFormat:
                     "I need to think about this carefully.",
                     "Welcome to the tavern!"
                 )
+                await _drain_background()
 
                 call_args = mock_extractor.extract_initial_rules.call_args
                 context_text = call_args[0][2]
@@ -352,6 +381,7 @@ class TestDispatchPrefiltering:
                 mock_worker_cls.return_value = mock_extractor
 
                 _dispatch_lore_extraction(req, "s1", "char", "t", "r")
+                await _drain_background()
 
                 # Should trigger initial (1 user msg, stubs filtered)
                 assert mock_extractor.extract_initial_rules.called
