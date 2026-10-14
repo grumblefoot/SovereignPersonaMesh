@@ -17,9 +17,10 @@ Both paths apply the exponential time decay and importance scoring.
 import math
 import logging
 import asyncpg
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Sequence
 from core.resource_manager import strings
 from core.identifiers import safe_char_id
+from proxy.rag import chat_rules
 
 logger = logging.getLogger(__name__)
 
@@ -203,57 +204,36 @@ class EpisodicRAGRetriever:
         max_cosine_distance: float = 0.35,
         embedding_space_id: Optional[int] = None,
         session_id: str = "default_session",
+        co_present: Sequence[str] = (),
+        room_rules: Sequence[dict] = (),
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Retrieves active lore rules for a character, scoped per chat (OPEN-007):
-        this session's rules plus the character's canon (scope='global'). Returns
-        all 'invariant' rules, and 'conditional_trigger'/'game_over' rules that match
-        the query embedding within the active space. Trigger matching stays vector-only:
-        without a query embedding (provider 'none' or an outage) the invariants still
-        apply and triggers are skipped.
+        Retrieves the active rules that apply to this character this turn (brief A1):
+        the chat's ``spm_chat_rules`` rows the character is in the audience of
+        (world, its own internal/external, external rules of characters in its room —
+        see proxy.rag.chat_rules.rules_for_turn), plus the rules of the room the
+        character is standing in, which the caller passes in from the world engine
+        snapshot. Only ``active`` rules, only this chat.
+
+        Invariants never depend on vectors; ``conditional_trigger``/``game_over``
+        rules match only when a ``query_embedding`` is given and land within
+        ``max_cosine_distance`` in the active space.
         """
-        table_name = f"csa_lore_rules_{safe_char_id(character_id)}"
         async with self.db_pool.acquire() as conn:
-            # Ensure table exists (create if missing)
-            await conn.execute("SELECT create_csa_lore_rules_table($1);", safe_char_id(character_id))
+            result = await chat_rules.rules_for_turn(
+                conn, session_id=session_id, character_id=character_id,
+                co_present=co_present, query_embedding=query_embedding,
+                space_id=embedding_space_id, max_cosine_distance=max_cosine_distance)
 
-            # Fetch Invariants (never depend on vectors)
-            invariants_query = (f"SELECT id, rule_text, rule_type FROM {table_name} "
-                                f"WHERE rule_type = 'invariant' AND status = 'active' "
-                                f"AND (session_id = $1 OR scope = 'global');")
-            invariant_records = await conn.fetch(invariants_query, session_id)
-
-            trigger_records = []
-            if query_embedding is not None:
-                embedding_str = "[" + ",".join(map(str, query_embedding)) + "]"
-                # Same space filter + OFFSET 0 fence as memory recall.
-                triggers_query = f"""
-                    SELECT id, rule_text, rule_type,
-                           (rule_embedding <=> $1::vector) AS cosine_distance
-                    FROM (
-                        SELECT id, rule_text, rule_type, rule_embedding
-                        FROM {table_name}
-                        WHERE rule_type IN ('conditional_trigger', 'game_over')
-                          AND rule_embedding IS NOT NULL
-                          AND embedding_space_id IS NOT DISTINCT FROM $3
-                          AND status = 'active'
-                          AND (session_id = $4 OR scope = 'global')
-                        OFFSET 0
-                    ) candidates
-                    WHERE (rule_embedding <=> $1::vector) < $2
-                    ORDER BY cosine_distance ASC;
-                """
-                trigger_records = await conn.fetch(
-                    triggers_query, embedding_str, max_cosine_distance, embedding_space_id,
-                    session_id
-                )
-            else:
-                logger.info(
-                    f"[RAGRetriever] No query embedding: lore triggers skipped for {character_id} "
-                    f"(invariants still apply)."
-                )
-
-            return {
-                "invariants": [dict(r) for r in invariant_records],
-                "triggers": [dict(r) for r in trigger_records]
-            }
+        # Room rules come from the engine snapshot, not the table: they carry no
+        # embeddings, so they skip vector matching entirely — active ones apply
+        # verbatim. Only ROOM_RULES_PER_TURN of them land in a turn, invariants
+        # first so a cap cut never drops the always-true rules.
+        active = [r for r in room_rules if r.get("status") == "active"]
+        active.sort(key=lambda r: 0 if r.get("rule_type") == "invariant" else 1)
+        for room_rule in active[:chat_rules.ROOM_RULES_PER_TURN]:
+            shaped = {"id": room_rule.get("id"), "rule_text": room_rule.get("rule_text"),
+                      "rule_type": room_rule.get("rule_type"), "level": "location"}
+            bucket = "invariants" if shaped["rule_type"] == "invariant" else "triggers"
+            result[bucket].append(shaped)
+        return result

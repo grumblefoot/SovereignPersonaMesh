@@ -713,6 +713,23 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # RAG Lore Retrieval
     retrieved_lore = {"invariants": [], "triggers": []}
     if _db_pool and user_text:
+        # Brief A1: the room the target is standing in supplies its co-present
+        # characters (whose external rules the target sees) and the room's own
+        # rules. If the snapshot fails or the target has no room, pass nothing:
+        # the chat's world and own-character rules still apply.
+        co_present, room_rules = [], []
+        try:
+            snap = await evennia_client.get_snapshot(session_id=session_id, template_key="")
+            own_room = next(
+                (r for r in snap.get("rooms", [])
+                 if target_char in [c.lower() for c in r.get("present_characters", [])]),
+                None)
+            if own_room is not None:
+                co_present = [c for c in own_room.get("present_characters", [])
+                              if c.lower() not in ("user", target_char)]
+                room_rules = own_room.get("rules", []) or []
+        except Exception as e:
+            logger.warning(f"[SPMProxy] World snapshot unavailable for lore scope: {e}")
         try:
             retrieved_lore = await retriever.retrieve_lore_rules(
                 character_id=target_char,
@@ -720,6 +737,8 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                 max_cosine_distance=_embed_threshold(settings),
                 embedding_space_id=query_space_id,
                 session_id=session_id,
+                co_present=co_present,
+                room_rules=room_rules,
             )
         except Exception as e:
             logger.warning(f"[SPMProxy] Lore retrieval skipped: {e}")

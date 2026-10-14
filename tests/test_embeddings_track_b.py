@@ -485,6 +485,7 @@ def test_fulltext_fallback_finds_row_in_right_session_only():
 
 
 def test_lore_invariants_survive_without_vectors_and_triggers_respect_space():
+    from proxy.rag import chat_rules
     from proxy.rag.retriever import EpisodicRAGRetriever
 
     async def _test():
@@ -493,19 +494,23 @@ def test_lore_invariants_survive_without_vectors_and_triggers_respect_space():
         try:
             retriever = EpisodicRAGRetriever(pool)
             async with pool.acquire() as conn:
-                await conn.execute("SELECT create_csa_lore_rules_table('loretest');")
+                await conn.execute(
+                    "DELETE FROM spm_chat_rules WHERE session_id = 'default_session';")
                 space_id = await service.ensure_space(conn)
                 trig_vec = await service.generate_embedding("the cursed sword awakens")
-                # Lore is chat-scoped since B2 (OPEN-007): seed into the session
-                # the retrieval below uses (its default, 'default_session').
-                await conn.execute(
-                    "INSERT INTO csa_lore_rules_loretest (rule_text, rule_type, status, session_id) "
-                    "VALUES ('Luna never lies', 'invariant', 'active', 'default_session');")
-                await conn.execute(
-                    "INSERT INTO csa_lore_rules_loretest (rule_text, rule_type, status, "
-                    "rule_embedding, embedding_space_id, session_id) VALUES "
-                    "('Game over if the cursed sword awakens', 'game_over', 'active', $1::vector, $2, 'default_session');",
-                    _vec_str(trig_vec), space_id)
+                # Lore is chat-scoped (OPEN-007) and lives in spm_chat_rules
+                # since brief A1: seed into the session retrieval uses (its
+                # default, 'default_session').
+                await chat_rules.add_rule(
+                    conn, session_id="default_session", level="character_internal",
+                    character_id="loretest", rule_text="Luna never lies",
+                    rule_type="invariant", status="active")
+                await chat_rules.add_rule(
+                    conn, session_id="default_session", level="character_internal",
+                    character_id="loretest",
+                    rule_text="Game over if the cursed sword awakens",
+                    rule_type="game_over", status="active",
+                    embedding=trig_vec, space_id=space_id)
 
             # Degraded mode: invariants still apply, trigger matching is skipped.
             res = await retriever.retrieve_lore_rules("loretest", None)
@@ -524,7 +529,8 @@ def test_lore_invariants_survive_without_vectors_and_triggers_respect_space():
             assert len(res["invariants"]) == 1
         finally:
             async with pool.acquire() as conn:
-                await conn.execute("DROP TABLE IF EXISTS csa_lore_rules_loretest;")
+                await conn.execute(
+                    "DELETE FROM spm_chat_rules WHERE session_id = 'default_session';")
             await pool.close()
 
     asyncio.run(_test())

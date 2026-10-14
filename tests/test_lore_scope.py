@@ -1,8 +1,12 @@
 """OPEN-007 / Part B2 acceptance: lore rules are scoped per chat.
 
 Real spm_test database: a rule approved in chat A is never injected in chat B;
-a promoted (canon) rule appears in both; deleting a session removes its
+a world rule covers every character in its chat; deleting a session removes its
 chat-scoped rules and keeps canon.
+
+Brief A1b: the RETRIEVAL tests read spm_chat_rules (retrieve_lore_rules no
+longer touches csa_lore_rules_*). The old-table tests around the promote/delete
+endpoints stay — those endpoints move to the new table in brief B1.
 """
 import uuid
 from contextlib import asynccontextmanager
@@ -10,25 +14,34 @@ from contextlib import asynccontextmanager
 import asyncpg
 import pytest
 
+from proxy.rag import chat_rules
 from proxy.rag.retriever import EpisodicRAGRetriever
 from tests._testdb import TEST_DB_CONFIG
 
 CHAR = "scopetester"
 TABLE = f"csa_lore_rules_{CHAR}"
+LORE_SESSIONS = ("st_chat_A", "st_chat_B", "st_chat_OTHER")
 
 
 @asynccontextmanager
 async def scoped_pool():
     """Per-test pool on THIS test's event loop (the session db_pool fixture lives
-    on another loop); the table is cleaned on the way in and out."""
+    on another loop); the tables are cleaned on the way in and out."""
     pool = await asyncpg.create_pool(**TEST_DB_CONFIG)
+
+    async def _clean(conn):
+        await conn.execute(f"DELETE FROM {TABLE};")
+        await conn.execute(
+            "DELETE FROM spm_chat_rules WHERE session_id = ANY($1::text[]);",
+            list(LORE_SESSIONS))
+
     try:
         async with pool.acquire() as conn:
             await conn.execute("SELECT create_csa_lore_rules_table($1);", CHAR)
-            await conn.execute(f"DELETE FROM {TABLE};")
+            await _clean(conn)
         yield pool
         async with pool.acquire() as conn:
-            await conn.execute(f"DELETE FROM {TABLE};")
+            await _clean(conn)
     finally:
         await pool.close()
 
@@ -46,7 +59,10 @@ async def _seed_rule(conn, text, session_id, scope="chat", status="active"):
 async def test_chat_scoped_rule_stays_in_its_chat():
     async with scoped_pool() as pool:
         async with pool.acquire() as conn:
-            await _seed_rule(conn, "In chat A the dragon is friendly.", "st_chat_A")
+            await chat_rules.add_rule(conn, session_id="st_chat_A", level="world",
+                                      character_id=None,
+                                      rule_text="In chat A the dragon is friendly.",
+                                      rule_type="invariant", status="active")
         retriever = EpisodicRAGRetriever(pool)
         in_a = await retriever.retrieve_lore_rules(CHAR, None, session_id="st_chat_A")
         in_b = await retriever.retrieve_lore_rules(CHAR, None, session_id="st_chat_B")
@@ -55,15 +71,23 @@ async def test_chat_scoped_rule_stays_in_its_chat():
 
 
 @pytest.mark.asyncio
-async def test_canon_rule_appears_in_every_chat():
+async def test_world_rule_covers_every_character_in_its_chat():
+    """Old brief: a promoted (canon) rule appeared in every chat. Brief A1 moved
+    rules to spm_chat_rules, which is chat-scoped: the level that covers everyone
+    is 'world', and it covers every character of ITS chat — never another chat."""
     async with scoped_pool() as pool:
         async with pool.acquire() as conn:
-            await _seed_rule(conn, "The dragon hoards memories, not gold.", "canon", scope="global")
+            await chat_rules.add_rule(conn, session_id="st_chat_A", level="world",
+                                      character_id=None,
+                                      rule_text="The dragon hoards memories, not gold.",
+                                      rule_type="invariant", status="active")
         retriever = EpisodicRAGRetriever(pool)
-        for sid in ("st_chat_A", "st_chat_B"):
-            res = await retriever.retrieve_lore_rules(CHAR, None, session_id=sid)
+        for who in (CHAR, "lian"):
+            res = await retriever.retrieve_lore_rules(who, None, session_id="st_chat_A")
             assert [r["rule_text"] for r in res["invariants"]] == [
                 "The dragon hoards memories, not gold."]
+        other = await retriever.retrieve_lore_rules(CHAR, None, session_id="st_chat_B")
+        assert other["invariants"] == []
 
 
 @pytest.mark.asyncio
@@ -78,9 +102,13 @@ async def test_promote_endpoint_makes_rule_canon():
             # loop than this test's pool (the leak rig has its own loop for that).
             resp = await admin.promote_lore(CHAR, rid)
             assert resp.status_code == 200, resp.body
-            retriever = EpisodicRAGRetriever(pool)
-            res = await retriever.retrieve_lore_rules(CHAR, None, session_id="st_chat_OTHER")
-            assert [r["rule_text"] for r in res["invariants"]] == ["Promoted truth."]
+            async with pool.acquire() as conn:
+                scope = await conn.fetchval(
+                    f"SELECT scope FROM {TABLE} WHERE id = $1", uuid.UUID(rid))
+            assert scope == "global"
+            # Retrieval no longer reads this table (brief A1b): retrieval from
+            # spm_chat_rules is covered in tests/test_chat_rules.py, and this
+            # endpoint moves to the new table in brief B1.
         finally:
             admin.set_admin_db_pool(None)
 

@@ -1,7 +1,10 @@
 """Brief A1a: the spm_chat_rules store (proxy/rag/chat_rules.py) and migration 007.
 
+Brief A1b adds the retrieval acceptance through
+RAGRetriever.retrieve_lore_rules (audience, room rules, cap).
 Real test database (tests/_testdb.py); each test cleans the rows it inserts.
 """
+import asyncio
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,6 +13,7 @@ import asyncpg
 import pytest
 
 from proxy.rag import chat_rules
+from proxy.rag.retriever import EpisodicRAGRetriever
 from tests._testdb import TEST_DB_CONFIG
 
 MIGRATION_007 = (Path(__file__).resolve().parent.parent
@@ -389,3 +393,174 @@ async def test_migration_007_copies_chat_rows_skips_canon_and_legacy():
             assert len(rows2) == 3
         finally:
             await conn.execute(f"DROP TABLE IF EXISTS {table};")
+
+
+# --- brief A1b: retrieval through RAGRetriever.retrieve_lore_rules -----------
+
+@asynccontextmanager
+async def pool_ctx():
+    """Per-test pool on THIS test's event loop; spm_chat_rules cleaned in/out."""
+    pool = await asyncpg.create_pool(**TEST_DB_CONFIG)
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM spm_chat_rules;")
+        yield pool
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM spm_chat_rules;")
+    finally:
+        await pool.close()
+
+
+def _texts(res, bucket="invariants"):
+    return {r["rule_text"] for r in res[bucket]}
+
+
+async def test_retrieve_lore_rules_audience_and_chat_isolation():
+    async with pool_ctx() as pool:
+        async with pool.acquire() as conn:
+            seed = [
+                ("world", None, "Shared world truth.", "active"),
+                ("character_internal", "mei", "Mei's secret.", "active"),
+                ("character_external", "mei", "Mei glows.", "active"),
+                ("character_internal", "lian", "Lian's secret.", "active"),
+                ("world", None, "Not approved yet.", "pending"),
+            ]
+            for level, char, text, status in seed:
+                await chat_rules.add_rule(conn, session_id="S", level=level,
+                                          character_id=char, rule_text=text,
+                                          rule_type="invariant", status=status)
+            await chat_rules.add_rule(conn, session_id="T", level="world",
+                                      character_id=None, rule_text="Other chat truth.",
+                                      rule_type="invariant", status="active")
+        retriever = EpisodicRAGRetriever(pool)
+
+        mei = await retriever.retrieve_lore_rules("mei", None, session_id="S")
+        assert _texts(mei) == {"Shared world truth.", "Mei's secret.", "Mei glows."}
+
+        lian = await retriever.retrieve_lore_rules("lian", None, session_id="S")
+        assert _texts(lian) == {"Shared world truth.", "Lian's secret."}
+
+        # Mei's external rule reaches Lian only when they share a room.
+        lian_with = await retriever.retrieve_lore_rules(
+            "lian", None, session_id="S", co_present=["mei"])
+        assert _texts(lian_with) == {"Shared world truth.", "Lian's secret.", "Mei glows."}
+        assert "Mei's secret." not in _texts(lian_with)   # internals never share
+
+        # Pending reaches nobody; chat T gets nothing from chat S.
+        assert "Not approved yet." not in _texts(mei)
+        in_t = await retriever.retrieve_lore_rules("mei", None, session_id="T")
+        assert _texts(in_t) == {"Other chat truth."}
+
+
+async def test_retrieve_lore_rules_room_rules_active_only_and_types():
+    room = [
+        {"id": "a1", "rule_text": "The castle is always dark.",
+         "rule_type": "invariant", "status": "active"},
+        {"id": "p1", "rule_text": "Pending room rule.",
+         "rule_type": "invariant", "status": "pending"},
+        {"id": "g1", "rule_text": "The keep falls at dawn.",
+         "rule_type": "game_over", "status": "active"},
+    ]
+    async with pool_ctx() as pool:
+        retriever = EpisodicRAGRetriever(pool)
+        # Room rules carry no embeddings: the game_over lands in triggers even
+        # for a turn with NO query embedding, and pending never lands.
+        res = await retriever.retrieve_lore_rules("mei", None, session_id="S",
+                                                  room_rules=room)
+        assert _texts(res) == {"The castle is always dark."}
+        assert [r["rule_text"] for r in res["triggers"]] == ["The keep falls at dawn."]
+        for r in res["invariants"] + res["triggers"]:
+            assert r["level"] == "location"
+
+
+async def test_retrieve_lore_rules_room_rules_capped_invariants_first():
+    room = ([{"id": f"i{n}", "rule_text": f"Room invariant {n}.",
+              "rule_type": "invariant", "status": "active"} for n in range(3)]
+            + [{"id": f"t{n}", "rule_text": f"Room trigger {n}.",
+                "rule_type": "conditional_trigger", "status": "active"} for n in range(4)])
+    async with pool_ctx() as pool:
+        retriever = EpisodicRAGRetriever(pool)
+        res = await retriever.retrieve_lore_rules("mei", None, session_id="S",
+                                                  room_rules=room)
+        # Cap at ROOM_RULES_PER_TURN with invariants first: every invariant
+        # survives, so the cut falls on the triggers.
+        assert len(res["invariants"]) == 3
+        assert len(res["invariants"]) + len(res["triggers"]) == chat_rules.ROOM_RULES_PER_TURN
+
+
+# --- brief A1b: a route turn survives a failing engine snapshot ---------------
+
+def _seed_world_rule_sync(session_id: str, text: str) -> None:
+    async def seed():
+        conn = await asyncpg.connect(**TEST_DB_CONFIG)
+        try:
+            await chat_rules.add_rule(conn, session_id=session_id, level="world",
+                                      character_id=None, rule_text=text,
+                                      rule_type="invariant", status="active")
+        finally:
+            await conn.close()
+    asyncio.run(seed())
+
+
+def _drop_session_rules_sync(session_id: str) -> None:
+    async def drop():
+        conn = await asyncpg.connect(**TEST_DB_CONFIG)
+        try:
+            await conn.execute("DELETE FROM spm_chat_rules WHERE session_id = $1",
+                               session_id)
+        finally:
+            await conn.close()
+    asyncio.run(drop())
+
+
+def test_route_turn_survives_snapshot_failure_and_keeps_world_rules(monkeypatch):
+    """get_snapshot raises: the turn still completes and the chat's world rule
+    still reaches the prompt (world/own rules never depend on the engine)."""
+    import httpx
+    from starlette.testclient import TestClient
+
+    import evennia_world.app as world_app
+    import proxy.api.routes as routes
+    from proxy.main import app as proxy_app
+    from tests.test_gating_leaks import Rig, sysmsgs
+
+    monkeypatch.setenv("SPM_WORLD_DB", "0")
+    st = world_app.app_state
+    st._db_pool = None
+    st.current_world = {}
+    st.session_worlds = {}
+    st.session_ticks = {}
+    st.session_turn_ticks = {}
+    st.idempotency_seen = {}
+    st.session_edges = {}
+    st.mutation_log = {}
+
+    prompts = []
+
+    async def fake_stream(*args, **kwargs):
+        prompts.append([dict(m) for m in kwargs.get("messages", [])])
+        yield "<think>plan</think>"
+        yield "A measured reply."
+
+    monkeypatch.setattr(routes.lemonade_client, "generate_stream", fake_stream)
+    monkeypatch.setattr(routes, "_dispatch_lore_extraction", lambda *a, **k: None)
+
+    async def snapshot_boom(*args, **kwargs):
+        raise RuntimeError("engine down")
+    monkeypatch.setattr(routes.evennia_client, "get_snapshot", snapshot_boom)
+
+    routes.evennia_client.base_url = "http://world.test/api/v1"
+    routes.evennia_client._client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=world_app.app), base_url="http://world.test")
+
+    marker = "The bear remembers every visitor."
+    with TestClient(proxy_app) as client:
+        rig = Rig(client, None, prompts)
+        _seed_world_rule_sync(rig.session_id, marker)
+        try:
+            r = rig.turn(sysmsgs() + [{"role": "user", "content": '"Hello there."'}])
+            assert r.status_code == 200
+            assert len(prompts) >= 1, "turn never reached the LLM"
+            assert marker in rig.prompt_text(-1)
+        finally:
+            _drop_session_rules_sync(rig.session_id)
