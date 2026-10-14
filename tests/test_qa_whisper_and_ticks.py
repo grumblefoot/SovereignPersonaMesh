@@ -56,3 +56,28 @@ async def test_new_turn_ticks_are_persisted(monkeypatch):
     await asyncio.sleep(0.01)
     assert (tick, advanced, again, advanced2) == (1, True, 1, False)
     assert [a for _, a in writes] == [("sess_t", "sess_t:1", 1)]
+
+
+@pytest.mark.asyncio
+async def test_q16_configure_persists_every_seeded_room(monkeypatch):
+    """QA Q16: a freshly seeded world must be saved at configure time, or an engine restart
+    before the first GM change leaves the chat with no world (and ungated turns)."""
+    import evennia_world.app as world_app
+    from evennia_world.app import WorldConfigPayload, PlacementPayload as SeedPlacement
+    persisted = []
+
+    async def fake_persist(session_id, template_key, room_id, room):
+        persisted.append((session_id, template_key, room_id, list(room.present_characters)))
+
+    monkeypatch.setattr(world_app, "_persist_room", fake_persist)
+    monkeypatch.setattr(world_app.app_state, "session_worlds", {})
+    monkeypatch.setattr(world_app.app_state, "current_world", {})
+    res = await world_app.configure_world(WorldConfigPayload(
+        template_key="generic_void", session_id="sess_q16",
+        placements=[SeedPlacement(character_id="user", room_id="central_nexus"),
+                    SeedPlacement(character_id="seraphina", room_id="central_nexus")]))
+    assert res.success
+    rooms = {r for _, _, r, _ in persisted}
+    assert "central_nexus" in rooms and len(rooms) == len(world_app.app_state.session_worlds["sess_q16"]["generic_void"])
+    occupants = {r: c for _, _, r, c in persisted}
+    assert sorted(occupants["central_nexus"]) == ["seraphina", "user"]

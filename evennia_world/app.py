@@ -772,6 +772,12 @@ async def configure_world(payload: WorldConfigPayload):
         placed_anywhere.add(pl.character_id.lower())
         _log_mutation(session_id_for_config, "PLACE", payload.origin, {"character_id": pl.character_id, "room_id": pl.room_id})
 
+    # QA Q16 (2026-10-13): a seeded world used to live only in memory until a GM change
+    # touched a room, so an engine restart before then emptied the chat's world and every
+    # later turn ran ungated. Persist every room (and its occupants) at configure time.
+    for room_id, room in world_now.items():
+        await _persist_room(session_id_for_config, payload.template_key, room_id, room)
+
     return CharacterResponse(
         success=True,
         message=f"World loaded: template '{payload.template_key}'" + (f" with {len(payload.placements)} placement(s)" if payload.placements else ""),

@@ -522,7 +522,13 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     # branch (or a chat that predates SPM) arrives carrying many user messages and was
     # never seeded, so nobody was placed (QA step A4, 2026-10-05). Ephemeral turns
     # (quiet/impersonate) never seed: they write nothing.
-    if is_new_session and not ephemeral:
+    # QA Q16: a chat with history whose world the engine no longer has (lost in a restart
+    # before it was ever persisted) used to run ungated forever. Seed it again.
+    world_lost = (not is_new_session and not ephemeral and await _world_is_empty(session_id))
+    if world_lost:
+        logger.warning(f"[SPMProxy] World for {session_id} is missing in the engine although the "
+                       f"chat has history; seeding it again (turns since the loss ran ungated).")
+    if (is_new_session or world_lost) and not ephemeral:
         try:
             seed = propose_world_seed(
                 "\n".join(m.content for m in request.messages if m.role == "system" and m.content),
@@ -1668,6 +1674,16 @@ async def _sync_narrator_with_player(session_id: str, target_char: str, key_suff
         logger.info(f"[SPMProxy] Narrator {target_char} follows the player into '{user_room}'.")
     except Exception as e:
         logger.warning(f"[SPMProxy] Narrator sync failed for {target_char}: {e}")
+
+
+async def _world_is_empty(session_id: str) -> bool:
+    """True when the engine answers but has no rooms for this session (QA Q16). An engine
+    that is down is not 'empty': that case is OPEN-010's ungated fallback."""
+    try:
+        snap = await evennia_client.get_snapshot(session_id=session_id, template_key="")
+    except Exception:
+        return False
+    return not snap.get("rooms")
 
 
 async def _ensure_target_placed(session_id: str, target_char: str, turn_id: str) -> None:
