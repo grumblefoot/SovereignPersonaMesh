@@ -41,7 +41,9 @@ P3_BATCH = 3
 # Queued with lore, FIFO: they never supersede the session's real turn (a P0 for the same
 # session would cancel it as a "regenerate") and never preempt SPM's lore jobs (QA N12,
 # 2026-10-12). A real chat turn may still preempt them.
-KIND_PRIORITY = {"chat": P0_CHAT, "embed": P1_EMBED, "lore": P2_LORE, "utility": P2_LORE,
+# "gm": the separate GM channel's small call after a reply. It must finish before the next
+# turn reads the world, so it is never preempted (P1, like embeddings) and never supersedes.
+KIND_PRIORITY = {"chat": P0_CHAT, "embed": P1_EMBED, "gm": P1_EMBED, "lore": P2_LORE, "utility": P2_LORE,
                  "sleep": P3_BATCH, "batch": P3_BATCH}
 
 DEFAULT_MAX_INTERACTIVE_WAITING = 4

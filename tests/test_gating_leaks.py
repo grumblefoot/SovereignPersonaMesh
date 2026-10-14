@@ -972,7 +972,8 @@ def test_native_mode_end_to_end_reasoning_stays_private_and_gm_moves_apply(rig, 
     from proxy.core import reasoning
     from config.manager import get_settings_manager
     reasoning.reset_cache()
-    get_settings_manager().update({"reasoning_mode": "native"})   # config.json beats env
+    get_settings_manager().update({"reasoning_mode": "native",     # config.json beats env
+                                   "gm_actions_channel": "inline"})  # GM tags in the thinking
     calls = []
 
     async def native_stream(*args, **kwargs):
@@ -1002,3 +1003,42 @@ def test_native_mode_end_to_end_reasoning_stays_private_and_gm_moves_apply(rig, 
                               params={"session_id": rig.session_id, "template_key": ""}).json()
         where = {o["entity_id"]: o["room_id"] for o in snap["occupants"]}
     assert where.get("user") == "tavern_upstairs"
+
+
+def test_none_mode_separate_gm_channel_moves_the_world(rig, monkeypatch):
+    """Spike 2026-10-13: reasoning 'none' + separate GM channel. The reply prompt has no GM
+    duties; a small JSON call after the reply reports location changes, validated as usual."""
+    import proxy.api.routes as routes
+    from config.manager import get_settings_manager
+    from proxy.core import reasoning
+    reasoning.reset_cache()
+    get_settings_manager().update({"reasoning_mode": "none", "gm_actions_mode": "full"})
+    calls = []
+
+    async def stream(*args, **kwargs):
+        msgs = kwargs.get("messages", [])
+        calls.append(kwargs)
+        if msgs and "You track locations" in msgs[0]["content"]:
+            yield '{"actions": [{"type": "MOVE", "entity": "user", "room_id": "tavern_upstairs"}]}'
+            return
+        rig.prompts.append([dict(m) for m in msgs])
+        yield "Mira nods and follows you up the creaking stairs."
+    monkeypatch.setattr(routes.lemonade_client, "generate_stream", stream)
+
+    rig.seed(placements=[("user", "cellar"), ("mira", "cellar")])
+    r = rig.turn(sysmsgs("Mira") + [{"role": "user", "content": '"Let us go upstairs." \'I hope she hides the key.\''}])
+    joined = "\n".join(m.get("content", "") for m in rig.prompts[-1])
+    assert "GM_ACTION" not in joined and "<think>" not in joined
+    assert "Mira nods" in r.text
+    gm_calls = [c for c in calls if c.get("job_kind") == "gm"]
+    for _ in range(40):
+        snap = rig.engine.get("/api/v1/world/snapshot",
+                              params={"session_id": rig.session_id, "template_key": ""}).json()
+        if {o["entity_id"]: o["room_id"] for o in snap["occupants"]}.get("user") == "tavern_upstairs":
+            break
+        rig.client.get("/health")
+        gm_calls = [c for c in calls if c.get("job_kind") == "gm"]
+    assert gm_calls, "the separate GM call was not made"
+    gm_prompt = gm_calls[-1]["messages"][1]["content"]
+    assert "hides the key" not in gm_prompt               # private thoughts never reach it
+    assert {o["entity_id"]: o["room_id"] for o in snap["occupants"]}["user"] == "tavern_upstairs"

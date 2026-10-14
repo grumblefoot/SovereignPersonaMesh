@@ -18,7 +18,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from config.hardware_tiers import get_hardware_config, HardwareTierEnum
 from proxy.core.st_parser import parse_sillytavern_context
 from config.manager import get_settings_manager, resolve_gm_actions_mode
-from proxy.core import reasoning
+from proxy.core import gm_planner, reasoning
 from proxy.core.stream_parser import MonologueStreamParser, CLOSE_TAGS
 from proxy.core.sensory_filter import ObserverInferenceGatingFilter
 from proxy.rag.prompt_builder import CognitivePromptBuilder
@@ -804,10 +804,14 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
 
     gm_mode = resolve_gm_actions_mode(settings)   # resolves "auto" by backend locality
     reasoning_mode = await reasoning.resolve_mode(settings, lemonade_client, request.model)
-    if reasoning_mode == "none" and gm_mode != "off":
-        # No private block to carry GM actions in, and GM tags in the reply would leak.
-        logger.info(f"[Reasoning] mode 'none': GM actions off for this turn.")
+    gm_channel = reasoning.gm_channel(reasoning_mode, settings)
+    if reasoning_mode == "none" and gm_channel == "inline" and gm_mode != "off":
+        # No private block to carry inline GM tags, and GM tags in the reply would leak.
+        logger.info("[Reasoning] mode 'none' with inline GM channel: GM actions off this turn.")
         gm_mode = "off"
+    # The reply prompt carries GM duties only for the inline channel; the separate channel
+    # reads world changes after the reply (proxy/core/gm_planner.py).
+    prompt_gm_mode = gm_mode if gm_channel == "inline" else "off"
     csa_messages = prompt_builder.build_csa_messages(
         system_prompt=system_prompt,
         sensory_feed=sensory_feed,
@@ -815,7 +819,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
         chat_history=chat_history,
         spatial_context=f"Location: {location_name}",
         frontend_max_tokens=frontend_max_tokens,
-        gm_mode=gm_mode,
+        gm_mode=prompt_gm_mode,
         max_history=None,     # the allocator above already budgeted the history
         reasoning_mode=reasoning_mode,
     )
@@ -892,7 +896,7 @@ The text after </think> must ONLY be narrative and dialogue.
         # native mode the model's own thinking is private (the server separates it), so GM
         # actions go there; nothing asks for a text scratchpad.
         gm_note = ""
-        if reasoning_mode == "native" and gm_mode != "off":
+        if reasoning_mode == "native" and prompt_gm_mode != "off":
             kinds = ("MOVE" if gm_mode == "move_only" else "MOVE or CREATE_ROOM")
             gm_note = (f"\n- World tracking ({kinds}): while you think privately, if a character "
                        "(including the user) moves to another location, write "
@@ -968,7 +972,8 @@ The text after </think> must ONLY be narrative and dialogue.
                 parser, session_id, target_char, public_resp, turn_id,
                 turn_index=user_msg_count, persona=_extract_persona_name(request.messages), player_name=player_name or "",
                 user_text=observable_text,
-                narrator=narrator))
+                narrator=narrator, gm_channel=gm_channel, gm_mode=gm_mode,
+                model=str(request.model), speaker=_target_display_name(request.messages) or target_char))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
@@ -1100,7 +1105,8 @@ The text after </think> must ONLY be narrative and dialogue.
                 parser, session_id, target_char, public_resp, turn_id,
                 turn_index=user_msg_count, persona=_extract_persona_name(request.messages), player_name=player_name or "",
                 user_text=observable_text,
-                narrator=narrator))
+                narrator=narrator, gm_channel=gm_channel, gm_mode=gm_mode,
+                model=str(request.model), speaker=_target_display_name(request.messages) or target_char))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
@@ -1854,7 +1860,8 @@ async def _record_reply_action(session_id: str, target_char: str, public_resp: s
 async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_char: str,
                          public_resp: str, turn_id: str, turn_index: int, persona: str,
                          narrator: bool = False, player_name: str = "",
-                         user_text: str = "") -> None:
+                         user_text: str = "", gm_channel: str = "inline", gm_mode: str = "full",
+                         model: str = "", speaker: str = "") -> None:
     """Apply the turn's GM actions, then record the reply as a world event, in order."""
     if parser.is_tainted:
         # A withheld reply ("not saved") must not move the world either: a regenerate
@@ -1864,10 +1871,15 @@ async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_
             logger.info(f"[GMAction] reply withheld; skipped {n} GM action(s) for {session_id}.")
     else:
         try:
+            actions = None
+            if gm_channel == "separate" and gm_mode != "off":
+                actions = await _plan_gm_actions(session_id, model, persona or "the player",
+                                                 user_text, speaker or target_char, public_resp,
+                                                 allow_create=(gm_mode == "full"))
             await _dispatch_gm_actions(parser, session_id, target_char,
                                        turn_index=turn_index, persona=persona,
                                        player_name=player_name,
-                                       story_text=public_resp)
+                                       story_text=public_resp, actions=actions)
         except Exception as e:  # never let a GM failure lose the reply
             logger.error(f"[GMAction] dispatch failed for {session_id}: {e}")
     if narrator and not parser.is_tainted:
@@ -1877,15 +1889,37 @@ async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_
                                tainted=parser.is_tainted)
 
 
+async def _plan_gm_actions(session_id: str, model: str, player: str, player_text: str,
+                           speaker: str, reply: str, allow_create: bool) -> List[Dict[str, Any]]:
+    """Separate GM channel: read location changes from the finished exchange (spike
+    2026-10-13). The player's text is the observable part only (no private thoughts)."""
+    if not reply.strip():
+        return []
+    try:
+        snap = await evennia_client.get_snapshot(session_id=session_id, template_key="")
+    except Exception as e:
+        logger.warning(f"[GMPlanner] world snapshot unavailable: {e}")
+        return []
+    rooms = [{"room_id": r["room_id"], "name": r.get("name") or r["room_id"]} for r in snap.get("rooms", [])]
+    where = {o["entity_id"]: o.get("room_id") for o in snap.get("occupants", [])}
+    msgs = gm_planner.messages_for(rooms, where, player, player_text, speaker, reply, allow_create)
+    acts = await gm_planner.plan(lemonade_client, model, msgs,
+                                 local=reasoning._is_local(lemonade_client.base_url),
+                                 job_kind="gm", session_id=session_id)
+    logger.info(f"[GMPlanner] {len(acts)} proposed action(s) for {session_id}: {acts}")
+    return acts
+
+
 async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, target_char: str,
                                turn_index: int = 0, persona: str = "", player_name: str = "",
-                               story_text: str = ""):
+                               story_text: str = "", actions: Optional[List[Dict[str, Any]]] = None):
     """LLM-proposed world actions, gated and validated before anything hits the engine
     (OPEN-005 / SD-01). Mode off: nothing is dispatched (the stream parser already
     strips stray [GM_ACTION...] text either way). Otherwise the deterministic validator
     in proxy/core/gm_actions.py decides: schema, semantics against a single world
     snapshot, CREATE-then-MOVE ordering, caps, reason-coded rejections."""
-    actions = parser.extract_gm_actions()
+    if actions is None:
+        actions = parser.extract_gm_actions()
     if not actions:
         return
 
