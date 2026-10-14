@@ -57,6 +57,11 @@ Start your LLM server first, then:
 .venv/bin/python -m proxy.main            # SPM proxy, port 5050
 ```
 
+Both services listen on this machine only (127.0.0.1). To reach SPM from another device on your
+network (for example SillyTavern on a laptop), set `SPM_HOST=0.0.0.0` (and
+`SPM_ENGINE_HOST=0.0.0.0` only if the engine must be reachable too) — but the admin dashboard has
+no login, so do this only on a trusted network. Containers set both to `0.0.0.0` themselves.
+
 ### 4. Connect SillyTavern
 
 1. Copy `st_extension/SPM-Chat-ID/` into `<SillyTavern>/data/<user>/extensions/` and reload the

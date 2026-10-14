@@ -2,8 +2,8 @@
 
 Every endpoint must act on the session's OWN configured world. Before this fix,
 /world/action defaulted to the 'dynamic' template; for a seeded session that world
-was an empty dict, which is falsy, so the code fell back to the process-global
-app_state.current_world — whichever session configured LAST. Session A's speech
+was an empty dict, which is falsy, so the code fell back to a process-global
+world alias — whichever session configured LAST. Session A's speech
 could be gated against session B's rooms and occupants. GM moves/rooms likewise
 landed in a phantom 'dynamic' world the characters never perceived.
 """
@@ -20,7 +20,6 @@ def fresh_engine(monkeypatch):
     for attr in ("session_worlds", "session_ticks", "session_turn_ticks",
                  "idempotency_seen", "session_edges", "mutation_log"):
         setattr(st, attr, {})
-    st.current_world = {}
     world_app.world_builder = HybridWorldBuilder()
     return TestClient(world_app.app)
 
@@ -44,7 +43,7 @@ def test_action_never_uses_another_sessions_world(monkeypatch):
     with fresh_engine(monkeypatch) as c:
         configure(c, "sess_A", [("user", "cellar"), ("alice", "cellar")])
         configure(c, "sess_B", [("user", "cellar"), ("bob", "cellar")])   # B configured LAST
-        assert recipients(c, "sess_A") == ["alice"]       # was: ['bob'] via current_world
+        assert recipients(c, "sess_A") == ["alice"]       # was: ['bob'] via the global alias
         assert recipients(c, "sess_B") == ["bob"]
 
 

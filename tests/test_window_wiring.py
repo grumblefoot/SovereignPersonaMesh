@@ -63,7 +63,6 @@ def rig(monkeypatch):
     monkeypatch.setenv("SPM_WORLD_DB", "0")
     st = world_app.app_state
     st._db_pool = None
-    st.current_world = {}
     st.session_worlds = {}
     st.session_ticks = {}
     st.session_turn_ticks = {}

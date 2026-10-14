@@ -76,11 +76,11 @@ class TestVoidGraphSpatialGating:
     def test_adjacent_nodes_enforce_solid_wall_blackout(self):
         builder = HybridWorldBuilder()
         world = builder.instantiate_world("generic_void")
-        # Temporarily populate app_state.current_world for test
-        app_state.current_world.clear()
-        app_state.current_world.update(world)
+        # Inject the void graph as THIS session's world (the engine is session-scoped).
+        app_state.session_worlds["void_test"] = {"generic_void": world}
 
-        dist, barriers = _compute_distance_and_barriers("central_nexus", "node_alpha", ActionType.SPEAK)
+        dist, barriers = _compute_distance_and_barriers(
+            "central_nexus", "node_alpha", ActionType.SPEAK, session_id="void_test")
         assert BarrierType.SOLID_WALL in barriers
 
         gating, feed = SpatialConstraintsMatrix.evaluate_sensory_feed(

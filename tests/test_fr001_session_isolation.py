@@ -214,7 +214,6 @@ class TestEvenniaSessionIsolation:
 
     def _reset_evennia_state(self):
         """Reset evennia app module state between tests."""
-        evennia_app.app_state.current_world = {}
         evennia_app.app_state.session_worlds = {}
         evennia_app.app_state.action_tick_counter = 0
         evennia_app.lock_manager = type(evennia_app.lock_manager)(default_ttl=60.0)
