@@ -35,18 +35,23 @@ distance and walls, and every character keeps its own private memories.
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt        # add requirements-dev.txt to run the tests
-cp .env.example .env                             # then edit it: LLM URL, model, database password
+cp .env.example .env                             # then set the database password (python -m spm init asks the rest)
 ```
 
 ### 2. Database
 
+SPM needs PostgreSQL 16 with the pgvector extension. Either run it in a container (only the
+database; SPM itself runs from step 3):
+
 ```bash
-podman-compose -f config/docker-compose.yml up -d   # or: docker compose -f config/docker-compose.yml up -d
+docker compose --env-file .env -f config/docker-compose.db.yml up -d   # or: podman compose ...
 ```
 
-The container runs `scripts/init_db.sql` on first start. To upgrade an existing database, apply
-the files in `scripts/migrations/` with `.venv/bin/python scripts/apply_migrations.py`
-(it records what it applied, so running it again is safe).
+It listens on `127.0.0.1:5432` and uses the `POSTGRES_*` values from your `.env`. Add
+`SPM_DB_CONTAINER=spm-postgres` to `.env` and `python -m spm start` / `stop` will start and
+stop it with SPM. Then run `python -m spm init` (step 3) to create the tables.
+
+(To run everything in Docker instead, skip steps 2 and 3 and see "Run with Docker" below.)
 
 **Without Docker** (PostgreSQL already installed on your machine):
 
@@ -73,6 +78,12 @@ answers to the git-ignored `config/config.local.json` (the tracked `config/confi
 stays untouched) and pins the chat model in `.env` as `SPM_DEFAULT_MODEL`. Use
 `--backend-url`, `--model`, `--embedding-url`, `--embedding-model` (or `none`) and `--yes`
 to answer non-interactively, or `--no-setup` for the database only.
+
+**Which settings win?** Settings saved from the admin dashboard win; otherwise SPM uses your
+`.env` (environment); otherwise built-in defaults. `config/config.local.json` holds **only**
+what the dashboard (or `spm init`) saved — delete a line there to fall back to `.env` for that
+setting. The tracked `config/config.json` carries no env-backed keys, so editing `BACKEND_LLM_URL`
+or `EMBEDDING_MODEL` in `.env` takes effect until you save that setting on the dashboard.
 
 ### 3. Start SPM
 
@@ -131,11 +142,11 @@ from any directory:
 
 | Do this            | Windows              | Linux/macOS              | Raw compose command                                    |
 |--------------------|----------------------|--------------------------|--------------------------------------------------------|
-| Start              | `start.cmd`          | `scripts/docker/start.sh` | `docker compose -f config/docker-compose.yml up -d`     |
-| Stop               | `stop.cmd`           | `scripts/docker/stop.sh`  | `docker compose -f config/docker-compose.yml stop`      |
-| See what is running| `status.cmd`         | `scripts/docker/status.sh`| `docker compose -f config/docker-compose.yml ps`        |
-| Follow the logs    | `logs.cmd`           | `scripts/docker/logs.sh`  | `docker compose -f config/docker-compose.yml logs -f --tail 100 spm` |
-| Update to latest   | `update.cmd`         | `scripts/docker/update.sh`| `git pull && docker compose -f config/docker-compose.yml up -d --build` |
+| Start              | `start.cmd`          | `scripts/docker/start.sh` | `docker compose --env-file .env -f config/docker-compose.yml up -d`     |
+| Stop               | `stop.cmd`           | `scripts/docker/stop.sh`  | `docker compose --env-file .env -f config/docker-compose.yml stop`      |
+| See what is running| `status.cmd`         | `scripts/docker/status.sh`| `docker compose --env-file .env -f config/docker-compose.yml ps`        |
+| Follow the logs    | `logs.cmd`           | `scripts/docker/logs.sh`  | `docker compose --env-file .env -f config/docker-compose.yml logs -f --tail 100 spm` |
+| Update to latest   | `update.cmd`         | `scripts/docker/update.sh`| `git pull && docker compose --env-file .env -f config/docker-compose.yml up -d --build` |
 
 Stopping keeps all your data (memories, chats, settings live on named volumes), and Docker
 Desktop's Stop/Start buttons on the "spm" group do the same thing as the scripts. The admin

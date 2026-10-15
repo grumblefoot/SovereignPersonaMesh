@@ -111,11 +111,17 @@ class TestServiceReadiness:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
+        # Brief FX-D: the launcher verifies kills against this pid.
+        import os
+        assert data["pid"] == os.getpid()
 
     def test_proxy_health(self, proxy_client):
         resp = proxy_client.get("/health")
         assert resp.status_code == 200
-        assert resp.json()["status"] == "healthy"
+        data = resp.json()
+        assert data["status"] == "healthy"
+        import os
+        assert data["pid"] == os.getpid()
 
     def test_proxy_root(self, proxy_client):
         resp = proxy_client.get("/")

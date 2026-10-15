@@ -1,6 +1,6 @@
 """Bug reports (brief R2): the report file, the zip bundle, the GitHub issue URL.
 
-Builds the Traditional report described in docs/plans/bug_report_v04.md: safe
+Builds the Traditional report (bug-report design): safe
 diagnostic checks (spm/diagnostics.py) plus a redacted log excerpt, rendered as
 Markdown and zipped under the git-ignored ``reports/`` directory, plus a
 prefilled "New issue" URL. Nothing leaves the machine automatically: the user

@@ -57,6 +57,27 @@ def test_compose_stop_grace_periods():
     assert text.count("restart: unless-stopped") >= 2
 
 
+def test_compose_spm_service_has_no_backend_llm_url():
+    """Brief FX-C: the compose `environment:` block must not duplicate
+    BACKEND_LLM_URL — env_file (the repo's .env) provides it, and SPM's own
+    default plus the container's localhost rewrite cover the no-.env case."""
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        yaml = None
+    text = _compose_text()
+    if yaml is not None:
+        data = yaml.safe_load(text)
+        env = data["services"]["spm"].get("environment") or {}
+        assert "BACKEND_LLM_URL" not in env
+    else:
+        spm_block = text[text.index("  spm:"):]
+        env_block = spm_block[spm_block.index("environment:"):spm_block.index("extra_hosts:")]
+        # Strip comment lines so the explanatory note cannot trip the check.
+        code = "\n".join(l for l in env_block.splitlines() if not l.lstrip().startswith("#"))
+        assert "BACKEND_LLM_URL" not in code
+
+
 # ---------------------------------------------------------------- scripts
 
 def test_scripts_dir_exists():
@@ -83,15 +104,26 @@ def test_script_references_compose_file_relative_to_itself(name):
     )
 
 
+@pytest.mark.parametrize("name", SCRIPT_NAMES)
+def test_scripts_pass_repo_env_file_to_compose(name):
+    """Brief FX-C: every script passes `--env-file <repo>/.env` when that file
+    exists, so ${POSTGRES_*} interpolation and the compose env_file agree."""
+    sh = (SCRIPTS_DIR / f"{name}.sh").read_text(encoding="utf-8")
+    cmd = (SCRIPTS_DIR / f"{name}.cmd").read_text(encoding="utf-8")
+    assert "--env-file" in sh and ".env" in sh, f"{name}.sh must pass --env-file <repo>/.env"
+    assert "--env-file" in cmd and ".env" in cmd, f"{name}.cmd must pass --env-file <repo>\\.env"
+
+
 @pytest.mark.parametrize("ext", [".cmd", ".sh"])
 def test_stop_never_destroys(ext):
     stop = (SCRIPTS_DIR / f"stop{ext}").read_text(encoding="utf-8")
     # Check every actual compose invocation (not incidental text like `command -v`):
-    # the stop script may only run `stop` — never `down`, never `-v`.
+    # the stop script may only run `stop` — never `down`, never `-v`. An optional
+    # --env-file expansion (brief FX-C) may sit between the command and -f.
     invocations = []
     for line in stop.splitlines():
         line = line.strip()
-        if re.match(r'^(\$COMPOSE|docker compose)\s+-f\b', line):
+        if re.match(r'^(\$COMPOSE|docker compose)(\s+(\$\{ENV_FILE_ARGS.*?\}|%ENV_FILE_ARGS%))?\s+-f\b', line):
             line = re.sub(r'-f\s+"?\$?\{?COMPOSE_FILE\}?"?', "", line)
             invocations.append(line)
     assert invocations, f"stop{ext} should contain a compose invocation"

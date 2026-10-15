@@ -6,7 +6,6 @@ import os
 import asyncio
 import logging
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from dotenv import load_dotenv
@@ -21,6 +20,7 @@ from proxy.core.logger import setup_spm_logging
 from proxy.core.telemetry import TelemetryCollector
 from proxy.api.routes import router as api_router
 from proxy.api.admin_routes import router as admin_router, AdminState
+from proxy.api.origin_guard import OriginGuardMiddleware
 from config.hardware_tiers import get_hardware_config
 from contextlib import asynccontextmanager
 
@@ -55,14 +55,11 @@ app = FastAPI(
     version="0.2.0"
 )
 
-# CORS middleware for SillyTavern web client
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Brief FX-B (review finding 3): CORS is gone — nothing needs it (SillyTavern
+# calls /v1 from its server, the admin dashboard is same-origin), and
+# allow_origins=["*"] let any web page drive the admin API from the user's
+# browser. The origin guard refuses cross-site requests to /admin paths.
+app.add_middleware(OriginGuardMiddleware)
 
 app.include_router(api_router)
 app.include_router(admin_router)
@@ -95,7 +92,9 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    # pid: the launcher (spm stop) verifies it is killing the real SPM process,
+    # not a recycled PID after a reboot (brief FX-D).
+    return {"status": "healthy", "pid": os.getpid()}
 
 
 async def startup_event():
@@ -108,7 +107,7 @@ async def startup_event():
 
     host = os.getenv("POSTGRES_HOST", "localhost")
     port = os.getenv("POSTGRES_PORT", "5432")
-    db = os.getenv("POSTGRES_DB", "litellm_postgres")
+    db = os.getenv("POSTGRES_DB", "spm")
     user = os.getenv("POSTGRES_USER", "spm_user")
     pwd = os.getenv("POSTGRES_PASSWORD", "spm_secure_password")
     dsn = f"postgresql://{user}:{pwd}@{host}:{port}/{db}"

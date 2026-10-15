@@ -279,7 +279,7 @@
         <label>Max Cosine Distance</label>
         <input type="number" id="cfg-embedding-max-cosine-distance" step="0.01" min="0" max="1" value="0.45">
         <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
-          Max cosine distance for memory/lore recall. Calibrated 0.45 for Qwen3-Embedding (see docs/plans/BAKEOFF_2026-10-05.md). Lower = stricter.
+          Max cosine distance for memory/lore recall. Calibrated 0.45 for Qwen3-Embedding. Lower = stricter.
         </p>
       </div>
       <div class="form-group">
@@ -350,6 +350,7 @@
         <pre id="report-markdown" style="max-height: 320px; overflow: auto; background: #090d16; border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 0.75rem; white-space: pre-wrap; margin-bottom: 12px;"></pre>
         <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
           <a id="report-download" href="#" style="color: var(--accent); font-weight: 600;">Download report</a>
+          <span id="report-private-note" style="display: none; font-size: 0.9rem; color: var(--text-muted);"></span>
           <span id="report-issue-wrap" style="display: none;">
             <a id="report-issue" href="#" target="_blank" rel="noopener" style="color: var(--accent); font-weight: 600;">Open GitHub issue</a>
             <span style="font-size: 0.85rem; color: var(--text-muted);"> Attach the downloaded file to the issue.</span>
@@ -517,9 +518,20 @@
       else { errEl.textContent = ''; errEl.style.display = 'none'; }
 
       document.getElementById('report-markdown').textContent = data.markdown || '';
+      // Brief FX-B: a private bundle is never downloadable (the API 403s it);
+      // point at the file on this machine instead. Text via textContent.
       const dl = document.getElementById('report-download');
-      if (data.file) { dl.href = '/admin/api/v1/report/' + encodeURIComponent(data.file); dl.style.display = ''; }
-      else { dl.href = '#'; dl.style.display = 'none'; }
+      const privNote = document.getElementById('report-private-note');
+      if (data.private && data.file) {
+        dl.href = '#'; dl.style.display = 'none';
+        privNote.textContent = 'Saved on this machine: ' + data.file
+          + ' in the reports folder (private: not downloadable)';
+        privNote.style.display = '';
+      } else {
+        privNote.textContent = ''; privNote.style.display = 'none';
+        if (data.file) { dl.href = '/admin/api/v1/report/' + encodeURIComponent(data.file); dl.style.display = ''; }
+        else { dl.href = '#'; dl.style.display = 'none'; }
+      }
 
       const issueWrap = document.getElementById('report-issue-wrap');
       if (data.issue_url) {
@@ -699,6 +711,8 @@
       document.getElementById('vibe-perspective').innerText = perspective;
     }
 
+    let loadedConfig = {};          // the settings as loaded, to save only changes
+
     async function fetchConfig() {
       try {
         const res = await fetch('/admin/api/v1/config');
@@ -725,11 +739,12 @@
         document.getElementById('cfg-public-output-default').value = data.public_output_default ?? 400;
         document.getElementById('cfg-context-window-override').value = data.context_window_override ?? 0;
         loadBackendWindowStatus();
+        loadedConfig = readConfigForm();
       } catch (e) {}
     }
 
-    async function saveConfig() {
-      const payload = {
+    function readConfigForm() {
+      return {
         BACKEND_LLM_URL: document.getElementById('cfg-llm-url').value,
         BACKEND_API_KEY: document.getElementById('cfg-api-key').value,
         SPM_PROXY_PORT: parseInt(document.getElementById('cfg-port').value),
@@ -750,13 +765,29 @@
         public_output_default: parseInt(document.getElementById('cfg-public-output-default').value),
         context_window_override: parseInt(document.getElementById('cfg-context-window-override').value)
       };
+    }
+
+    async function saveConfig() {
+      const payload = readConfigForm();
+      // Send only what changed since the page loaded: the settings file keeps just the
+      // values you saved, and everything else keeps following .env (saving every field
+      // froze all .env values into the file).
+      const changed = {};
+      for (const [k, v] of Object.entries(payload)) {
+        const was = loadedConfig[k];
+        const same = (typeof v === 'number' && Number.isNaN(v)) ||
+                     String(v) === String(was === undefined || was === null ? '' : was);
+        if (!same) changed[k] = v;
+      }
+      if (Object.keys(changed).length === 0) { alert('Nothing changed.'); return; }
       const res = await fetch('/admin/api/v1/config', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(payload),
+        body: JSON.stringify(changed),
       });
       if (res.ok) {
-        alert('Settings saved successfully!');
+        Object.assign(loadedConfig, changed);
+        alert('Settings saved.');
         loadBackendWindowStatus();
       }
     }

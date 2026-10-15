@@ -93,6 +93,15 @@ async def _looks_initialized(conn: asyncpg.Connection) -> bool:
     return row is not None
 
 
+async def _has_any_table(conn: asyncpg.Connection) -> bool:
+    """True if schema public holds ANY table (brief FX-D: a database with other
+    people's data is off limits even with --existing)."""
+    row = await conn.fetchval(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = 'public' LIMIT 1")
+    return row is not None
+
+
 def _is_extension_error(err: Exception) -> bool:
     text = str(err).lower()
     return "vector" in text and "extension" in text
@@ -118,7 +127,12 @@ async def init_database(env: dict, *, existing: bool = False,
 
     # 1. Ensure the database exists (maintenance connection).
     created = False
-    maint = await asyncpg.connect(**{**cfg, "database": "postgres"})
+    try:
+        maint = await asyncpg.connect(**{**cfg, "database": "postgres"}, timeout=10)
+    except (asyncio.TimeoutError, OSError, asyncpg.PostgresError) as err:
+        print(f"ERROR: cannot connect to PostgreSQL at {cfg['host']}:{cfg['port']}: {err}",
+              file=sys.stderr)
+        return 1
     try:
         if await _database_exists(maint, database):
             print(f"Database {database!r} exists.")
@@ -138,10 +152,16 @@ async def init_database(env: dict, *, existing: bool = False,
     finally:
         await maint.close()
 
-    conn = await asyncpg.connect(**cfg)
+    conn = await asyncpg.connect(**cfg, timeout=10)
     try:
-        # 2. Non-empty database: never touch existing data without --existing.
-        if not created and await _looks_initialized(conn):
+        # 2. Non-empty database (ANY table in public): never touch existing data.
+        if not created and await _has_any_table(conn):
+            if not await _looks_initialized(conn):
+                # Has tables, but none of ours: init would collide with or
+                # depend on somebody else's data (brief FX-D) — no override.
+                print(f"ERROR: database {database!r} holds other data; use an empty "
+                      "database or set POSTGRES_DB.", file=sys.stderr)
+                return 1
             if not existing:
                 print(f"ERROR: database {database!r} already contains SPM tables "
                       "(spm_perception / csa_memory_*). Refusing to modify it.",
@@ -197,11 +217,14 @@ def cmd_init(repo_root: Path, existing: bool = False) -> int:
         return asyncio.run(init_database(env, existing=existing, repo_root=repo_root))
     except asyncio.CancelledError:
         return 1
-    except OSError as err:  # e.g. server unreachable
-        print(f"ERROR: cannot reach PostgreSQL at "
-              f"{env.get('POSTGRES_HOST', 'localhost')}: "
-              f"{err}", file=sys.stderr)
-        return 1
-    except asyncpg.PostgresError as err:
-        print(f"ERROR: PostgreSQL refused the connection: {err}", file=sys.stderr)
+    except (asyncio.TimeoutError, OSError, asyncpg.PostgresError) as err:
+        # Connection timeouts, refused/unreachable hosts, asyncpg connection
+        # errors: one friendly line naming host and port, no traceback (FX-D).
+        host = env.get("POSTGRES_HOST", "localhost")
+        try:
+            port = int(env.get("POSTGRES_PORT") or 5432)
+        except ValueError:
+            port = env.get("POSTGRES_PORT")
+        print(f"ERROR: cannot connect to PostgreSQL at {host}:{port}: {err}",
+              file=sys.stderr)
         return 1

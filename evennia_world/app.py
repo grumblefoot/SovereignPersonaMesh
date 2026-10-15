@@ -187,7 +187,7 @@ def _db_config() -> Dict[str, Any]:
     return {
         "user": os.environ.get("POSTGRES_USER") or os.environ.get("SPM_DB_USER", "spm_user"),
         "password": os.environ.get("POSTGRES_PASSWORD") or os.environ.get("SPM_DB_PASSWORD", "spm_secure_password"),
-        "database": os.environ.get("POSTGRES_DB") or os.environ.get("SPM_DB_NAME", "litellm_postgres"),
+        "database": os.environ.get("POSTGRES_DB") or os.environ.get("SPM_DB_NAME", "spm"),
         "host": os.environ.get("POSTGRES_HOST") or os.environ.get("SPM_DB_HOST", "localhost"),
         "port": int(os.environ.get("POSTGRES_PORT") or os.environ.get("SPM_DB_PORT", 5432)),
     }
@@ -271,6 +271,9 @@ async def health_check():
         "template": sorted({k for w in app_state.session_worlds.values() for k in w}) or "none",
         "uptime_seconds": round(time.time() - app.state.start_time, 1),
         "active_sessions": len(app_state.session_worlds),
+        # pid: the launcher (spm stop) verifies it is killing the real SPM process,
+        # not a recycled PID after a reboot (brief FX-D).
+        "pid": os.getpid(),
     }
 
 

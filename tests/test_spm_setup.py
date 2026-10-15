@@ -6,6 +6,7 @@ config/config.local.json is never created or modified.
 """
 
 import json
+import re
 
 import httpx
 import pytest
@@ -102,11 +103,12 @@ async def test_setup_with_flags_writes_local_config_and_env(repo, monkeypatch, c
 
     tracked = repo / "config" / "config.json"
     local = repo / "config" / "config.local.json"
-    # The tracked file is untouched; the local file starts from it and overrides.
+    # The tracked file is untouched; the local file holds ONLY the keys setup
+    # set (brief FX-C) — the tracked file is no longer copied into it.
     assert json.loads(tracked.read_text(encoding="utf-8"))["BACKEND_LLM_URL"] == \
         "http://localhost:8000/v1"
     written = json.loads(local.read_text(encoding="utf-8"))
-    assert written["SPM_HARDWARE_TIER"] == "SOVEREIGN"          # inherited from tracked
+    assert "SPM_HARDWARE_TIER" not in written            # not saved: follows .env/defaults
     assert written["BACKEND_LLM_URL"] == "http://fake:13305/v1"
     assert written["EMBEDDING_URL"] == "http://fake:13305/v1"
     assert written["EMBEDDING_MODEL"] == "Qwen3-Embedding-0.6B-GGUF-Q8_0"
@@ -135,6 +137,44 @@ async def test_setup_merges_existing_local_file(repo, monkeypatch):
     assert written["gm_actions_mode"] == "off"                  # kept
     assert written["EMBEDDING_PROVIDER"] == "none"              # new choice
     assert "EMBEDDING_MODEL" not in written or written["EMBEDDING_PROVIDER"] == "none"
+
+
+async def test_setup_yes_writes_env_backend_url(repo, monkeypatch):
+    """Brief FX-C test: BACKEND_LLM_URL in the repo's .env and no local file —
+    `--yes` writes that URL to config/config.local.json."""
+    install_fake_server(monkeypatch)
+    (repo / "config" / "config.json").unlink()   # fresh checkout: nothing saved yet
+    (repo / ".env").write_text("BACKEND_LLM_URL=http://from-dotenv:1234/v1\n",
+                               encoding="utf-8")
+    monkeypatch.delenv("BACKEND_LLM_URL", raising=False)   # must come from the .env file
+    rc = await setup.run_setup(repo, embedding_model="none", assume_yes=True)
+    assert rc == 0
+    written = json.loads((repo / "config" / "config.local.json").read_text(encoding="utf-8"))
+    assert written["BACKEND_LLM_URL"] == "http://from-dotenv:1234/v1"
+
+
+async def test_setup_offer_default_follows_env_file(repo, monkeypatch):
+    """Brief FX-C: interactive defaults are the effective settings — with no
+    local file and a BACKEND_LLM_URL in the repo's .env, the prompt's default
+    is the .env value (not the built-in default), and answering Enter keeps it."""
+    install_fake_server(monkeypatch)
+    (repo / "config" / "config.json").unlink()   # fresh checkout: nothing saved yet
+    (repo / ".env").write_text("BACKEND_LLM_URL=http://from-dotenv:1234/v1\n",
+                               encoding="utf-8")
+    monkeypatch.delenv("BACKEND_LLM_URL", raising=False)   # must come from the .env file
+    offered = []
+
+    def fake_input(prompt):
+        m = re.search(r"\[(.*)\]:\s*$", prompt)
+        if m:
+            offered.append(m.group(1))
+        return ""                                          # Enter everywhere
+
+    rc = await setup.run_setup(repo, embedding_model="none", input_fn=fake_input)
+    assert rc == 0
+    assert "http://from-dotenv:1234/v1" in offered
+    written = json.loads((repo / "config" / "config.local.json").read_text(encoding="utf-8"))
+    assert written["BACKEND_LLM_URL"] == "http://from-dotenv:1234/v1"
 
 
 async def test_setup_warns_on_unknown_chat_model(repo, monkeypatch, capsys):

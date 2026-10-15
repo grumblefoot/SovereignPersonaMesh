@@ -53,7 +53,7 @@ DIRECT = [
     ("POSTGRES_HOST", "localhost",
      "PostgreSQL + pgvector. docker compose -f config/docker-compose.yml up -d.", "Database"),
     ("POSTGRES_PORT", "5432", "Database port.", "Database"),
-    ("POSTGRES_DB", "litellm_postgres",
+    ("POSTGRES_DB", "spm",
      "Database name (matches config/docker-compose.yml).", "Database"),
     ("POSTGRES_USER", "spm_user", "Database user.", "Database"),
     ("POSTGRES_PASSWORD", "spm_secure_password",
@@ -67,7 +67,7 @@ DIRECT = [
     ("CONSOLIDATION_MODEL_NAME", "Gemma-4-E4B-it-GGUF",
      "Model used by the sleep-cycle memory consolidation.", "Behaviour"),
     ("SPM_CONFIG_PATH", "",
-     "Keep settings outside the repo file (default: config/config.json).", "Development"),
+     "Settings file. Default: config/config.local.json if it exists (dashboard settings are saved there), else config/config.json.", "Development"),
     ("SPM_RELOAD", "0",
      "1 = uvicorn autoreload for proxy development.", "Development"),
     ("SPM_LOG_HEADERS", "0",
@@ -133,7 +133,7 @@ _ENTRY_RE = re.compile(r'"([A-Za-z_][A-Za-z0-9_]*)":')
 
 
 def _manager_comments() -> dict:
-    """env var -> one-line comment: first comment line above a _DEFAULT_VALUES entry
+    """env var -> comment lines: the comment above a _DEFAULT_VALUES entry
     in config/manager.py, skipping section-banner lines ("── ... ──")."""
     text = (ROOT / "config" / "manager.py").read_text(encoding="utf-8")
     block = text.split("_DEFAULT_VALUES", 1)[1].split("_INT_KEYS", 1)[0]
@@ -149,7 +149,7 @@ def _manager_comments() -> dict:
         m = _ENTRY_RE.match(stripped)
         if m:
             if pending:
-                comments[m.group(1)] = pending[0]
+                comments[m.group(1)] = list(pending)   # the whole comment, not a cut first line
             pending = []
         elif stripped:
             pending = []

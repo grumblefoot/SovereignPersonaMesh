@@ -12,7 +12,7 @@ Never point these checks at production by accident: the checks only read
 configuration from the ``env`` dict the caller passes (merged os.environ +
 repo .env, see spm/run.py child_env).
 
-See docs/plans/bug_report_v04.md ("Checks", "Developer use", "Changes after
+Design notes ("Checks", "Developer use", "Changes after
 Hermes plan review") for the policy this encodes.
 """
 

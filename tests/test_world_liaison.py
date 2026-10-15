@@ -290,6 +290,9 @@ class TestHealthEndpoint:
         assert data["status"] == "ok"
         assert "tick" in data
         assert "uptime_seconds" in data
+        # Brief FX-D: the launcher verifies kills against this pid.
+        import os
+        assert data["pid"] == os.getpid()
 
 
 # ── Action evaluation ─────────────────────────────────────────────────────

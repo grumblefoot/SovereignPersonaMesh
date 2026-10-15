@@ -16,6 +16,9 @@ from spm import report as rp
 from spm.diagnostics import Check
 
 client = TestClient(app)
+# Brief FX-B: /report with full_logs is loopback-only, so the suite's positive
+# report tests use a loopback peer (the default peer 'testclient' is refused).
+lb_client = TestClient(app, client=("127.0.0.1", 54321))
 
 REMOTE_URL = "https://api.example-llm.com/v1"
 LOCAL_URL = "http://127.0.0.1:13305/v1"
@@ -68,8 +71,8 @@ def test_post_report_returns_fields(patched_build):
 
 
 def test_post_report_private_has_no_issue_url(patched_build):
-    res = client.post("/admin/api/v1/report",
-                      json={"description": "look at my logs", "full_logs": True})
+    res = lb_client.post("/admin/api/v1/report",
+                         json={"description": "look at my logs", "full_logs": True})
     assert res.status_code == 200
     data = res.json()
     assert data["private"] is True
@@ -129,9 +132,16 @@ def test_download_serves_bundle(reports_dir):
     res = client.get("/admin/api/v1/report/spm-report-20261014-101112.zip")
     assert res.status_code == 200
     assert res.content == b"PKfakezip"
-    res = client.get("/admin/api/v1/report/spm-report-PRIVATE-20261014-101113.zip")
-    assert res.status_code == 200
-    assert res.content == b"PKprivate"
+
+
+def test_download_refuses_private_bundle(reports_dir):
+    # Brief FX-B: a PRIVATE bundle is never served over the network.
+    name = "spm-report-PRIVATE-20261014-101113.zip"
+    res = client.get(f"/admin/api/v1/report/{name}")
+    assert res.status_code == 403
+    body = res.json()["error"]
+    assert "Private reports are not served over the network." in body
+    assert str(reports_dir / name) in body
 
 
 def test_download_rejects_traversal_and_bad_names(reports_dir):

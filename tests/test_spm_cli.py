@@ -12,15 +12,20 @@ from spm import run as spm_run
 
 
 class FakeProc:
-    """Stands in for subprocess.Popen: records the call, fixed pid, poll()=None."""
+    """Stands in for subprocess.Popen: records the call, fixed pid, poll()=None.
+    FakeProc.returncodes: optional list of exit codes assigned to spawned
+    children in order (None = stays running) — the --foreground crash test."""
 
     instances = []
+    returncodes: list = []
 
     def __init__(self, cmd, **kwargs):
         self.cmd = cmd
         self.kwargs = kwargs
         self.pid = 1000 + len(FakeProc.instances)
-        self.returncode = None
+        i = len(FakeProc.instances)
+        self.returncode = (FakeProc.returncodes[i]
+                           if i < len(FakeProc.returncodes) else None)
         FakeProc.instances.append(self)
 
     def poll(self):
@@ -33,6 +38,7 @@ class FakeProc:
 @pytest.fixture(autouse=True)
 def _reset_procs():
     FakeProc.instances = []
+    FakeProc.returncodes = []
     yield
 
 
@@ -56,27 +62,32 @@ def patch_popen(monkeypatch):
     return FakeProc
 
 
-def _health_urls(*, up_engine=True, up_proxy=True, healthy_before_spawn=False):
-    """health_ok replacement answering per-service (port 4105 = engine). With
+def _health_bodies(*, up_engine=True, up_proxy=True, healthy_before_spawn=False,
+                   engine_pid=None, proxy_pid=None):
+    """health_json replacement answering per-service (port 4105 = engine). With
     healthy_before_spawn=False it answers down while no child has been spawned
     yet, so cmd_start's initial 'already running?' check does not short-circuit
-    the spawn path under test."""
+    the spawn path under test. pids: what /health reports as the live process."""
 
-    def _ok(url):
+    def _json(url):
         if not healthy_before_spawn and not FakeProc.instances:
-            return False
+            return None
         if ":4105" in url:
-            return up_engine
-        return up_proxy
+            if not up_engine:
+                return None
+            return {"status": "ok"} | ({"pid": engine_pid} if engine_pid else {})
+        if not up_proxy:
+            return None
+        return {"status": "healthy"} | ({"pid": proxy_pid} if proxy_pid else {})
 
-    return _ok
+    return _json
 
 
 # ── start ────────────────────────────────────────────────────────────────
 
 
 def test_start_spawns_engine_before_proxy_and_writes_pids(repo, patch_popen, monkeypatch, capsys):
-    monkeypatch.setattr(spm_run, "health_ok", _health_urls())
+    monkeypatch.setattr(spm_run, "health_json", _health_bodies())
     rc = spm_run.cmd_start(repo, poll_s=0.01)
     assert rc == 0
 
@@ -102,7 +113,7 @@ def test_start_spawns_engine_before_proxy_and_writes_pids(repo, patch_popen, mon
 
 
 def test_start_logs_append_to_logs_dir(repo, patch_popen, monkeypatch):
-    monkeypatch.setattr(spm_run, "health_ok", _health_urls())
+    monkeypatch.setattr(spm_run, "health_json", _health_bodies())
     assert spm_run.cmd_start(repo, poll_s=0.01) == 0
     assert (repo / "logs").is_dir()
     for name in ("spm_engine.out", "spm_proxy.out"):
@@ -110,7 +121,7 @@ def test_start_logs_append_to_logs_dir(repo, patch_popen, monkeypatch):
 
 
 def test_start_when_both_healthy_spawns_nothing(repo, patch_popen, monkeypatch, capsys):
-    monkeypatch.setattr(spm_run, "health_ok", _health_urls(healthy_before_spawn=True))
+    monkeypatch.setattr(spm_run, "health_json", _health_bodies(healthy_before_spawn=True))
     rc = spm_run.cmd_start(repo, poll_s=0.01)
     assert rc == 0
     assert patch_popen.instances == []
@@ -119,7 +130,7 @@ def test_start_when_both_healthy_spawns_nothing(repo, patch_popen, monkeypatch, 
 
 def test_start_health_timeout_stops_and_exits_1(repo, patch_popen, monkeypatch, capsys):
     # engine never becomes healthy
-    monkeypatch.setattr(spm_run, "health_ok", _health_urls(up_engine=False))
+    monkeypatch.setattr(spm_run, "health_json", _health_bodies(up_engine=False))
     killed = []
     monkeypatch.setattr(spm_run, "_kill", lambda pid: killed.append(pid))
     # leave a log tail behind to prove it gets printed
@@ -137,7 +148,7 @@ def test_start_health_timeout_stops_and_exits_1(repo, patch_popen, monkeypatch, 
 
 
 def test_start_proxy_timeout_stops_engine_too(repo, patch_popen, monkeypatch):
-    monkeypatch.setattr(spm_run, "health_ok", _health_urls(up_proxy=False))
+    monkeypatch.setattr(spm_run, "health_json", _health_bodies(up_proxy=False))
     killed = []
     monkeypatch.setattr(spm_run, "_kill", lambda pid: killed.append(pid))
     rc = spm_run.cmd_start(repo, health_timeout_s=0.05, poll_s=0.01)
@@ -160,23 +171,98 @@ def test_stop_kills_proxy_then_engine_and_removes_file(repo, monkeypatch):
     pid_file.write_text(json.dumps({"engine": 111, "proxy": 222}), encoding="utf-8")
 
     killed = []
-    monkeypatch.setattr(spm_run, "_kill", lambda pid: killed.append(pid))
-    # health goes down immediately after the kill
-    monkeypatch.setattr(spm_run, "health_ok", lambda url: False)
+
+    # health answers with the matching pid until that service is killed
+    state = {"engine": 111, "proxy": 222}
+
+    def health(url):
+        live = state["engine" if ":4105" in url else "proxy"]
+        return {"pid": live} if live is not None else None
+    monkeypatch.setattr(spm_run, "health_json", health)
+
+    def kill(pid):
+        killed.append(pid)
+        for k, v in list(state.items()):
+            if v == pid:
+                state[k] = None
+    monkeypatch.setattr(spm_run, "_kill", kill)
 
     assert spm_run.cmd_stop(repo, poll_s=0.01) == 0
     assert killed == [222, 111]  # proxy first, engine second
     assert not pid_file.exists()
 
 
-def test_stop_dead_pid_is_fine(repo, monkeypatch):
+def test_stop_dead_pid_health_down_no_kill(repo, monkeypatch, capsys):
+    """Brief FX-D: a recorded PID with no health answer may belong to another
+    program after a reboot — do NOT kill, say so, and clean the PID file."""
     pid_file = repo / "run" / "spm.pids"
     pid_file.parent.mkdir(parents=True)
-    pid_file.write_text(json.dumps({"engine": 2147483646, "proxy": 2147483645}), encoding="utf-8")
-    monkeypatch.setattr(spm_run, "health_ok", lambda url: False)
-    # real os.kill on a nonexistent pid must not raise (ProcessLookupError swallowed)
+    pid_file.write_text(json.dumps({"engine": 2147483646, "proxy": 2147483645}),
+                        encoding="utf-8")
+    killed = []
+    monkeypatch.setattr(spm_run, "_kill", lambda pid: killed.append(pid))
+    monkeypatch.setattr(spm_run, "health_json", lambda url: None)
+
     assert spm_run.cmd_stop(repo, poll_s=0.01) == 0
+    assert killed == []  # nothing killed
+    out = capsys.readouterr().out
+    assert "proxy not running (stale PID file entry)" in out
+    assert "engine not running (stale PID file entry)" in out
+    assert not pid_file.exists()  # both entries stale -> file removed
+
+
+def test_stop_health_matching_pid_kills_recorded(repo, monkeypatch):
+    pid_file = repo / "run" / "spm.pids"
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text(json.dumps({"engine": 111, "proxy": 222}), encoding="utf-8")
+    killed = []
+    monkeypatch.setattr(spm_run, "_kill", lambda pid: killed.append(pid))
+    monkeypatch.setattr(spm_run, "health_json",
+                        lambda url: {"pid": 111 if ":4105" in url else 222})
+    monkeypatch.setattr(spm_run, "_wait_unhealthy", lambda url, t, p: True)
+
+    assert spm_run.cmd_stop(repo, poll_s=0.01) == 0
+    assert killed == [222, 111]
     assert not pid_file.exists()
+
+
+def test_stop_health_reports_foreign_pid_kills_that_one(repo, monkeypatch, capsys):
+    """PID file says 111/222 but health reports 999/888: those are the real
+    SPM processes (the PID file is stale); kill what health reports."""
+    pid_file = repo / "run" / "spm.pids"
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text(json.dumps({"engine": 111, "proxy": 222}), encoding="utf-8")
+    killed = []
+    monkeypatch.setattr(spm_run, "_kill", lambda pid: killed.append(pid))
+    monkeypatch.setattr(spm_run, "health_json",
+                        lambda url: {"pid": 999 if ":4105" in url else 888})
+    monkeypatch.setattr(spm_run, "_wait_unhealthy", lambda url, t, p: True)
+
+    assert spm_run.cmd_stop(repo, poll_s=0.01) == 0
+    assert killed == [888, 999]
+    out = capsys.readouterr().out
+    assert "real SPM process" in out
+    assert not pid_file.exists()
+
+
+def test_stop_keeps_pid_file_when_service_still_answers(repo, monkeypatch, capsys):
+    """After the kill the engine still answers /health: keep the PID file so a
+    retry has something to work with."""
+    pid_file = repo / "run" / "spm.pids"
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text(json.dumps({"engine": 111, "proxy": 222}), encoding="utf-8")
+    killed = []
+    monkeypatch.setattr(spm_run, "_kill", lambda pid: killed.append(pid))
+    # proxy goes down, engine stubbornly answers with its matching pid
+    monkeypatch.setattr(spm_run, "health_json",
+                        lambda url: {"pid": 111} if ":4105" in url else None)
+    monkeypatch.setattr(spm_run, "_wait_unhealthy",
+                        lambda url, t, p: ":4105" not in url)
+
+    assert spm_run.cmd_stop(repo, poll_s=0.01) == 1
+    assert killed == [111]  # proxy was stale (health down, not killed); engine was killed
+    assert pid_file.exists()
+    assert "still answers" in capsys.readouterr().err
 
 
 # ── status ───────────────────────────────────────────────────────────────
@@ -193,7 +279,7 @@ def test_status_both_up_exit_0(repo, monkeypatch, capsys):
 
 
 def test_status_one_down_exit_3(repo, monkeypatch, capsys):
-    monkeypatch.setattr(spm_run, "health_ok", _health_urls(up_engine=True, up_proxy=False))
+    monkeypatch.setattr(spm_run, "health_json", _health_bodies(up_engine=True, up_proxy=False))
     assert spm_run.cmd_status(repo) == 3
     out = capsys.readouterr().out
     assert "pid=-" in out  # no PID file -> "-"
@@ -204,7 +290,7 @@ def test_status_one_down_exit_3(repo, monkeypatch, capsys):
 
 def test_posix_uses_start_new_session(repo, patch_popen, monkeypatch):
     monkeypatch.setattr(spm_run.os, "name", "posix")
-    monkeypatch.setattr(spm_run, "health_ok", _health_urls())
+    monkeypatch.setattr(spm_run, "health_json", _health_bodies())
     assert spm_run.cmd_start(repo, poll_s=0.01) == 0
     for p in patch_popen.instances:
         assert p.kwargs.get("start_new_session") is True
@@ -213,7 +299,7 @@ def test_posix_uses_start_new_session(repo, patch_popen, monkeypatch):
 
 def test_windows_uses_detached_creation_flags(repo, patch_popen, monkeypatch):
     monkeypatch.setattr(spm_run.os, "name", "nt")
-    monkeypatch.setattr(spm_run, "health_ok", _health_urls())
+    monkeypatch.setattr(spm_run, "health_json", _health_bodies())
     assert spm_run.cmd_start(repo, poll_s=0.01) == 0
     for p in patch_popen.instances:
         assert p.kwargs.get("creationflags") == (
@@ -258,7 +344,7 @@ def test_db_container_empty_env_is_noop(monkeypatch):
 
 
 def test_start_runs_cli_start_before_spawning_engine(repo, patch_popen, monkeypatch):
-    monkeypatch.setattr(spm_run, "health_ok", _health_urls())
+    monkeypatch.setattr(spm_run, "health_json", _health_bodies())
     monkeypatch.setattr(spm_run, "_wait_db_port", lambda env, t: True)
     monkeypatch.setenv("SPM_DB_CONTAINER", "spm-postgres")
     fake = FakeRun()
@@ -271,7 +357,7 @@ def test_start_runs_cli_start_before_spawning_engine(repo, patch_popen, monkeypa
 
 
 def test_start_without_db_container_never_calls_cli(repo, patch_popen, monkeypatch):
-    monkeypatch.setattr(spm_run, "health_ok", _health_urls())
+    monkeypatch.setattr(spm_run, "health_json", _health_bodies())
     monkeypatch.delenv("SPM_DB_CONTAINER", raising=False)
     fake = FakeRun()
     monkeypatch.setattr(spm_run.subprocess, "run", fake)
@@ -283,12 +369,14 @@ def test_stop_runs_cli_stop_after_services(repo, monkeypatch, capsys):
     pid_file = repo / "run" / "spm.pids"
     pid_file.parent.mkdir(parents=True)
     pid_file.write_text(json.dumps({"engine": 111, "proxy": 222}), encoding="utf-8")
-    monkeypatch.setattr(spm_run, "_kill", lambda pid: None)
-    monkeypatch.setattr(spm_run, "health_ok", lambda url: False)
+    killed = []
+    monkeypatch.setattr(spm_run, "_kill", lambda pid: killed.append(pid))
+    monkeypatch.setattr(spm_run, "health_json", lambda url: None)
     monkeypatch.setenv("SPM_DB_CONTAINER", "spm-postgres")
     fake = FakeRun()
     monkeypatch.setattr(spm_run.subprocess, "run", fake)
     assert spm_run.cmd_stop(repo, poll_s=0.01) == 0
+    assert killed == []  # health down -> stale entries, never killed
     assert [c[0] for c in fake.calls] == [["docker", "stop", "spm-postgres"]]
     assert not pid_file.exists()
     assert "SPM stopped." in capsys.readouterr().out
@@ -329,6 +417,9 @@ def test_health_ok_requests_the_health_endpoint(monkeypatch):
 
     class R:
         status_code = 200
+        @staticmethod
+        def json():
+            return {"status": "ok"}
     monkeypatch.setattr(run.httpx, "get", lambda url, timeout: seen.append(url) or R())
     assert run.health_ok("http://127.0.0.1:4005")
     assert run.health_ok("http://127.0.0.1:5050/")
@@ -345,7 +436,117 @@ def test_container_rewrites_loopback_model_urls(tmp_path, monkeypatch):
     env = run.child_env(tmp_path)
     assert env["BACKEND_LLM_URL"] == "http://host.docker.internal:13305/v1"
     assert env["EMBEDDING_URL"] == "http://host.docker.internal:13305/v1"
-    monkeypatch.setenv("BACKEND_LLM_URL", "http://192.168.50.9:1234/v1")
-    assert run.child_env(tmp_path)["BACKEND_LLM_URL"] == "http://192.168.50.9:1234/v1"
+    monkeypatch.setenv("BACKEND_LLM_URL", "http://192.168.1.9:1234/v1")
+    assert run.child_env(tmp_path)["BACKEND_LLM_URL"] == "http://192.168.1.9:1234/v1"
     monkeypatch.delenv("SPM_IN_CONTAINER")
     assert run.child_env(tmp_path)["EMBEDDING_URL"] == "http://localhost:13305/v1"
+
+
+# ── brief FX-D: launcher robustness ──────────────────────────────────────
+
+
+def test_start_engine_already_up_spawns_only_the_proxy(repo, patch_popen, monkeypatch, capsys):
+    """Engine answers /health with pid 999 before start; proxy is down.
+    cmd_start must spawn ONLY the proxy and record engine=999 + the new pid."""
+    spawned = {"proxy_up": False}
+
+    def health(url):
+        if ":4105" in url:
+            return {"status": "ok", "pid": 999}
+        # proxy comes up only once it has been spawned and polled
+        return {"status": "healthy", "pid": 555} if spawned["proxy_up"] else None
+    monkeypatch.setattr(spm_run, "health_json", health)
+
+    real_spawn = spm_run._spawn
+
+    def fake_spawn(root, module, log_path, env):
+        spawned["proxy_up"] = True
+        return real_spawn(root, module, log_path, env)
+    monkeypatch.setattr(spm_run, "_spawn", fake_spawn)
+
+    assert spm_run.cmd_start(repo, poll_s=0.01) == 0
+    procs = patch_popen.instances
+    assert [p.cmd[-1] for p in procs] == ["proxy.main"]
+    out = capsys.readouterr().out
+    assert "engine is already running" in out and "not spawning another" in out
+    pid_file = repo / "run" / "spm.pids"
+    assert json.loads(pid_file.read_text(encoding="utf-8")) == {"engine": 999, "proxy": 555}
+
+
+def test_start_failed_stops_container_it_started(repo, patch_popen, monkeypatch, capsys):
+    """This cmd_start call started the DB container; the engine then never gets
+    healthy -> the container must be stopped again."""
+    monkeypatch.setattr(spm_run, "health_json", _health_bodies(up_engine=False))
+    monkeypatch.setattr(spm_run, "_wait_db_port", lambda env, t: True)
+    monkeypatch.setenv("SPM_DB_CONTAINER", "spm-postgres")
+    fake = FakeRun()
+    monkeypatch.setattr(spm_run.subprocess, "run", fake)
+    monkeypatch.setattr(spm_run, "_kill", lambda pid: None)
+
+    assert spm_run.cmd_start(repo, health_timeout_s=0.05, poll_s=0.01) == 1
+    assert [c[0] for c in fake.calls] == [["docker", "start", "spm-postgres"],
+                                          ["docker", "stop", "spm-postgres"]]
+
+
+def test_start_failed_keeps_container_it_did_not_start(repo, patch_popen, monkeypatch):
+    """The container was already running (docker start answered non-zero, e.g.
+    already up -> our helper returns False): a failed start must NOT stop it."""
+    monkeypatch.setattr(spm_run, "health_json", _health_bodies(up_engine=False))
+    monkeypatch.setattr(spm_run, "_wait_db_port", lambda env, t: True)
+    monkeypatch.setenv("SPM_DB_CONTAINER", "spm-postgres")
+    fake = FakeRun(returncode=1)
+    monkeypatch.setattr(spm_run.subprocess, "run", fake)
+    monkeypatch.setattr(spm_run, "_kill", lambda pid: None)
+
+    assert spm_run.cmd_start(repo, health_timeout_s=0.05, poll_s=0.01) == 1
+    assert [c[0] for c in fake.calls] == [["docker", "start", "spm-postgres"]]
+
+
+def test_foreground_returns_crashed_child_return_code(repo, patch_popen, monkeypatch, capsys):
+    """Brief FX-D: the engine dies with code 3 -> --foreground must exit 3,
+    not 0, so docker/systemd sees the failure."""
+    monkeypatch.setattr(spm_run, "health_json", _health_bodies())
+    FakeProc.returncodes = [3]  # engine (first child) exits 3; proxy keeps running
+    killed = []
+    monkeypatch.setattr(spm_run, "_kill", lambda pid: killed.append(pid))
+
+    rc = spm_run.cmd_start(repo, foreground=True, poll_s=0.01)
+    assert rc == 3
+    assert "exited with code 3" in capsys.readouterr().err
+    assert not (repo / "run" / "spm.pids").exists()
+
+
+def test_foreground_clean_run_returns_zero(repo, patch_popen, monkeypatch):
+    """No crash recorded: foreground returns 0 as before (Ctrl+C path)."""
+    monkeypatch.setattr(spm_run, "health_json", _health_bodies())
+    monkeypatch.setattr(spm_run, "_kill", lambda pid: None)
+
+    import threading
+
+    def interrupt():
+        import os
+        import signal as sg
+        os.kill(os.getpid(), sg.SIGINT)
+    t = threading.Timer(0.05, interrupt)
+    t.start()
+    try:
+        rc = spm_run.cmd_start(repo, foreground=True, poll_s=0.01)
+    finally:
+        t.cancel()
+    assert rc == 0
+
+
+def test_child_env_forces_pythonutf8_and_no_reload(tmp_path, monkeypatch):
+    """Brief FX-D: children log to files (Windows would use cp1252) and must
+    never inherit uvicorn's reload supervisor — even when .env says otherwise
+    for SPM_RELOAD... except .env must not be able to re-enable reload."""
+    (tmp_path / ".env").write_text("SPM_RELOAD=1\nMY_VAR=keep\n", encoding="utf-8")
+    for k in ("SPM_RELOAD", "PYTHONUTF8", "MY_VAR"):
+        monkeypatch.delenv(k, raising=False)
+    env = spm_run.child_env(tmp_path)
+    assert env["PYTHONUTF8"] == "1"
+    assert env["SPM_RELOAD"] == "0"  # .env's SPM_RELOAD=1 must NOT win
+    assert env["MY_VAR"] == "keep"
+    # an explicit shell PYTHONUTF8 is respected (setdefault)
+    monkeypatch.setenv("PYTHONUTF8", "0")
+    assert spm_run.child_env(tmp_path)["PYTHONUTF8"] == "0"

@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+from pathlib import Path
 import pytest
 from unittest.mock import patch
 
@@ -183,3 +184,60 @@ class TestLiveConfigIsolation:
         after = open(live_path, "rb").read() if os.path.exists(live_path) else None
         assert after == before
         assert config_manager.get_settings_manager().config_path == str(tmp_path / "config.json")
+
+
+# ---------------------------------------------------------------------------
+# Brief FX-C: one clear settings rule — saved (dashboard) > .env > defaults
+# ---------------------------------------------------------------------------
+
+class TestSavedWinsOverEnvRule:
+    """The settings file holds ONLY what the user saved; everything else comes
+    from the environment, then the built-in defaults."""
+
+    def test_env_value_used_when_file_lacks_key(self, tmp_path):
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({"SPM_HARDWARE_TIER": "TITAN"}), encoding="utf-8")
+        mgr = SettingsManager(config_path=str(cfg))
+        with patch.dict(os.environ, {"BACKEND_LLM_URL": "http://from-env:1234/v1"}):
+            settings = mgr.get_settings()
+        assert settings["SPM_HARDWARE_TIER"] == "TITAN"          # saved value wins
+        assert settings["BACKEND_LLM_URL"] == "http://from-env:1234/v1"  # not in the file: env wins
+
+    def test_write_settings_saves_only_the_new_keys(self, tmp_path):
+        """A dashboard save writes only what was saved; other keys keep following .env."""
+        cfg = tmp_path / "config.json"
+        mgr = SettingsManager(config_path=str(cfg))
+        with patch.dict(os.environ, {"BACKEND_LLM_URL": "http://from-env:1234/v1"}):
+            merged = mgr.write_settings({"periodic_review_cadence": 7})
+        # The FILE holds only the saved key — no frozen env/defaults snapshot.
+        assert json.loads(cfg.read_text(encoding="utf-8")) == {"periodic_review_cadence": 7}
+        # The RETURNED dict is the merged effective settings as before.
+        assert merged["BACKEND_LLM_URL"] == "http://from-env:1234/v1"
+        assert merged["periodic_review_cadence"] == 7
+        # Later .env changes still apply to keys the dashboard did not save.
+        with patch.dict(os.environ, {"BACKEND_LLM_URL": "http://new-env:4321/v1"}):
+            settings = mgr.get_settings()
+        assert settings["BACKEND_LLM_URL"] == "http://new-env:4321/v1"
+        assert settings["periodic_review_cadence"] == 7          # saved key survives
+
+    def test_missing_file_stays_missing_after_init(self, tmp_path):
+        """SettingsManager() must not materialise defaults into the file."""
+        cfg = tmp_path / "sub" / "config.json"
+        mgr = SettingsManager(config_path=str(cfg))
+        assert not cfg.exists()
+        # get_settings still works: env + defaults.
+        assert mgr.get_settings()["BACKEND_LLM_URL"]
+        # The first actual save creates the file — with only the saved key.
+        mgr.write_settings({"x": 1})
+        assert json.loads(cfg.read_text(encoding="utf-8")) == {"x": 1}
+
+    def test_tracked_config_json_has_no_env_backed_keys(self):
+        """config/config.json is tracked: it must carry no key that _ENV_VAR_MAP
+        reads from the environment, or .env edits for that key would be dead."""
+        from config.manager import _ENV_VAR_MAP
+        tracked = (Path(__file__).resolve().parent.parent
+                   / "config" / "config.json")
+        data = json.loads(tracked.read_text(encoding="utf-8"))  # must be valid JSON
+        assert data, "the tracked file should still hold the non-env keys"
+        overlap = set(data) & set(_ENV_VAR_MAP)
+        assert not overlap, f"env-backed keys in tracked config.json: {sorted(overlap)}"

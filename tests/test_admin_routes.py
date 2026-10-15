@@ -216,9 +216,12 @@ def test_factory_reset_error():
     assert response.status_code == 500
 
 def test_shutdown_system():
+    # Brief FX-B: /shutdown is loopback-only; the default TestClient peer
+    # ('testclient') is not loopback.
+    loopback = TestClient(app, client=("127.0.0.1", 54321))
     with patch('subprocess.run') as mock_sub:
         with patch('asyncio.create_task') as mock_task:
-            response = client.post("/admin/api/v1/shutdown")
+            response = loopback.post("/admin/api/v1/shutdown")
             assert response.status_code == 200
             assert response.json()["status"] == "success"
             mock_task.assert_called_once()

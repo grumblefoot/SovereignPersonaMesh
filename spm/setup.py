@@ -2,9 +2,11 @@
 
 Asks (or takes flags — Docker uses flags, `--yes` accepts the defaults) where the
 model server lives, which chat model to use, and where embeddings come from;
-probes the answers so a typo is visible immediately; then writes the result to
-the git-ignored config/config.local.json (starting from the tracked
-config/config.json) and pins the chat model in .env as SPM_DEFAULT_MODEL.
+probes the answers so a typo is visible immediately; then merges the keys it set
+into the git-ignored config/config.local.json (holding only what the user
+saved — the tracked config/config.json is never written) and pins the chat
+model in .env as SPM_DEFAULT_MODEL. Interactive defaults come from the
+effective settings: saved settings > .env (environment) > built-in defaults.
 
 Probing NEVER fails setup: an offline server is a warning, not an error, so
 init works before the LLM server has been started.
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -29,7 +32,7 @@ Next: connect SillyTavern (full guide: docs/st_extension_setup.md)
   1. API Connections -> Chat Completion -> source "Custom (OpenAI-compatible)"
   2. URL: http://127.0.0.1:5050/v1
   3. Copy st_extension/SPM-Chat-ID into SillyTavern's
-     public/scripts/extensions/third-party/
+     data/<user>/extensions/ folder (default user: data/default-user/extensions/)
   4. In Additional Headers add the X-SPM-* headers (see the doc above)."""
 
 
@@ -96,23 +99,30 @@ async def run_setup(repo_root: Path, *,
     """Ask/probe/write as above; prints everything; returns the exit code (always 0
     from the setup itself — a failed probe only warns)."""
     config_dir = repo_root / "config"
-    tracked = config_dir / "config.json"
     # Setup always writes the git-ignored local file (brief P4), even on a fresh
     # checkout where config.manager still reads config.json (no local file yet).
     local_path = config_dir / "config.local.json"
-
-    # Current effective settings (tracked file + an existing local file over it,
-    # plus .env's SPM_DEFAULT_MODEL) become the interactive defaults.
-    current: dict = load_json_file(tracked)
-    current.update(load_json_file(local_path))
     env_path = repo_root / ".env"
+
+    # Current effective settings become the interactive defaults (brief FX-C):
+    # saved settings win, then the environment (os.environ plus the repo .env),
+    # then the built-in defaults — the same rule config/manager.py applies, so
+    # a `.env` backend URL is offered as the default and `--yes` keeps it.
+    from spm.diagnostics import _Ctx, _effective_settings
+    from spm.redact import Redactor
+
+    env: dict = dict(os.environ)
     try:
         from dotenv import dotenv_values
         for k, v in dotenv_values(env_path).items():
-            if v is not None:
-                current.setdefault(k, v)
+            if v is not None and k not in env:
+                env[k] = v
     except Exception:
         pass
+    current: dict = _effective_settings(env, _Ctx(root=repo_root, redactor=Redactor()))[0]
+    # SPM_DEFAULT_MODEL is not a settings key (no _ENV_VAR_MAP entry), so
+    # _effective_settings does not carry it; the chat-model default needs it.
+    current.setdefault("SPM_DEFAULT_MODEL", env.get("SPM_DEFAULT_MODEL", ""))
 
     # Ask for anything the flags did not supply.
     _input = input_fn or (lambda prompt: input(prompt))
@@ -176,16 +186,17 @@ async def run_setup(repo_root: Path, *,
                 print("Context window: unknown (the server will be probed again at runtime).")
 
     # ── write the local config (never the tracked config.json) ──────────────
-    settings = load_json_file(tracked)
-    if local_path != str(tracked):
-        settings.update(load_json_file(local_path))
+    # Merge ONLY the keys this setup sets into whatever the local file already
+    # holds (brief FX-C): the settings file holds only what the user saved, so
+    # do not copy the tracked file's values into it wholesale.
+    settings = load_json_file(local_path)
     settings["BACKEND_LLM_URL"] = url
     if no_embeddings:
         settings["EMBEDDING_PROVIDER"] = "none"
     else:
         settings["EMBEDDING_URL"] = emb_url
         settings["EMBEDDING_MODEL"] = emb_model
-        if str(settings.get("EMBEDDING_PROVIDER", "")).lower() == "none":
+        if str(load_json_file(local_path).get("EMBEDDING_PROVIDER", "")).lower() == "none":
             settings["EMBEDDING_PROVIDER"] = "auto"  # the choice above must take effect
     local_path.parent.mkdir(parents=True, exist_ok=True)
     Path(local_path).write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
