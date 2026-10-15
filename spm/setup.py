@@ -29,7 +29,7 @@ Next: connect SillyTavern (full guide: docs/st_extension_setup.md)
   1. API Connections -> Chat Completion -> source "Custom (OpenAI-compatible)"
   2. URL: http://127.0.0.1:5050/v1
   3. Copy st_extension/SPM-Chat-ID into SillyTavern's
-     public/scripts/extensions/third-party/
+     data/<user>/extensions/ folder (default user: data/default-user/extensions/)
   4. In Additional Headers add the X-SPM-* headers (see the doc above)."""
 
 

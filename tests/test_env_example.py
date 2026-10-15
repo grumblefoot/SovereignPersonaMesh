@@ -48,7 +48,7 @@ def test_db_defaults_match_code():
     assert "SPM_HOST=127.0.0.1" in text
     assert "SPM_ENGINE_HOST=127.0.0.1" in text
     assert "POSTGRES_PASSWORD=spm_secure_password" in text
-    assert "POSTGRES_DB=litellm_postgres" in text
+    assert "POSTGRES_DB=spm" in text
     # Dead vars from the old hand-written file are gone.
     for dead in ("EVENNIA_SECRET_KEY", "EVENNIA_API_URL", "LLM_MAX_CONTEXT_TOKENS",
                  "POSTGRES_MIN_POOL", "POSTGRES_MAX_POOL", "your_secure_password_here"):

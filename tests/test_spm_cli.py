@@ -345,7 +345,7 @@ def test_container_rewrites_loopback_model_urls(tmp_path, monkeypatch):
     env = run.child_env(tmp_path)
     assert env["BACKEND_LLM_URL"] == "http://host.docker.internal:13305/v1"
     assert env["EMBEDDING_URL"] == "http://host.docker.internal:13305/v1"
-    monkeypatch.setenv("BACKEND_LLM_URL", "http://192.168.50.9:1234/v1")
-    assert run.child_env(tmp_path)["BACKEND_LLM_URL"] == "http://192.168.50.9:1234/v1"
+    monkeypatch.setenv("BACKEND_LLM_URL", "http://192.168.1.9:1234/v1")
+    assert run.child_env(tmp_path)["BACKEND_LLM_URL"] == "http://192.168.1.9:1234/v1"
     monkeypatch.delenv("SPM_IN_CONTAINER")
     assert run.child_env(tmp_path)["EMBEDDING_URL"] == "http://localhost:13305/v1"

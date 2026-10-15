@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest_asyncio
 import asyncpg
 
-from tests._testdb import LIVE_DB_NAME, TEST_DB_CONFIG, TEST_DB_NAME
+from tests._testdb import LIVE_DB_NAMES, TEST_DB_CONFIG, TEST_DB_NAME
 
 # Point the app's own pools (proxy startup, admin routes, Evennia) at the test database.
 # Set before the app modules are imported below.
@@ -17,8 +17,8 @@ _INIT_SQL = Path(__file__).resolve().parent.parent / "scripts" / "init_db.sql"
 
 
 async def _rebuild_test_database():
-    if TEST_DB_NAME == LIVE_DB_NAME:
-        raise RuntimeError(f"Refusing to rebuild the live database '{LIVE_DB_NAME}' for tests.")
+    if TEST_DB_NAME in LIVE_DB_NAMES:
+        raise RuntimeError(f"Refusing to rebuild the live database '{TEST_DB_NAME}' for tests.")
     admin = await asyncpg.connect(**{**TEST_DB_CONFIG, "database": "postgres"})
     try:
         await admin.execute(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}" WITH (FORCE);')

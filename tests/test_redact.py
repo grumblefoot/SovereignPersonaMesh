@@ -58,7 +58,7 @@ def _synthetic_log():
         # 11-14: secrets in several shapes
         "2026-10-14 06:58:01,000 [WARNING] spm.setup: POSTGRES_PASSWORD=hunter2hunter2 found in environment",
         '2026-10-14 06:58:01,100 [INFO] spm.setup: config loaded {"api_key": "sk-abcdef0123456789abcdef01", "model": "gemma"}',
-        "2026-10-14 06:58:01,200 [INFO] httpx: HTTP Request: GET http://192.168.50.207:1234/v1/models Authorization: Bearer secret-token-xyz789",
+        "2026-10-14 06:58:01,200 [INFO] httpx: HTTP Request: GET http://192.168.1.20:1234/v1/models Authorization: Bearer secret-token-xyz789",
         "2026-10-14 06:58:01,300 [INFO] spm.setup: db url postgresql://spm_user:***@localhost/spm_db",
         # 15-17: paths and user name
         "2026-10-14 06:58:02,000 [INFO] spm.setup: log rotation checked C:\\Users\\Brenda\\SPM\\logs\\x.log",
@@ -265,7 +265,7 @@ class TestPublicOutput:
         assert public.lines([turn])[0] == turn
         req = (
             "2026-10-14 06:59:03,000 [INFO] httpx: HTTP Request: POST "
-            "http://192.168.50.207:1234/v1/chat/completions HTTP/1.1"
+            "http://192.168.1.20:1234/v1/chat/completions HTTP/1.1"
         )
         out = public.lines([req])[0]
         assert "HTTP Request" in out
@@ -374,11 +374,11 @@ class TestTextRules:
         r = Redactor(home=HOME, user=USER)
         assert r.text("203.0.113.9") == "x.x.x.x"
         assert r.text("10.42.7.19") == "10.42.x.x"
-        assert r.text("192.168.50.207") == "192.168.x.x"
+        assert r.text("192.168.1.20") == "192.168.x.x"
         assert r.text("172.20.5.6") == "172.20.x.x"
         assert r.text("172.32.5.6") == "x.x.x.x"
         assert r.text("127.0.0.1:5053") == "127.0.0.1:5053"
-        assert r.text("http://192.168.50.207:1234/v1") == "http://192.168.x.x:1234/v1"
+        assert r.text("http://192.168.1.20:1234/v1") == "http://192.168.x.x:1234/v1"
 
 
 # --- edge cases ---------------------------------------------------------------------------

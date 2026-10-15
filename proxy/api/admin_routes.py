@@ -51,7 +51,7 @@ class AdminState:
         from proxy.api.routes import set_db_pool
         host = os.getenv("POSTGRES_HOST", "localhost")
         port = os.getenv("POSTGRES_PORT", "5432")
-        db = os.getenv("POSTGRES_DB", "litellm_postgres")
+        db = os.getenv("POSTGRES_DB", "spm")
         user = os.getenv("POSTGRES_USER", "spm_user")
         pwd = os.getenv("POSTGRES_PASSWORD", "spm_secure_password")
         dsn = f"postgresql://{user}:{pwd}@{host}:{port}/{db}"

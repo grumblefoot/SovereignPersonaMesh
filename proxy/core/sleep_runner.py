@@ -56,7 +56,7 @@ def db_config_from_env() -> dict:
         "port": int(os.getenv("POSTGRES_PORT", "5432")),
         "user": os.getenv("POSTGRES_USER", "spm_user"),
         "password": os.getenv("POSTGRES_PASSWORD", "spm_secure_password"),
-        "database": os.getenv("POSTGRES_DB", "litellm_postgres"),
+        "database": os.getenv("POSTGRES_DB", "spm"),
     }
 
 

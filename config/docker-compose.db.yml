@@ -1,0 +1,28 @@
+# Only the database, for running SPM itself WITHOUT Docker (python -m spm start).
+# Run from the repo root:
+#   docker compose --env-file .env -f config/docker-compose.db.yml up -d
+# The full bundle (database + SPM) is config/docker-compose.yml instead; use one or the other.
+name: spm-db
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: spm-postgres          # set SPM_DB_CONTAINER=spm-postgres to start/stop it with SPM
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-spm}
+      POSTGRES_USER: ${POSTGRES_USER:-spm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spm_secure_password}
+    ports:
+      - "127.0.0.1:5432:5432"             # this machine only
+    volumes:
+      - spm_db_data:/var/lib/postgresql/data
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-spm_user} -d ${POSTGRES_DB:-spm}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  spm_db_data:

@@ -45,7 +45,7 @@ def _db_config_from_env() -> dict:
         "password": os.environ.get("POSTGRES_PASSWORD", "spm_secure_password"),
         "database": os.environ.get("SPM_DB_NAME")
         or os.environ.get("POSTGRES_DB")
-        or "litellm_postgres",
+        or "spm",
     }
 
 

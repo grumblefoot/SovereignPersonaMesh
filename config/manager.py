@@ -57,7 +57,7 @@ _DEFAULT_VALUES: Dict[str, Any] = {
     "EMBEDDING_URL": "",
     # Empty string means "use BACKEND_API_KEY".
     "EMBEDDING_API_KEY": "",
-    # Decision 4 RESOLVED by the 2026-10-05 bake-off (docs/plans/BAKEOFF_2026-10-05.md):
+    # Calibrated in a 2026-10-05 bake-off of embedding models:
     # the FLM/NPU embed-gemma build scored recall@5 0.125 (near-random; paraphrase and
     # unrelated text land 0.02 apart), while Qwen3-Embedding-0.6B-GGUF Q8 scored 0.953
     # at 6x lower latency and coexists with the chat LLM (embedding slot, GPU).
@@ -90,7 +90,7 @@ _DEFAULT_VALUES: Dict[str, Any] = {
     "sleep_cycle_hour": 4,
     "gm_actions_max_per_turn": 4,
     "gm_actions_max_rooms_per_session": 40,
-    # ── Reasoning (native-reasoning spike, 2026-10-13; docs/plans/backend_matrix.md) ──
+    # ── Reasoning (2026-10-13) ──
     # none (default) | auto | native | prefill. native: the server separates the model's own
     # thinking (reasoning field); none: no private block; prefill: the legacy text <think>
     # scratchpad with inline GM actions. auto probes the backend: native if it returns a

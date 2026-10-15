@@ -14,13 +14,13 @@ import pytest
 
 import scripts.apply_migrations as apply_migrations_module
 from spm.db import init_database, quote_ident
-from tests._testdb import LIVE_DB_NAME, TEST_DB_CONFIG
+from tests._testdb import LIVE_DB_NAMES, TEST_DB_CONFIG
 
 
 def _fresh_env() -> tuple[str, dict]:
     """Env dict for spm.init: test-server credentials, unique database name."""
     dbname = f"spm_test_init_{uuid.uuid4().hex[:10]}"
-    assert dbname != LIVE_DB_NAME
+    assert dbname not in LIVE_DB_NAMES
     env = {
         "POSTGRES_HOST": TEST_DB_CONFIG["host"],
         "POSTGRES_PORT": str(TEST_DB_CONFIG["port"]),

@@ -226,7 +226,7 @@ def test_sleep_runner_db_config_matches_the_proxy(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     cfg = db_config_from_env()
     assert cfg["port"] == 5432                       # was a hardcoded 5435
-    assert cfg["database"] == "litellm_postgres"
+    assert cfg["database"] == "spm"
     monkeypatch.setenv("POSTGRES_PORT", "6543")
     assert db_config_from_env()["port"] == 6543      # honours the shared variable
 

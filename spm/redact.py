@@ -2,7 +2,7 @@
 
 Pure, standard-library-only helpers that turn SPM logs and strings into
 something safe to attach to a public GitHub issue. See
-docs/plans/bug_report_v04.md ("Privacy rules", "Developer use", "Changes after
+The bug-report design ("Privacy rules", "Developer use", "Changes after
 Hermes plan review") for the policy this encodes:
 
 - message-content log lines are dropped entirely (public mode);

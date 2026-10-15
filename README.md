@@ -35,18 +35,23 @@ distance and walls, and every character keeps its own private memories.
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt        # add requirements-dev.txt to run the tests
-cp .env.example .env                             # then edit it: LLM URL, model, database password
+cp .env.example .env                             # then set the database password (python -m spm init asks the rest)
 ```
 
 ### 2. Database
 
+SPM needs PostgreSQL 16 with the pgvector extension. Either run it in a container (only the
+database; SPM itself runs from step 3):
+
 ```bash
-podman-compose -f config/docker-compose.yml up -d   # or: docker compose -f config/docker-compose.yml up -d
+docker compose --env-file .env -f config/docker-compose.db.yml up -d   # or: podman compose ...
 ```
 
-The container runs `scripts/init_db.sql` on first start. To upgrade an existing database, apply
-the files in `scripts/migrations/` with `.venv/bin/python scripts/apply_migrations.py`
-(it records what it applied, so running it again is safe).
+It listens on `127.0.0.1:5432` and uses the `POSTGRES_*` values from your `.env`. Add
+`SPM_DB_CONTAINER=spm-postgres` to `.env` and `python -m spm start` / `stop` will start and
+stop it with SPM. Then run `python -m spm init` (step 3) to create the tables.
+
+(To run everything in Docker instead, skip steps 2 and 3 and see "Run with Docker" below.)
 
 **Without Docker** (PostgreSQL already installed on your machine):
 
