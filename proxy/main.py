@@ -92,7 +92,9 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    # pid: the launcher (spm stop) verifies it is killing the real SPM process,
+    # not a recycled PID after a reboot (brief FX-D).
+    return {"status": "healthy", "pid": os.getpid()}
 
 
 async def startup_event():

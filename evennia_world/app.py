@@ -271,6 +271,9 @@ async def health_check():
         "template": sorted({k for w in app_state.session_worlds.values() for k in w}) or "none",
         "uptime_seconds": round(time.time() - app.state.start_time, 1),
         "active_sessions": len(app_state.session_worlds),
+        # pid: the launcher (spm stop) verifies it is killing the real SPM process,
+        # not a recycled PID after a reboot (brief FX-D).
+        "pid": os.getpid(),
     }
 
 

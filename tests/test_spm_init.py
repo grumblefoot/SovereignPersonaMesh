@@ -92,6 +92,59 @@ async def test_fresh_database_created_and_initialised(init_env):
         await conn.close()
 
 
+async def test_unrelated_tables_refuse_even_with_existing(init_env, capsys):
+    """Brief FX-D: ANY table in schema public makes the database non-empty.
+    Tables that are not SPM-shaped refuse init with AND without --existing."""
+    dbname, env = init_env
+    # Create the database ourselves with one unrelated table.
+    admin = await asyncpg.connect(**{**TEST_DB_CONFIG, "database": "postgres"})
+    try:
+        await admin.execute(f"CREATE DATABASE {quote_ident(dbname)}")
+    finally:
+        await admin.close()
+    conn = await _connect(dbname)
+    try:
+        await conn.execute("CREATE TABLE public.somebodys_data (id int)")
+    finally:
+        await conn.close()
+
+    capsys.readouterr()
+    assert await init_database(env) == 1
+    err = capsys.readouterr().err
+    assert "holds other data" in err and "POSTGRES_DB" in err
+
+    capsys.readouterr()
+    assert await init_database(env, existing=True) == 1
+    err = capsys.readouterr().err
+    assert "holds other data" in err
+
+    # Untouched: the unrelated table is still the only one.
+    conn = await _connect(dbname)
+    try:
+        n = await conn.fetchval(
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
+        assert n == 1
+        assert not await _table_exists(conn, "spm_perception")
+    finally:
+        await conn.close()
+
+
+def test_unreachable_host_exit_1_no_traceback(tmp_path, capsys):
+    """Brief FX-D: connection errors give one friendly line naming host and
+    port and exit 1 — no traceback. Port 1 on localhost: refused instantly."""
+    from spm.db import cmd_init
+    (tmp_path / ".env").write_text(
+        "POSTGRES_HOST=127.0.0.1\nPOSTGRES_PORT=1\n"
+        "POSTGRES_USER=nobody\nPOSTGRES_PASSWORD=nobody\n"
+        "POSTGRES_DB=spm_test_unreachable\n", encoding="utf-8")
+    capsys.readouterr()
+    rc = cmd_init(tmp_path)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "cannot connect to PostgreSQL at 127.0.0.1:1" in err
+    assert "Traceback" not in err
+
+
 async def test_rerun_on_initialized_database_refuses(init_env, capsys):
     dbname, env = init_env
     assert await init_database(env) == 0
