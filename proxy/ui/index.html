@@ -350,6 +350,7 @@
         <pre id="report-markdown" style="max-height: 320px; overflow: auto; background: #090d16; border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 0.75rem; white-space: pre-wrap; margin-bottom: 12px;"></pre>
         <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
           <a id="report-download" href="#" style="color: var(--accent); font-weight: 600;">Download report</a>
+          <span id="report-private-note" style="display: none; font-size: 0.9rem; color: var(--text-muted);"></span>
           <span id="report-issue-wrap" style="display: none;">
             <a id="report-issue" href="#" target="_blank" rel="noopener" style="color: var(--accent); font-weight: 600;">Open GitHub issue</a>
             <span style="font-size: 0.85rem; color: var(--text-muted);"> Attach the downloaded file to the issue.</span>
@@ -517,9 +518,20 @@
       else { errEl.textContent = ''; errEl.style.display = 'none'; }
 
       document.getElementById('report-markdown').textContent = data.markdown || '';
+      // Brief FX-B: a private bundle is never downloadable (the API 403s it);
+      // point at the file on this machine instead. Text via textContent.
       const dl = document.getElementById('report-download');
-      if (data.file) { dl.href = '/admin/api/v1/report/' + encodeURIComponent(data.file); dl.style.display = ''; }
-      else { dl.href = '#'; dl.style.display = 'none'; }
+      const privNote = document.getElementById('report-private-note');
+      if (data.private && data.file) {
+        dl.href = '#'; dl.style.display = 'none';
+        privNote.textContent = 'Saved on this machine: ' + data.file
+          + ' in the reports folder (private: not downloadable)';
+        privNote.style.display = '';
+      } else {
+        privNote.textContent = ''; privNote.style.display = 'none';
+        if (data.file) { dl.href = '/admin/api/v1/report/' + encodeURIComponent(data.file); dl.style.display = ''; }
+        else { dl.href = '#'; dl.style.display = 'none'; }
+      }
 
       const issueWrap = document.getElementById('report-issue-wrap');
       if (data.issue_url) {

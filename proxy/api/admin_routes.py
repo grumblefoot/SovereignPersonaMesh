@@ -19,6 +19,7 @@ from config.manager import get_settings_manager
 from proxy.core.telemetry import get_telemetry_collector
 from core.resource_manager import strings
 from core.identifiers import safe_char_id
+from proxy.api.origin_guard import require_loopback
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/api/v1", tags=["admin"])
@@ -330,15 +331,18 @@ def _pid_file():
     return Path(__file__).resolve().parents[2] / "run" / "spm.pids"
 
 @router.post("/shutdown")
-async def shutdown_system():
+async def shutdown_system(request: Request):
     """Quit this SPM install — never with a machine-wide process-name kill (brief L1).
 
     The old implementation killed by process-name pattern: on Windows there is
     no such tool (the button did nothing) and on Linux it killed every
     matching process on the machine, not only this SPM. It also stopped the
     spm-postgres container unconditionally. Now each process ends itself.
+
+    Brief FX-B: loopback client only, like the engine's shutdown endpoint.
     """
     import os, signal, asyncio
+    require_loopback(request)
     logger.warning("[AdminAPI] Received shutdown request. Shutting down services...")
 
     if os.environ.get("SPM_IN_CONTAINER") == "1":
@@ -456,13 +460,15 @@ def _reports_dir():
 
 
 @router.post("/report")
-async def create_report(body: dict):
+async def create_report(body: dict, request: Request):
     """Build a bug report bundle (see `spm report`); Enhanced may take a minute.
 
     Body: {description, system_info, full_logs, enhanced, confirm_remote}.
     With `enhanced` and a remote model server, the redacted diagnostics would
     leave this machine, so without `confirm_remote` this returns 409 and the UI
     asks first (same rule as the CLI's --enhanced consent).
+    Brief FX-B: `full_logs: true` only from a loopback client — a private
+    bundle (2,000 lines of chat text) is never built for a remote caller.
     """
     from spm import report as spm_report
     from spm.run import child_env, default_repo_root
@@ -474,6 +480,9 @@ async def create_report(body: dict):
     full_logs = bool(body.get("full_logs"))
     enhanced = bool(body.get("enhanced"))
     confirm_remote = bool(body.get("confirm_remote"))
+
+    if full_logs:
+        require_loopback(request)
 
     env = child_env(default_repo_root())
     if enhanced and not confirm_remote:
@@ -517,11 +526,21 @@ async def create_report(body: dict):
 @router.get("/report/{name}")
 async def download_report(name: str):
     """Download a report bundle from reports/ — only a plain
-    `spm-report-*.zip` name, never a path (no traversal)."""
+    `spm-report-*.zip` name, never a path (no traversal).
+
+    Brief FX-B: a PRIVATE bundle is never served over the network — it holds
+    full chat text; open it on this machine instead.
+    """
     from fastapi.responses import FileResponse
 
     if not _REPORT_BUNDLE_RE.fullmatch(name or ""):
         raise HTTPException(status_code=404, detail="report not found")
+    if "PRIVATE" in name:
+        reports_path = _reports_dir()
+        return JSONResponse(
+            status_code=403,
+            content={"error": "Private reports are not served over the network. "
+                              f"Open {reports_path}/{name} on this machine."})
     path = _reports_dir() / name
     if not path.is_file():
         raise HTTPException(status_code=404, detail="report not found")

@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import json as _json
 import signal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,6 +20,11 @@ from fastapi.testclient import TestClient
 from proxy.main import app
 import proxy.api.admin_routes as admin_routes
 from proxy.api.routes import evennia_client
+
+
+def _lb_request():
+    """Brief FX-B: /shutdown now takes a Request and is loopback-only."""
+    return SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
 
 
 @pytest.fixture(autouse=True)
@@ -34,7 +40,7 @@ def clean_env(monkeypatch):
 async def test_shutdown_in_container_returns_guidance_and_schedules_nothing(monkeypatch):
     monkeypatch.setenv("SPM_IN_CONTAINER", "1")
     with patch("asyncio.create_task") as mock_task, patch("os.kill") as mock_kill:
-        response = await admin_routes.shutdown_system()
+        response = await admin_routes.shutdown_system(_lb_request())
     assert response.status_code == 200
     body = _json.loads(response.body)
     assert body["status"] == "docker"
@@ -68,7 +74,7 @@ async def test_shutdown_bare_metal_engine_then_db_then_pids_then_sigterm():
     with patch("spm.run.stop_db_container", fake_stop_db), \
             patch("os.kill", fake_kill), \
             patch("asyncio.create_task") as mock_task:
-        response = await admin_routes.shutdown_system()
+        response = await admin_routes.shutdown_system(_lb_request())
         assert response.status_code == 200
         body = _json.loads(response.body)
         assert body["status"] == "success"
@@ -96,7 +102,7 @@ async def test_shutdown_proceeds_when_engine_call_fails():
     with patch("spm.run.stop_db_container", lambda env: calls.append("stop_db")), \
             patch("os.kill", lambda pid, sig: calls.append("kill")), \
             patch("asyncio.create_task") as mock_task:
-        response = await admin_routes.shutdown_system()
+        response = await admin_routes.shutdown_system(_lb_request())
         assert response.status_code == 200
         await mock_task.call_args[0][0]
     assert calls == ["stop_db", "kill"]
