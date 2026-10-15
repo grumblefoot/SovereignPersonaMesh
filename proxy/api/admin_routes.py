@@ -10,6 +10,7 @@ Mounted under /admin/api/v1/:
 """
 
 import logging
+import re
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -438,6 +439,93 @@ async def scheduler_snapshot():
     wait percentiles, dispatch/preempt/supersede counters, loaded model."""
     from proxy.core.llm_scheduler import get_scheduler
     return JSONResponse(content=get_scheduler().snapshot())
+
+
+# ── Brief R4: "Report a problem" from the admin dashboard ───────────────────
+# spm/report.py (briefs R2/R3) does the real work; nothing here starts a
+# service or talks to a model server. Tests patch spm.report.build_report.
+
+_REPORT_BUNDLE_RE = re.compile(r"spm-report-[A-Za-z0-9-]+\.zip")
+
+
+def _reports_dir():
+    """The bundle directory (a function so tests can point it at a temp dir)."""
+    from pathlib import Path
+    from spm.run import default_repo_root
+    return Path(default_repo_root()) / "reports"
+
+
+@router.post("/report")
+async def create_report(body: dict):
+    """Build a bug report bundle (see `spm report`); Enhanced may take a minute.
+
+    Body: {description, system_info, full_logs, enhanced, confirm_remote}.
+    With `enhanced` and a remote model server, the redacted diagnostics would
+    leave this machine, so without `confirm_remote` this returns 409 and the UI
+    asks first (same rule as the CLI's --enhanced consent).
+    """
+    from spm import report as spm_report
+    from spm.run import child_env, default_repo_root
+
+    from proxy.core.reasoning import _is_local
+
+    description = str(body.get("description") or "")
+    system_info = bool(body.get("system_info"))
+    full_logs = bool(body.get("full_logs"))
+    enhanced = bool(body.get("enhanced"))
+    confirm_remote = bool(body.get("confirm_remote"))
+
+    env = child_env(default_repo_root())
+    if enhanced and not confirm_remote:
+        base = spm_report._backend_url(env)
+        if base and not _is_local(base):
+            import urllib.parse
+            host = urllib.parse.urlparse(base).hostname or base
+            return JSONResponse(
+                status_code=409,
+                content={"needs_confirmation": True,
+                         "message": (f"Enhanced analysis sends the redacted "
+                                     f"diagnostics to {host}, a remote service "
+                                     f"(this may cost tokens). Continue?")})
+
+    try:
+        report = await spm_report.build_report(
+            env, description=description, system_info=system_info,
+            full_logs=full_logs, enhanced=enhanced)
+    except Exception as e:
+        logger.error(f"[AdminAPI] report build failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    content = {
+        "markdown": report.markdown,
+        "checks": [{"name": c.name, "status": c.status, "summary": c.summary}
+                   for c in report.checks],
+        "file": report.path.name if report.path else None,
+        "issue_url": report.issue_url,
+        "private": report.private,
+    }
+    if isinstance(report.markdown, str) and \
+            "Enhanced analysis unavailable:" in report.markdown:
+        for line in report.markdown.splitlines():
+            if line.startswith("Enhanced analysis unavailable:"):
+                content["enhanced_error"] = \
+                    line[len("Enhanced analysis unavailable:"):].strip()
+                break
+    return JSONResponse(content=content)
+
+
+@router.get("/report/{name}")
+async def download_report(name: str):
+    """Download a report bundle from reports/ — only a plain
+    `spm-report-*.zip` name, never a path (no traversal)."""
+    from fastapi.responses import FileResponse
+
+    if not _REPORT_BUNDLE_RE.fullmatch(name or ""):
+        raise HTTPException(status_code=404, detail="report not found")
+    path = _reports_dir() / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="report not found")
+    return FileResponse(path, media_type="application/zip", filename=name)
 
 
 @router.get("/sessions/{session_id}/world")
