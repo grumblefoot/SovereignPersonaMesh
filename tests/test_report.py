@@ -20,7 +20,7 @@ from spm.diagnostics import Check
 SECRET = "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
 PASSWORD = "hunter2-supersecret"
 PLAYER_NAME = "Morgath"
-PROSE = ("Arvenia whispered that the old bridge would not hold three riders "
+PROSE = ("Zelda whispered that the old bridge would not hold three riders "
          "after the flood")
 
 

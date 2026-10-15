@@ -10,8 +10,8 @@ Hermes plan review") for the policy this encodes:
 - URL credentials (scheme://user:pass@host) -> scheme://***@host;
 - home paths -> ~, other users' home roots -> ~user, the OS user name -> user;
 - session ids -> stable short hashes (chat#a1b2);
-- character names -> tokens (also plural/possessive forms: "arvenias",
-  "Arvenia's"), long quoted strings -> "<redacted N chars>" (public mode only);
+- character names -> tokens (also plural/possessive forms: "zeldas",
+  "Zelda's"), long quoted strings -> "<redacted N chars>" (public mode only);
 - brackets containing 4+ quoted items (keyword bags) ->
   "[<redacted list: N items>]" (public mode only);
 - runs of 8+ consecutive words in the message part of a log line ->
@@ -204,7 +204,7 @@ def _redact_word_run_seq(seq: str) -> str:
 
 _RUN_PLACEHOLDER_RE = re.compile(r"<redacted \d+ words>")
 # Identifiers made of 7+ snake_case segments are text turned into ids (an old character
-# id held its card description: vardus_is_a_tall_and_fit_human_male...).
+# id held its card description: zed_is_a_tall_figure_in_a_long_grey...).
 _LONG_ID_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]+(?:_[A-Za-z0-9]+){6,}(?![A-Za-z0-9])")
 
 
@@ -230,10 +230,10 @@ def _redact_message_prose(line: str) -> str:
 class Redactor:
     """Redactor for bug-report material.
 
-    names         exact strings -> tokens, e.g. {"arvenia": "char#1"}; each key
+    names         exact strings -> tokens, e.g. {"zelda": "char#1"}; each key
                   is replaced as a whole word, case-insensitively, longest key
                   first, and also in plural/possessive form (trailing "s",
-                  "'s" or "’s": "arvenias", "Arvenia's", "varduss").
+                  "'s" or "’s": "zeldas", "Zelda's", "zeds").
     home          the user's home directory; defaults to Path.home().
     user          the OS user name; defaults to getpass.getuser() (guarded);
                   ignored when shorter than 3 characters.
@@ -265,14 +265,14 @@ class Redactor:
 
         # Names: longest key first (alternation order), whole word, ci lookup.
         # Also matches plural/possessive forms: a trailing "s", "'s" or "’s"
-        # ("arvenias", "Arvenia's", "varduss"); the token maps to the base
+        # ("zeldas", "Zelda's", "zeds"); the token maps to the base
         # name's value.
         names = sorted((k for k in self.names if k), key=len, reverse=True)
         if names:
             joined = "|".join(re.escape(n) for n in names)
             self._name_re = re.compile(
                 # Underscores count as a boundary, so names inside identifiers such as
-                # csa_memory_arvenia are replaced too (real-log check 2026-10-14).
+                # csa_memory_zelda are replaced too (real-log check 2026-10-14).
                 r"(?<![A-Za-z0-9])(?P<name>" + joined + r")(?:['’‘]?s)?(?![A-Za-z0-9])", re.IGNORECASE
             )
             self._name_lookup = {k.lower(): v for k, v in self.names.items()}

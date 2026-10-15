@@ -11,9 +11,9 @@ import pytest
 
 from spm.redact import CONTENT_MARKERS, LOG_LINE, Redactor
 
-HOME = "/home/osmon"
-USER = "osmon"
-NAMES = {"arvenia": "char#1", "Lord Vane": "char#2", "vardus": "char#3"}
+HOME = "/home/kestrel"
+USER = "kestrel"
+NAMES = {"zelda": "char#1", "Lord Vane": "char#2", "zed": "char#3"}
 
 # Planted values that must never survive redaction.
 SECRETS = [
@@ -28,7 +28,7 @@ PRIVATE_SENTENCES = [
     "A very private apology that nobody should ever read in a public bug report",
     "I love you more than all the stars in the winter sky above the old keep",
 ]
-PATHS = ["/home/osmon/Desktop", "C:\\Users\\Amanda", "Amanda", "osmon"]
+PATHS = ["/home/kestrel/Desktop", "C:\\Users\\Brenda", "Brenda", "kestrel"]
 SESSION_IDS = ["st_chat_Qh8sKd2mZx47pLw9", "deadbeefcafe1234"]
 
 # A quoted error sentence of exactly 60 characters.
@@ -61,12 +61,12 @@ def _synthetic_log():
         "2026-10-14 06:58:01,200 [INFO] httpx: HTTP Request: GET http://192.168.50.207:1234/v1/models Authorization: Bearer secret-token-xyz789",
         "2026-10-14 06:58:01,300 [INFO] spm.setup: db url postgresql://spm_user:***@localhost/spm_db",
         # 15-17: paths and user name
-        "2026-10-14 06:58:02,000 [INFO] spm.setup: log rotation checked C:\\Users\\Amanda\\SPM\\logs\\x.log",
-        "2026-10-14 06:58:02,100 [INFO] spm.setup: venv at /home/osmon/Desktop/Experiments/SillyTavern/SPM/.venv",
-        "2026-10-14 06:58:02,200 [INFO] spm.setup: service runs as user osmon (home " + HOME + ")",
+        "2026-10-14 06:58:02,000 [INFO] spm.setup: log rotation checked C:\\Users\\Brenda\\SPM\\logs\\x.log",
+        "2026-10-14 06:58:02,100 [INFO] spm.setup: venv at /home/kestrel/Desktop/Experiments/SillyTavern/SPM/.venv",
+        "2026-10-14 06:58:02,200 [INFO] spm.setup: service runs as user kestrel (home " + HOME + ")",
         # 18-19: session id and a character name
         "2026-10-14 06:58:03,000 [INFO] proxy.routes: resolving session=st_chat_Qh8sKd2mZx47pLw9 for chat window",
-        "2026-10-14 06:58:03,100 [INFO] proxy.core.perception: memory write skipped for Arvenia (cooldown)",
+        "2026-10-14 06:58:03,100 [INFO] proxy.core.perception: memory write skipped for Zelda (cooldown)",
         # 20: a public and a private IP
         "2026-10-14 06:58:04,000 [WARNING] proxy.middleware: rate-limited client 203.0.113.9; peer lan 10.42.7.19 and 172.20.5.6",
         # 21-24: more ordinary lines to stay above 30 overall
@@ -143,12 +143,12 @@ class TestPublicOutput:
 
     def test_no_user_names_or_home_paths(self, public, log):
         out = "\n".join(public.lines(log))
-        assert "osmon" not in out
-        assert "Amanda" not in out
-        assert "/home/osmon" not in out
-        # the raw C:\Users\Amanda path is gone (the ~user form is acceptable)
-        assert "C:\\Users\\Amanda\\SPM" not in out
-        assert "\\Users\\Amanda" not in out
+        assert "kestrel" not in out
+        assert "Brenda" not in out
+        assert "/home/kestrel" not in out
+        # the raw C:\Users\Brenda path is gone (the ~user form is acceptable)
+        assert "C:\\Users\\Brenda\\SPM" not in out
+        assert "\\Users\\Brenda" not in out
 
     def test_no_raw_session_ids(self, public, log):
         out = "\n".join(public.lines(log))
@@ -158,7 +158,7 @@ class TestPublicOutput:
 
     def test_no_character_names(self, public, log):
         out = "\n".join(public.lines(log))
-        assert "Arvenia" not in out
+        assert "Zelda" not in out
         assert "char#1" in out
 
     def test_error_line_timestamps_levels_survive(self, public, log):
@@ -231,12 +231,12 @@ class TestPublicOutput:
 
     def test_name_possessive_and_plural_forms(self, public):
         # Leak 2: trailing "s", "'s" and "’s" on names in `names`.
-        assert public.text("the arvenias of the old keep") == "the char#1 of the old keep"
-        assert public.text(" varduss marched north") == " char#3 marched north"
-        assert "char#1" in public.text("Arvenia's glade was quiet")
-        assert "Arvenia" not in public.text("Arvenia\u2019s glade was quiet")
+        assert public.text("the zeldas of the old keep") == "the char#1 of the old keep"
+        assert public.text(" zeds marched north") == " char#3 marched north"
+        assert "char#1" in public.text("Zelda's glade was quiet")
+        assert "Zelda" not in public.text("Zelda\u2019s glade was quiet")
         # whole word only
-        assert public.text("Arveniaspen") == "Arveniaspen"
+        assert public.text("Zeldaspen") == "Zeldaspen"
 
     def test_unquoted_prose_run_redacted(self, public):
         # Leak 3: lore-rule prose after the logger prefix.
@@ -278,7 +278,7 @@ class TestPublicOutput:
         r = public.text(
             "synced settings from the fallback file at "
             "server_host=localhost workers=4 mode=hybrid "
-            "/home/osmon/etc/spm/config.yaml http://example.invalid/v1 42"
+            "/home/kestrel/etc/spm/config.yaml http://example.invalid/v1 42"
         )
         assert "<redacted" not in r
 
@@ -303,19 +303,19 @@ class TestKeepContentMode:
 
     def test_paths_and_user_still_removed(self, private, log):
         out = "\n".join(private.lines(log))
-        assert "osmon" not in out
-        assert "Amanda" not in out
-        assert "/home/osmon" not in out
-        assert "\\Users\\Amanda" not in out
+        assert "kestrel" not in out
+        assert "Brenda" not in out
+        assert "/home/kestrel" not in out
+        assert "\\Users\\Brenda" not in out
 
     def test_names_and_quotes_not_touched(self, private):
         longish = "a quoted developer message that runs longer than forty characters!"
-        line = f"2026-10-14 06:57:25,000 [INFO] x: Arvenia said '{longish}'"
+        line = f"2026-10-14 06:57:25,000 [INFO] x: Zelda said '{longish}'"
         out = private.lines([line])[0]
-        assert "Arvenia" in out           # name rule skipped in this mode
+        assert "Zelda" in out           # name rule skipped in this mode
         assert longish in out             # quote rule skipped in this mode
         # text() itself always applies the full public rule set
-        assert private.text(f"Arvenia said '{longish}'").startswith("char#1")
+        assert private.text(f"Zelda said '{longish}'").startswith("char#1")
 
 
 # --- text() rule details ---------------------------------------------------------------
@@ -338,19 +338,19 @@ class TestTextRules:
         assert out == "postgresql://***@localhost/db"
 
     def test_home_path_forms(self):
-        r = Redactor(home="C:\\Users\\Amanda", user="amanda")
-        assert r.text(r"C:\Users\Amanda\SPM\logs\x.log") == "~\\SPM\\logs\\x.log"
-        assert r.text("C:/Users/amanda/spm/x.log") == "~/spm/x.log"
+        r = Redactor(home="C:\\Users\\Brenda", user="brenda")
+        assert r.text(r"C:\Users\Brenda\SPM\logs\x.log") == "~\\SPM\\logs\\x.log"
+        assert r.text("C:/Users/brenda/spm/x.log") == "~/spm/x.log"
 
     def test_posix_home_and_other_users(self):
-        r = Redactor(home="/home/osmon", user="osmon")
-        assert r.text("/home/osmon/Desktop/x.txt") == "~/Desktop/x.txt"
+        r = Redactor(home="/home/kestrel", user="kestrel")
+        assert r.text("/home/kestrel/Desktop/x.txt") == "~/Desktop/x.txt"
         assert r.text("/home/other/x.txt") == "~user/x.txt"
 
     def test_user_name_whole_word(self):
-        r = Redactor(home=HOME, user="osmon")
-        assert r.text("runs as osmon here") == "runs as user here"
-        assert r.text("osmonson") == "osmonson"  # not a whole word
+        r = Redactor(home=HOME, user="kestrel")
+        assert r.text("runs as kestrel here") == "runs as user here"
+        assert r.text("kestrelson") == "kestrelson"  # not a whole word
         short = Redactor(home=HOME, user="ab")
         assert short.text("ab road") == "ab road"  # < 3 chars: skipped
 
