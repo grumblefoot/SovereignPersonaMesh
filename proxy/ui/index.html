@@ -1225,9 +1225,19 @@
       updateVibeProfiler(rawText);
     }
 
+    // ONE live stream per page. The old code opened a new EventSource on every error
+    // without closing the old one (which the browser also reconnects by itself), so each
+    // server restart added streams until the browser's 6 connections per site were used
+    // up and the dashboard hung (2026-10-14).
+    let thoughtSource = null;
+    let thoughtRetry = null;
+
     function initThoughtStream() {
       try {
+        if (thoughtRetry) { clearTimeout(thoughtRetry); thoughtRetry = null; }
+        if (thoughtSource) { thoughtSource.close(); thoughtSource = null; }
         const evtSource = new EventSource('/admin/api/v1/stream/thoughts');
+        thoughtSource = evtSource;
         evtSource.onmessage = (e) => {
           try {
             const data = JSON.parse(e.data);
@@ -1253,7 +1263,10 @@
           } catch(err) {}
         };
         evtSource.onerror = () => {
-          setTimeout(initThoughtStream, 5000);
+          // Close it ourselves and retry once later (no browser auto-reconnect on top).
+          evtSource.close();
+          if (thoughtSource === evtSource) thoughtSource = null;
+          if (!thoughtRetry) thoughtRetry = setTimeout(() => { thoughtRetry = null; initThoughtStream(); }, 5000);
         };
       } catch(e) {}
     }
@@ -1271,6 +1284,8 @@
     if (location.hash && document.getElementById(location.hash.slice(1))) showTab(location.hash.slice(1));
     fetchSpatialMap();
     initThoughtStream();
+    // Release the stream when the page goes away (tab closed or reloaded).
+    window.addEventListener('pagehide', () => { if (thoughtSource) thoughtSource.close(); });
   </script>
 </body>
 </html>
