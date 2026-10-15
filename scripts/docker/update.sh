@@ -14,6 +14,15 @@ else
 fi
 
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+
+# Brief FX-C: pass the repo's .env to compose when it exists, so ${POSTGRES_*}
+# interpolation and the env_file inside the compose file agree (Compose reads
+# config/.env by default, not the repo root's .env).
+ENV_FILE_ARGS=()
+if [ -f "$REPO_DIR/.env" ]; then
+  ENV_FILE_ARGS=(--env-file "$REPO_DIR/.env")
+fi
+
 if command -v git >/dev/null 2>&1 && git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "Updating the code (git pull)..."
   git -C "$REPO_DIR" pull || echo "Warning: git pull failed; continuing with the code you have." >&2
@@ -22,7 +31,7 @@ else
 fi
 
 echo "Rebuilding and restarting the SPM bundle..."
-$COMPOSE -f "$COMPOSE_FILE" up -d --build
+$COMPOSE ${ENV_FILE_ARGS[@]+"${ENV_FILE_ARGS[@]}"} -f "$COMPOSE_FILE" up -d --build
 if [ $? -eq 0 ]; then
   echo "SPM updated and running: http://127.0.0.1:5050/admin"
 else

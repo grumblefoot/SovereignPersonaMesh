@@ -1,14 +1,6 @@
 {
-  "BACKEND_LLM_URL": "http://127.0.0.1:13305/v1",
-  "BACKEND_API_KEY": "",
-  "SPM_PROXY_PORT": 5050,
-  "SPM_HARDWARE_TIER": "SOVEREIGN",
-  "EVENNIA_LIAISON_URL": "http://localhost:4005",
-  "backend_max_tokens": 128000,
   "periodic_review_cadence": 3,
   "use_alternate_extraction_model": false,
   "alternate_extraction_model_name": "Gemma-4-E4B-it-GGUF",
-  "st_passthrough_shared_notes": false,
-  "EMBEDDING_MODEL": "Qwen3-Embedding-0.6B-GGUF-Q8_0",
-  "EMBEDDING_MAX_COSINE_DISTANCE": 0.45
+  "st_passthrough_shared_notes": false
 }

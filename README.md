@@ -79,6 +79,12 @@ stays untouched) and pins the chat model in `.env` as `SPM_DEFAULT_MODEL`. Use
 `--backend-url`, `--model`, `--embedding-url`, `--embedding-model` (or `none`) and `--yes`
 to answer non-interactively, or `--no-setup` for the database only.
 
+**Which settings win?** Settings saved from the admin dashboard win; otherwise SPM uses your
+`.env` (environment); otherwise built-in defaults. `config/config.local.json` holds **only**
+what the dashboard (or `spm init`) saved — delete a line there to fall back to `.env` for that
+setting. The tracked `config/config.json` carries no env-backed keys, so editing `BACKEND_LLM_URL`
+or `EMBEDDING_MODEL` in `.env` takes effect until you save that setting on the dashboard.
+
 ### 3. Start SPM
 
 Start your LLM server first, then:
@@ -136,11 +142,11 @@ from any directory:
 
 | Do this            | Windows              | Linux/macOS              | Raw compose command                                    |
 |--------------------|----------------------|--------------------------|--------------------------------------------------------|
-| Start              | `start.cmd`          | `scripts/docker/start.sh` | `docker compose -f config/docker-compose.yml up -d`     |
-| Stop               | `stop.cmd`           | `scripts/docker/stop.sh`  | `docker compose -f config/docker-compose.yml stop`      |
-| See what is running| `status.cmd`         | `scripts/docker/status.sh`| `docker compose -f config/docker-compose.yml ps`        |
-| Follow the logs    | `logs.cmd`           | `scripts/docker/logs.sh`  | `docker compose -f config/docker-compose.yml logs -f --tail 100 spm` |
-| Update to latest   | `update.cmd`         | `scripts/docker/update.sh`| `git pull && docker compose -f config/docker-compose.yml up -d --build` |
+| Start              | `start.cmd`          | `scripts/docker/start.sh` | `docker compose --env-file .env -f config/docker-compose.yml up -d`     |
+| Stop               | `stop.cmd`           | `scripts/docker/stop.sh`  | `docker compose --env-file .env -f config/docker-compose.yml stop`      |
+| See what is running| `status.cmd`         | `scripts/docker/status.sh`| `docker compose --env-file .env -f config/docker-compose.yml ps`        |
+| Follow the logs    | `logs.cmd`           | `scripts/docker/logs.sh`  | `docker compose --env-file .env -f config/docker-compose.yml logs -f --tail 100 spm` |
+| Update to latest   | `update.cmd`         | `scripts/docker/update.sh`| `git pull && docker compose --env-file .env -f config/docker-compose.yml up -d --build` |
 
 Stopping keeps all your data (memories, chats, settings live on named volumes), and Docker
 Desktop's Stop/Start buttons on the "spm" group do the same thing as the scripts. The admin

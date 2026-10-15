@@ -218,10 +218,15 @@ class SettingsManager:
         self._ensure_config_file()
 
     def _ensure_config_file(self) -> None:
-        """Create default config.json if missing."""
-        if not os.path.exists(self.config_path):
-            os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
-            self.write_settings(get_default_settings())
+        """No-op: a missing settings file stays missing (brief FX-C).
+
+        The settings file holds ONLY what the user saved from the dashboard, so
+        there is nothing to create before the first save — get_settings()
+        already falls back to env + defaults ("saved > .env > defaults"). The
+        old write-all-defaults behaviour froze first-boot env values into the
+        file (in Docker: into /app/state/config.local.json), after which
+        editing .env silently did nothing.
+        """
 
     def get_settings(self) -> Dict[str, Any]:
         """Read and return current settings from config.json with env fallbacks.
@@ -258,14 +263,34 @@ class SettingsManager:
         return get_default_settings()
 
     def write_settings(self, new_settings: Dict[str, Any]) -> Dict[str, Any]:
-        """Write new settings to config.json and return updated dict."""
-        current = self.get_settings()
-        current.update(new_settings)
+        """Save ONLY `new_settings` into the settings file (brief FX-C).
+
+        The file holds only what the user saved; everything else keeps coming
+        from `.env` (environment) or the built-in defaults, so editing `.env`
+        after a dashboard save still works for the keys the dashboard did not
+        touch. Returns the merged effective settings as before.
+        """
+        saved: Dict[str, Any] = {}
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    saved = loaded
+            except (json.JSONDecodeError, ValueError, OSError) as e:
+                logger.warning(
+                    "[SettingsManager] Could not read %s before writing; "
+                    "replacing it with the saved keys only: %s",
+                    self.config_path, e,
+                )
+        saved.update(new_settings)
         os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
         with open(self.config_path, "w", encoding="utf-8") as f:
-            json.dump(current, f, indent=2)
+            json.dump(saved, f, indent=2)
         logger.info("[SettingsManager] Updated settings in %s", self.config_path)
-        return current
+        merged = self.get_settings()
+        merged.update(new_settings)
+        return merged
 
     update = write_settings
 

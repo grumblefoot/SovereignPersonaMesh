@@ -56,7 +56,9 @@ services:
       # both services listen on all interfaces here.
       SPM_HOST: 0.0.0.0
       SPM_ENGINE_HOST: 0.0.0.0
-      BACKEND_LLM_URL: ${BACKEND_LLM_URL:-http://host.docker.internal:13305/v1}
+      # No BACKEND_LLM_URL here on purpose (brief FX-C): env_file already
+      # provides it when .env sets one, and otherwise SPM's own default plus
+      # the container's localhost rewrite reach the host's model server.
       # Settings saved from the admin dashboard live on the named volume below,
       # not in the image.
       SPM_CONFIG_PATH: /app/state/config.local.json

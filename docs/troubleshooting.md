@@ -36,6 +36,15 @@ Common causes:
 
 The start command prints the last log lines when a service dies — read them.
 
+## Which settings win?
+
+Settings saved from the admin dashboard win; otherwise SPM uses `.env`
+(the environment); otherwise built-in defaults. `config/config.local.json`
+holds **only** what the dashboard saved — if you edited `.env` and nothing
+changed, a saved setting is overriding it: delete that line from
+`config/config.local.json` (in Docker: from the container's `spm_state`
+volume) and restart to fall back to `.env`.
+
 ## The admin dashboard is unreachable
 
 SPM listens on `127.0.0.1` only, by design: the dashboard has no login. From
