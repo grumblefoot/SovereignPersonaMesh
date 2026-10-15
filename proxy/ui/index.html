@@ -61,8 +61,8 @@
     <div class="nav">
       <button class="active" onclick="showTab('dashboard')">Dashboard</button>
       <button onclick="showTab('thoughts')">Thought Viewer</button>
-      <button onclick="showTab('config')">Configuration</button>
-      <button onclick="showTab('data')">Data Management</button>
+      <button onclick="showTab('config')">Settings</button>
+      <button onclick="showTab('data')">GM Rules</button>
     </div>
   </header>
 
@@ -221,12 +221,14 @@
       <div class="form-group">
         <label>World actions (LLM-assisted)</label>
         <select id="cfg-gm-actions-mode">
+          <option value="auto">Auto: on for local models (recommended)</option>
           <option value="off">Off</option>
           <option value="move_only">Move only</option>
           <option value="full">Full</option>
         </select>
         <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
-          Off saves about 90 prompt tokens per turn plus the action output; no LLM requests are saved.
+          After each reply a small extra model call works out who moved where and which rooms are new.
+          Auto runs it for local model servers only; Off skips that call.
         </p>
       </div>
       <div class="form-group">
@@ -319,6 +321,57 @@
       </p>
       <button class="btn" onclick="saveConfig()">Save Configuration</button>
     </div>
+
+    <div class="card" style="max-width: 600px; margin: 24px 0;">
+      <h2 style="font-size: 1.1rem; margin-bottom: 16px;">Report a problem</h2>
+      <div class="form-group">
+        <label>What went wrong?</label>
+        <textarea id="report-description" rows="4" style="width: 100%; background: #090d16; border: 1px solid var(--border); color: var(--text); padding: 10px; border-radius: 6px; font-size: 0.95rem; resize: vertical;" placeholder="e.g. The model stopped replying after the memory import."></textarea>
+      </div>
+      <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem; color: var(--text); margin-bottom: 8px; cursor: pointer;">
+        <input type="checkbox" id="report-system-info" checked> Include system information
+      </label>
+      <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem; color: var(--text); margin-bottom: 8px; cursor: pointer;">
+        <input type="checkbox" id="report-enhanced"> Enhanced analysis (uses your model server)
+      </label>
+      <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem; color: var(--text); margin-bottom: 16px; cursor: pointer;">
+        <input type="checkbox" id="report-full-logs"> Include full logs (private: for the developers, never post publicly)
+      </label>
+      <div style="display: flex; gap: 12px; align-items: center;">
+        <button class="btn" id="report-create-btn" onclick="createReport(this)">Create report</button>
+        <span id="report-status" style="font-size: 0.85rem; color: var(--text-muted);"></span>
+      </div>
+      <div id="report-result" style="display: none; margin-top: 20px;">
+        <table style="margin-bottom: 16px;">
+          <thead><tr><th>check</th><th>status</th><th>summary</th></tr></thead>
+          <tbody id="report-checks"></tbody>
+        </table>
+        <div id="report-enhanced-error" style="display: none; font-size: 0.85rem; color: var(--warning); margin-bottom: 12px;"></div>
+        <pre id="report-markdown" style="max-height: 320px; overflow: auto; background: #090d16; border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 0.75rem; white-space: pre-wrap; margin-bottom: 12px;"></pre>
+        <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
+          <a id="report-download" href="#" style="color: var(--accent); font-weight: 600;">Download report</a>
+          <span id="report-issue-wrap" style="display: none;">
+            <a id="report-issue" href="#" target="_blank" rel="noopener" style="color: var(--accent); font-weight: 600;">Open GitHub issue</a>
+            <span style="font-size: 0.85rem; color: var(--text-muted);"> Attach the downloaded file to the issue.</span>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="max-width: 600px;">
+      <h2 style="font-size: 1.1rem; margin-bottom: 16px; color: var(--danger);">Danger Zone</h2>
+      <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 20px;">
+        Factory Reset deletes all memories, chat rules, bulk imports, cold archives and world state.
+      </p>
+      <button class="btn btn-danger" onclick="triggerFactoryReset()">Execute Factory Reset</button>
+
+      <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0;">
+      <h2 style="font-size: 1.1rem; margin-bottom: 16px; color: var(--danger);">System Shutdown</h2>
+      <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 20px;">
+        Safely shut down the SPM proxy and world engine (and the database container, if SPM_DB_CONTAINER is set). In Docker, use the stop script instead.
+      </p>
+      <button class="btn btn-danger" onclick="shutdownService()">Quit SPM Services</button>
+    </div>
   </div>
 
   <!-- TAB 3: DATA MANAGEMENT -->
@@ -374,56 +427,6 @@
       </div>
     </div>
 
-    <div class="card" style="max-width: 600px; margin-bottom: 24px;">
-      <h2 style="font-size: 1.1rem; margin-bottom: 16px;">Report a problem</h2>
-      <div class="form-group">
-        <label>What went wrong?</label>
-        <textarea id="report-description" rows="4" style="width: 100%; background: #090d16; border: 1px solid var(--border); color: var(--text); padding: 10px; border-radius: 6px; font-size: 0.95rem; resize: vertical;" placeholder="e.g. The model stopped replying after the memory import."></textarea>
-      </div>
-      <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem; color: var(--text); margin-bottom: 8px; cursor: pointer;">
-        <input type="checkbox" id="report-system-info" checked> Include system information
-      </label>
-      <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem; color: var(--text); margin-bottom: 8px; cursor: pointer;">
-        <input type="checkbox" id="report-enhanced"> Enhanced analysis (uses your model server)
-      </label>
-      <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem; color: var(--text); margin-bottom: 16px; cursor: pointer;">
-        <input type="checkbox" id="report-full-logs"> Include full logs (private: for the developers, never post publicly)
-      </label>
-      <div style="display: flex; gap: 12px; align-items: center;">
-        <button class="btn" id="report-create-btn" onclick="createReport(this)">Create report</button>
-        <span id="report-status" style="font-size: 0.85rem; color: var(--text-muted);"></span>
-      </div>
-      <div id="report-result" style="display: none; margin-top: 20px;">
-        <table style="margin-bottom: 16px;">
-          <thead><tr><th>check</th><th>status</th><th>summary</th></tr></thead>
-          <tbody id="report-checks"></tbody>
-        </table>
-        <div id="report-enhanced-error" style="display: none; font-size: 0.85rem; color: var(--warning); margin-bottom: 12px;"></div>
-        <pre id="report-markdown" style="max-height: 320px; overflow: auto; background: #090d16; border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 0.75rem; white-space: pre-wrap; margin-bottom: 12px;"></pre>
-        <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
-          <a id="report-download" href="#" style="color: var(--accent); font-weight: 600;">Download report</a>
-          <span id="report-issue-wrap" style="display: none;">
-            <a id="report-issue" href="#" target="_blank" rel="noopener" style="color: var(--accent); font-weight: 600;">Open GitHub issue</a>
-            <span style="font-size: 0.85rem; color: var(--text-muted);"> Attach the downloaded file to the issue.</span>
-          </span>
-        </div>
-      </div>
-    </div>
-
-    <div class="card" style="max-width: 600px;">
-      <h2 style="font-size: 1.1rem; margin-bottom: 16px; color: var(--danger);">Danger Zone</h2>
-      <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 20px;">
-        Factory Reset will truncate all character memory tables, bulk imports, and cold archives.
-      </p>
-      <button class="btn btn-danger" onclick="triggerFactoryReset()">Execute Factory Reset</button>
-
-      <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0;">
-      <h2 style="font-size: 1.1rem; margin-bottom: 16px; color: var(--danger);">System Shutdown</h2>
-      <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 20px;">
-        Safely shut down the SPM Proxy and Evennia Game Service.
-      </p>
-      <button class="btn btn-danger" onclick="shutdownService()">Quit SPM Services</button>
-    </div>
   </div>
 
   <script>
