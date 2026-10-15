@@ -197,6 +197,13 @@ touches your live data or running services.
 
 See [known_issues.md](known_issues.md).
 
+## Reporting a problem
+
+Common fixes are in [docs/troubleshooting.md](docs/troubleshooting.md). To file
+a bug: `python -m spm report` runs safe read-only checks, writes a redacted
+bundle to `reports/` and prints a prefilled GitHub issue link. Read the bundle
+before attaching it — nothing is uploaded automatically.
+
 ## License and credits
 
 MIT License: see [LICENSE](LICENSE). Credits: [CREDITS.md](CREDITS.md).

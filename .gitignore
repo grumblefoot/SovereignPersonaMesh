@@ -67,3 +67,6 @@ storage/
 # Runtime output of the `spm` launcher (python -m spm start)
 logs/
 run/
+
+# Bug report bundles (python -m spm report)
+reports/

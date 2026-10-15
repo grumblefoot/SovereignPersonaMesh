@@ -29,7 +29,7 @@ class TestFR004Observability:
 
         settings = mgr.get_settings()
         assert settings["SPM_PROXY_PORT"] == 5050
-        assert settings["BACKEND_LLM_URL"] == "http://localhost:8000/v1"
+        assert settings["BACKEND_LLM_URL"] == "http://localhost:13305/v1"
 
         updated = mgr.write_settings({"SPM_PROXY_PORT": 9090, "CUSTOM_KEY": "test_val"})
         assert updated["SPM_PROXY_PORT"] == 9090

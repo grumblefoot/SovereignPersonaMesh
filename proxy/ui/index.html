@@ -374,6 +374,42 @@
       </div>
     </div>
 
+    <div class="card" style="max-width: 600px; margin-bottom: 24px;">
+      <h2 style="font-size: 1.1rem; margin-bottom: 16px;">Report a problem</h2>
+      <div class="form-group">
+        <label>What went wrong?</label>
+        <textarea id="report-description" rows="4" style="width: 100%; background: #090d16; border: 1px solid var(--border); color: var(--text); padding: 10px; border-radius: 6px; font-size: 0.95rem; resize: vertical;" placeholder="e.g. The model stopped replying after the memory import."></textarea>
+      </div>
+      <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem; color: var(--text); margin-bottom: 8px; cursor: pointer;">
+        <input type="checkbox" id="report-system-info" checked> Include system information
+      </label>
+      <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem; color: var(--text); margin-bottom: 8px; cursor: pointer;">
+        <input type="checkbox" id="report-enhanced"> Enhanced analysis (uses your model server)
+      </label>
+      <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem; color: var(--text); margin-bottom: 16px; cursor: pointer;">
+        <input type="checkbox" id="report-full-logs"> Include full logs (private: for the developers, never post publicly)
+      </label>
+      <div style="display: flex; gap: 12px; align-items: center;">
+        <button class="btn" id="report-create-btn" onclick="createReport(this)">Create report</button>
+        <span id="report-status" style="font-size: 0.85rem; color: var(--text-muted);"></span>
+      </div>
+      <div id="report-result" style="display: none; margin-top: 20px;">
+        <table style="margin-bottom: 16px;">
+          <thead><tr><th>check</th><th>status</th><th>summary</th></tr></thead>
+          <tbody id="report-checks"></tbody>
+        </table>
+        <div id="report-enhanced-error" style="display: none; font-size: 0.85rem; color: var(--warning); margin-bottom: 12px;"></div>
+        <pre id="report-markdown" style="max-height: 320px; overflow: auto; background: #090d16; border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 0.75rem; white-space: pre-wrap; margin-bottom: 12px;"></pre>
+        <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
+          <a id="report-download" href="#" style="color: var(--accent); font-weight: 600;">Download report</a>
+          <span id="report-issue-wrap" style="display: none;">
+            <a id="report-issue" href="#" target="_blank" rel="noopener" style="color: var(--accent); font-weight: 600;">Open GitHub issue</a>
+            <span style="font-size: 0.85rem; color: var(--text-muted);"> Attach the downloaded file to the issue.</span>
+          </span>
+        </div>
+      </div>
+    </div>
+
     <div class="card" style="max-width: 600px;">
       <h2 style="font-size: 1.1rem; margin-bottom: 16px; color: var(--danger);">Danger Zone</h2>
       <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 20px;">
@@ -417,6 +453,80 @@
       } catch (e) {
         alert("Shutdown request sent.");
       }
+    }
+
+    // Brief R4: "Report a problem" (see /admin/api/v1/report). All text from
+    // the API goes in via textContent — the report Markdown is never HTML.
+    const CHECK_COLORS = { ok: 'var(--success)', warn: 'var(--warning)', fail: 'var(--danger)' };
+
+    async function createReport(btn, confirmRemote) {
+      const status = document.getElementById('report-status');
+      const result = document.getElementById('report-result');
+      const body = {
+        description: document.getElementById('report-description').value,
+        system_info: document.getElementById('report-system-info').checked,
+        full_logs: document.getElementById('report-full-logs').checked,
+        enhanced: document.getElementById('report-enhanced').checked,
+      };
+      if (confirmRemote) body.confirm_remote = true;
+
+      const original = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = body.enhanced ? 'Analyzing… (can take a minute)' : 'Working…'; }
+      status.textContent = '';
+      result.style.display = 'none';
+      let data;
+      try {
+        const res = await fetch('/admin/api/v1/report', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        data = await res.json().catch(() => ({}));
+        if (res.status === 409 && data.needs_confirmation) {
+          if (confirm(data.message || 'Send the diagnostics to a remote model server?')) {
+            return createReport(btn, true);
+          }
+          status.textContent = 'Cancelled — no report was created.';
+          return;
+        }
+        if (!res.ok) { status.textContent = 'Report failed: ' + (data.detail || res.status); return; }
+      } catch (e) {
+        status.textContent = 'Report request failed: ' + e;
+        return;
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = original; }
+      }
+
+      const tbody = document.getElementById('report-checks');
+      tbody.textContent = '';
+      (data.checks || []).forEach(c => {
+        const tr = document.createElement('tr');
+        const tdName = document.createElement('td'); tdName.textContent = c.name;
+        const tdStatus = document.createElement('td');
+        tdStatus.textContent = c.status;
+        tdStatus.style.color = CHECK_COLORS[c.status] || 'var(--text)';
+        const tdSummary = document.createElement('td'); tdSummary.textContent = c.summary;
+        tr.append(tdName, tdStatus, tdSummary);
+        tbody.appendChild(tr);
+      });
+
+      const errEl = document.getElementById('report-enhanced-error');
+      if (data.enhanced_error) { errEl.textContent = 'Enhanced analysis unavailable: ' + data.enhanced_error; errEl.style.display = 'block'; }
+      else { errEl.textContent = ''; errEl.style.display = 'none'; }
+
+      document.getElementById('report-markdown').textContent = data.markdown || '';
+      const dl = document.getElementById('report-download');
+      if (data.file) { dl.href = '/admin/api/v1/report/' + encodeURIComponent(data.file); dl.style.display = ''; }
+      else { dl.href = '#'; dl.style.display = 'none'; }
+
+      const issueWrap = document.getElementById('report-issue-wrap');
+      if (data.issue_url) {
+        document.getElementById('report-issue').href = data.issue_url;
+        issueWrap.style.display = '';
+      } else {
+        document.getElementById('report-issue').href = '#';
+        issueWrap.style.display = 'none';
+      }
+      result.style.display = 'block';
     }
 
     async function fetchStats() {
