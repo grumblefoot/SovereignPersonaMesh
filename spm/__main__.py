@@ -56,11 +56,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("--yes", action="store_true",
                           help="do not open the issue URL in a browser")
     p_report.add_argument("--enhanced", action="store_true",
-                          help="enhanced analysis (arrives in the next build)")
+                          help="model-powered analysis of the checks (sends the "
+                               "redacted diagnostics to the configured model "
+                               "server; a remote server asks for confirmation)")
     return parser
 
 
-def main(argv: list[str] | None = None, *, repo_root: Path | None = None) -> int:
+def main(argv: list[str] | None = None, *, repo_root: Path | None = None,
+         enhanced_client=None, input_fn=None) -> int:
     args = build_parser().parse_args(argv)
     if repo_root is None:
         repo_root = run.default_repo_root()
@@ -88,7 +91,9 @@ def main(argv: list[str] | None = None, *, repo_root: Path | None = None) -> int
             system_info=args.system_info,
             full_logs=args.full_logs,
             yes=args.yes,
-            enhanced=args.enhanced)
+            enhanced=args.enhanced,
+            enhanced_client=enhanced_client,
+            input_fn=input_fn)
     return 2  # unreachable: argparse enforces the subcommand
 
 

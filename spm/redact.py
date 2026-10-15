@@ -316,6 +316,18 @@ class Redactor:
         """Redact one string with the full public-mode rule set."""
         return self._apply(s, keep_content=False)
 
+    def user_text(self, s: str) -> str:
+        """Redact text the USER wrote for the report (the problem description). It is
+        meant to be read: keep its prose and quotes, remove secrets, URL credentials,
+        paths, the user name, session ids, IPs and character/persona names. The public
+        rule set wiped a whole description, so the Enhanced analysis never saw the
+        symptom (Claude's real run, 2026-10-14)."""
+        s = self._apply(s, keep_content=True)
+        if self._name_re is not None:
+            lookup = self._name_lookup
+            s = self._name_re.sub(lambda m: lookup[m.group("name").lower()], s)
+        return s
+
     def lines(self, lines: Iterable[str]) -> List[str]:
         """Filter and redact log lines.
 

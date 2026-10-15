@@ -162,12 +162,37 @@ def test_cli_report_yes_writes_bundle_and_prints_path(patched, monkeypatch, caps
     # Exit 0 even though a check failed — that is the point of a report.
 
 
-def test_cli_enhanced_is_accepted_and_deferred(patched, capsys):
+def test_cli_enhanced_runs_the_analysis(patched, monkeypatch, capsys):
     from spm.__main__ import main
+
+    class FakeClient:
+        base_url = "http://127.0.0.1:1/v1"
+
+        def __init__(self):
+            self.calls = []
+
+        async def generate_stream(self, **kw):
+            self.calls.append(kw)
+            yield json.dumps({
+                "summary": "backend down", "likely_causes": [],
+                "what_to_try": ["start the server"], "severity": "high"})
+
+    monkeypatch.setenv("BACKEND_LLM_URL", "http://127.0.0.1:1/v1")
+
+    async def fake_window(*a, **k):
+        return 8192
+
+    monkeypatch.setattr(rp, "_window_tokens", fake_window)
+    client = FakeClient()
     rc = main(["report", "--yes", "--enhanced", "--description", "x"],
-              repo_root=patched)
+              repo_root=patched, enhanced_client=client)
     assert rc == 0
-    assert "Enhanced analysis arrives in the next build" in capsys.readouterr().out
+    assert len(client.calls) == 1
+    out = capsys.readouterr().out
+    assert "Report bundle:" in out
+    bundles = sorted((patched / "reports").glob("spm-report-*.zip"))
+    with zipfile.ZipFile(bundles[-1]) as zf:
+        assert "## Enhanced analysis" in zf.read("report.md").decode("utf-8")
 
 
 def test_reports_dir_is_gitignored():

@@ -448,3 +448,13 @@ def test_real_log_gaps_identifiers_long_ids_and_prose_tails():
     assert "zelda" not in out.lower() and "csa_memory_char#1" in out
     assert "tall_and_fit" not in out and "<id>" in out
     assert "bluebell" not in out and "<redacted rest>" in out
+
+
+def test_user_text_keeps_the_description_but_not_secrets_or_names():
+    from spm.redact import Redactor
+    r = Redactor(names={"zelda": "char#1"}, home="/home/tester", user="tester")
+    out = r.user_text("Sometimes a turn is cut off after two seconds when Zelda replies; "
+                      "my key is sk-ABCDEFGHIJKLMNOPQRST and logs are in /home/tester/spm")
+    assert "Sometimes a turn is cut off after two seconds" in out
+    assert "Zelda" not in out and "char#1" in out
+    assert "sk-ABCDEF" not in out and "/home/tester" not in out
