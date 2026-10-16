@@ -271,8 +271,9 @@ def test_stop_health_matching_pid_kills_recorded(repo, monkeypatch):
 
 
 def test_stop_health_reports_foreign_pid_kills_that_one(repo, monkeypatch, capsys):
-    """PID file says 111/222 but health reports 999/888: those are the real
-    SPM processes (the PID file is stale); kill what health reports."""
+    """PID file says 111/222 but health reports 999/888, running from this same
+    folder: those are the real SPM processes (the PID file is stale); kill what
+    health reports."""
     pid_file = repo / "run" / "spm.pids"
     pid_file.parent.mkdir(parents=True)
     pid_file.write_text(json.dumps({"engine": 111, "proxy": 222}), encoding="utf-8")
@@ -281,12 +282,41 @@ def test_stop_health_reports_foreign_pid_kills_that_one(repo, monkeypatch, capsy
     monkeypatch.setattr(spm_run, "health_json",
                         lambda url: {"pid": 999 if ":4105" in url else 888})
     monkeypatch.setattr(spm_run, "_wait_unhealthy", lambda url, t, p: True)
+    monkeypatch.setattr(spm_run, "_runs_from", lambda pid, root: True)
 
     assert spm_run.cmd_stop(repo, poll_s=0.01) == 0
     assert killed == [888, 999]
     out = capsys.readouterr().out
-    assert "real SPM process" in out
+    assert "same folder" in out
     assert not pid_file.exists()
+
+
+def test_stop_never_kills_an_spm_from_another_folder(repo, monkeypatch, capsys):
+    """Third review, item 7: a stale PID file in a second checkout while the
+    user's SPM (another folder) answers on the same ports. Nothing is killed,
+    the PID file stays and stop exits 1."""
+    pid_file = repo / "run" / "spm.pids"
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text(json.dumps({"engine": 111, "proxy": 222}), encoding="utf-8")
+    killed = []
+    monkeypatch.setattr(spm_run, "_kill", lambda pid: killed.append(pid))
+    monkeypatch.setattr(spm_run, "health_json",
+                        lambda url: {"pid": 999 if ":4105" in url else 888})
+    monkeypatch.setattr(spm_run, "_wait_unhealthy", lambda url, t, p: True)
+    monkeypatch.setattr(spm_run, "_runs_from", lambda pid, root: False)
+
+    assert spm_run.cmd_stop(repo, poll_s=0.01) == 1
+    assert killed == []
+    assert "Not stopping it" in capsys.readouterr().err
+    assert pid_file.exists()
+
+
+def test_runs_from_compares_the_working_directory(tmp_path):
+    import os
+    from pathlib import Path
+    assert spm_run._runs_from(os.getpid(), Path(os.getcwd())) is True
+    assert spm_run._runs_from(os.getpid(), tmp_path) is False
+    assert spm_run._runs_from(2 ** 22 + 12345, tmp_path) is False
 
 
 def test_stop_keeps_pid_file_when_service_still_answers(repo, monkeypatch, capsys):

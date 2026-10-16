@@ -112,7 +112,9 @@ Both services listen on this machine only (127.0.0.1) and refuse requests that o
 open in your browser try to send them. To reach SPM from another device on your
 network (for example SillyTavern on a laptop), set `SPM_HOST=0.0.0.0` (and
 `SPM_ENGINE_HOST=0.0.0.0` only if the engine must be reachable too) — but the admin dashboard has
-no login, so do this only on a trusted network. Containers set both to `0.0.0.0` themselves.
+no login, so do this only on a trusted network. Containers set both to `0.0.0.0` themselves but
+publish port 5050 on 127.0.0.1 only; to use the Docker bundle from another device, publish
+`0.0.0.0:5050:5050` in `config/docker-compose.yml` and set `SPM_LAN_ACCESS=1` in `.env`.
 
 ### 4. Connect SillyTavern
 

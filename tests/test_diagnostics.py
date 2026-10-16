@@ -858,3 +858,42 @@ def test_redact_tree_redacts_keys():
     from spm.redact import Redactor
     out = d._redact_tree({"csa_memory_zelda": 3}, Redactor(names={"zelda": "char#1"}))
     assert out == {"csa_memory_char#1": 3}
+
+
+# ── third review, item 4: names stay hidden when the database is down ────────
+
+async def test_name_table_falls_back_to_the_last_good_names(monkeypatch, tmp_path):
+    from spm.redact import Redactor
+
+    async def db_up(env):
+        return {"chat": ["st_chat_abc"], "char": ["mei", "lian"], "player": ["Brenda"]}
+
+    async def db_down(env):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(dx, "_name_lists", db_up)
+    first = await dx.name_table(_FAKE_ENV)
+    assert first["mei"].startswith("char#") and first["Brenda"] == "player#1"
+    assert (tmp_path / "run" / "names.json").is_file()
+
+    monkeypatch.setattr(dx, "_name_lists", db_down)
+    table = await dx.name_table(_FAKE_ENV)
+    assert table == first
+    line = ("2026-10-16 10:00:00,000 [INFO] proxy.gating: [Perception] turn 12: "
+            "Mei (kitchen) -> Lian (garden) muffled")
+    out = Redactor(names=table).text(line)
+    assert "Mei" not in out and "Lian" not in out and "char#" in out
+
+
+async def test_name_table_merges_new_names_into_the_cache(monkeypatch, tmp_path):
+    async def first(env):
+        return {"chat": [], "char": ["mei"], "player": []}
+
+    async def later(env):
+        return {"chat": [], "char": ["lian"], "player": []}
+
+    monkeypatch.setattr(dx, "_name_lists", first)
+    await dx.name_table(_FAKE_ENV)
+    monkeypatch.setattr(dx, "_name_lists", later)
+    table = await dx.name_table(_FAKE_ENV)
+    assert set(table) == {"mei", "lian"}

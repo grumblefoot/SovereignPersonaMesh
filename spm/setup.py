@@ -119,6 +119,10 @@ async def run_setup(repo_root: Path, *,
                 env[k] = v
     except Exception:
         pass
+    # SPM_CONFIG_PATH (environment or .env) names the file SPM reads, so the
+    # answers go there too (third review, item 5).
+    if env.get("SPM_CONFIG_PATH"):
+        local_path = Path(env["SPM_CONFIG_PATH"]).expanduser()
     current: dict = _effective_settings(env, _Ctx(root=repo_root, redactor=Redactor()))[0]
     # SPM_DEFAULT_MODEL is not a settings key (no _ENV_VAR_MAP entry), so
     # _effective_settings does not carry it; the chat-model default needs it.

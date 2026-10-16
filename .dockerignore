@@ -1,11 +1,23 @@
-.venv
-logs
-run
-qa-logs
-coverage_html
-__pycache__
-.git
-docs/plans
-*.log
+# Allow-list: the image gets only what SPM needs to run. Everything else in a
+# working checkout (.env, database dumps, reports, logs, private notes) stays out,
+# whatever it is called.
+*
+
+!requirements.txt
+!VERSION
+!LICENSE
+!CREDITS.md
+!README.md
+!config/
+!core/
+!evennia_world/
+!proxy/
+!scripts/
+!spm/
+!docs/troubleshooting.md
+
+# Never inside an allowed folder either: user settings and caches.
 config/config.local.json
-.env
+**/__pycache__
+**/*.pyc
+**/*.log

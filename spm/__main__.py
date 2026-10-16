@@ -27,8 +27,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="show PID and health of each service")
     p_init = sub.add_parser("init", help="create and prepare the database, then first-run setup")
     p_init.add_argument("--existing", action="store_true",
-                        help="the database already holds SPM data: apply pending "
-                             "migrations only, never re-run init_db.sql")
+                        help="the database may already hold SPM data: an empty database "
+                             "gets the full schema, an SPM database only its pending "
+                             "migrations (init_db.sql is never re-run on one)")
     p_init.add_argument("--no-setup", action="store_true",
                         help="database only: skip the first-run questions")
     p_init.add_argument("--backend-url", default=None,

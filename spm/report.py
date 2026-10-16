@@ -519,7 +519,7 @@ async def build_report(env: dict, *, description: str = "", system_info: bool = 
     root = Path(repo_root) if repo_root is not None else default_repo_root()
     private = bool(full_logs)
 
-    names = await name_table(env)
+    names = await name_table(env, root)
     redactor = Redactor(names=names)
     checks = await run_checks(env, system_info=system_info, repo_root=root,
                               redactor=redactor)

@@ -5,9 +5,11 @@ Limitations you may run into with the current release. Reports and fixes are wel
 ## Security
 
 - **No authentication.** The proxy, its admin dashboard (including factory reset, shutdown and
-  settings) and the world engine accept requests from anyone who can reach them. They listen on
-  all interfaces with CORS open, and the dashboard's thought stream shows characters' private
-  reasoning. Run SPM only on a trusted machine or network.
+  settings) and the world engine accept requests from anyone who can reach them. By default they
+  listen on this machine only (127.0.0.1) and refuse requests sent by other web pages in your
+  browser; opening them to the network (`SPM_HOST=0.0.0.0`, or `SPM_LAN_ACCESS=1` in Docker)
+  exposes the dashboard, including the thought stream with characters' private reasoning, to
+  everyone on that network. Do that only on a trusted network.
 
 ## Chat behaviour
 

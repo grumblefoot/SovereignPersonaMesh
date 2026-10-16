@@ -370,6 +370,20 @@ def cmd_start(repo_root: Path, foreground: bool = False,
     return crashed[1] if crashed and crashed[1] != 0 else 0
 
 
+def _runs_from(pid: int, repo_root: Path) -> bool:
+    """True when process `pid` runs with `repo_root` as its working directory
+    (spm start spawns both services with cwd=repo_root). Unknown -> False: on
+    systems without /proc (Windows, macOS) a mismatched PID is never killed."""
+    try:
+        cwd = os.readlink(f"/proc/{int(pid)}/cwd")
+    except (OSError, ValueError):
+        return False
+    try:
+        return Path(cwd).resolve() == Path(repo_root).resolve()
+    except OSError:
+        return False
+
+
 def _reported_pid(body: dict) -> int | None:
     """The `pid` a /health body reports, or None (missing/garbage)."""
     try:
@@ -405,8 +419,18 @@ def cmd_stop(repo_root: Path, wait_s: float = STOP_WAIT_S,
         live_pid = _reported_pid(body)
         pid_to_kill = recorded if live_pid in (None, recorded) else live_pid
         if live_pid not in (None, recorded):
+            # Another SPM answers on this port. Stop it only when it runs from
+            # THIS checkout: a stale PID file in a second checkout must never
+            # stop the instance the user actually runs (third review, item 7).
+            if not _runs_from(live_pid, repo_root):
+                print(f"{name}: {url} is served by pid {live_pid}, which is not the "
+                      f"SPM started from {repo_root} (PID file says {recorded}). Not "
+                      f"stopping it; run `python -m spm stop` in that SPM's own folder.",
+                      file=sys.stderr)
+                still_up = True
+                continue
             print(f"{name}: PID file says {recorded} but {url}/health reports "
-                  f"{live_pid}; killing {live_pid} (it is the real SPM process).")
+                  f"{live_pid} (same folder); stopping {live_pid}.")
         _kill(pid_to_kill)
         if not _wait_unhealthy(url, wait_s, poll_s):
             print(f"WARNING: {name} (pid {pid_to_kill}) still answers {url}/health "

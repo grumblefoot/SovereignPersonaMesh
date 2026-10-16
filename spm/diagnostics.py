@@ -811,12 +811,14 @@ async def _values(conn, sql: str) -> List[str]:
         return []
 
 
-async def _name_table(env: dict) -> Dict[str, str]:
+async def _name_lists(env: dict) -> Optional[Dict[str, List[str]]]:
+    """Raw names by kind from the database (chat / char / player); None when no
+    database is configured. Raises when the database does not answer."""
     from .db import db_config_from_env
 
     cfg = db_config_from_env(env)
     if cfg is None:
-        return {}
+        return None
     conn = await _connect(cfg)
     try:
         chats = await _values(conn,
@@ -835,7 +837,41 @@ async def _name_table(env: dict) -> Dict[str, str]:
             await conn.close()
         except Exception:
             pass
+    all_chars = list(people) + list(chars)
+    return {"chat": list(chats), "char": all_chars,
+            "player": list(players) + _legacy_personas(chats, all_chars)}
 
+
+def _names_cache_path(root: Optional[Path] = None) -> Path:
+    """The last good name lists (git-ignored run/), used when the database is
+    down: a dead database is a prime reason to file a report (third review, 4).
+    Seam: tests point it at a temporary folder."""
+    from .run import default_repo_root
+    return Path(root or default_repo_root()) / "run" / "names.json"
+
+
+def _read_names_cache(path: Path) -> Dict[str, List[str]]:
+    import json
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: [str(v) for v in data.get(k) or [] if isinstance(v, str)]
+            for k in ("chat", "char", "player")}
+
+
+def _write_names_cache(path: Path, lists: Dict[str, List[str]]) -> None:
+    import json
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(lists, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _table_from_lists(lists: Dict[str, List[str]]) -> Dict[str, str]:
     table: Dict[str, str] = {}
 
     def add(values: List[str], prefix: str) -> None:
@@ -847,9 +883,9 @@ async def _name_table(env: dict) -> Dict[str, str]:
             n += 1
             table[v] = f"{prefix}#{n}"
 
-    add(chats, "chat")
-    add(list(people) + list(chars), "char")
-    add(list(players) + _legacy_personas(chats, list(people) + list(chars)), "player")
+    add(lists.get("chat") or [], "chat")
+    add(lists.get("char") or [], "char")
+    add(lists.get("player") or [], "player")
     return table
 
 
@@ -869,10 +905,20 @@ def _legacy_personas(chats: List[str], chars: List[str]) -> List[str]:
     return out
 
 
-async def name_table(env: dict) -> Dict[str, str]:
+async def name_table(env: dict, root: Optional[Path] = None) -> Dict[str, str]:
     """Replacement table for Redactor.names: session ids -> chat#N, character /
-    world ids -> char#N, player names -> player#N. Empty on any failure (5 s cap)."""
+    world ids -> char#N, player names -> player#N (5 s cap). The names are also
+    kept in run/names.json (merged with what was there), and that file is the
+    fallback when the database does not answer; empty when neither works."""
+    path = _names_cache_path(root)
+    cached = _read_names_cache(path)
     try:
-        return await asyncio.wait_for(_name_table(env), 5.0)
+        fresh = await asyncio.wait_for(_name_lists(env), 5.0)
     except Exception:
-        return {}
+        fresh = None
+    if not fresh:
+        return _table_from_lists(cached)
+    merged = {k: list(dict.fromkeys((fresh.get(k) or []) + (cached.get(k) or [])))
+              for k in ("chat", "char", "player")}
+    _write_names_cache(path, merged)
+    return _table_from_lists(merged)

@@ -126,6 +126,17 @@ def _no_container_cli_from_dotenv(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_names_cache(tmp_path, monkeypatch):
+    """Never let a test write the real run/names.json (the bug-report name cache)."""
+    try:
+        import spm.diagnostics as dx
+        monkeypatch.setattr(dx, "_names_cache_path", lambda root=None: tmp_path / "run" / "names.json")
+    except Exception:
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_real_pid_file(tmp_path, monkeypatch):
     """Never let a test touch the real run/spm.pids (a shutdown test deleted the live
     SPM's PID file when the suite ran in the live checkout, 2026-10-14)."""

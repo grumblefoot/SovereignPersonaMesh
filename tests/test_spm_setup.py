@@ -270,3 +270,17 @@ def test_main_skips_setup_when_database_step_failed(monkeypatch):
     monkeypatch.setattr(m.setup_mod, "cmd_setup",
                         lambda root, **kw: pytest.fail("setup must not run"))
     assert m.main(["init", "--yes"]) == 1
+
+
+async def test_setup_writes_to_spm_config_path(repo, monkeypatch, tmp_path):
+    # Third review, item 5: SPM reads SPM_CONFIG_PATH, so the answers go there.
+    install_fake_server(monkeypatch)
+    target = tmp_path / "elsewhere" / "my-settings.json"
+    monkeypatch.setenv("SPM_CONFIG_PATH", str(target))
+    rc = await setup.run_setup(
+        repo, backend_url="http://fake:13305/v1", model="Gemma-4-26B-A4B-it-GGUF",
+        embedding_url="http://fake:13305/v1",
+        embedding_model="Qwen3-Embedding-0.6B-GGUF-Q8_0", assume_yes=True)
+    assert rc == 0
+    assert json.loads(target.read_text())["BACKEND_LLM_URL"] == "http://fake:13305/v1"
+    assert not (repo / "config" / "config.local.json").exists()

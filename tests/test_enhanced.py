@@ -138,7 +138,7 @@ async def test_invalid_twice_is_error_and_report_still_builds(no_window, root, m
     async def fake_run_checks(env, **kw):
         return _checks()
 
-    async def fake_name_table(env):
+    async def fake_name_table(env, *_):
         return {}
 
     monkeypatch.setattr(rp, "run_checks", fake_run_checks)
@@ -248,7 +248,7 @@ def _cli_patched(monkeypatch, tmp_root):
     async def fake_run_checks(env, **kw):
         return _checks()
 
-    async def fake_name_table(env):
+    async def fake_name_table(env, *_):
         return {}
 
     monkeypatch.setattr(rp, "run_checks", fake_run_checks)
@@ -396,7 +396,7 @@ async def test_report_md_never_carries_raw_model_output(no_window, root, monkeyp
     async def fake_run_checks(env, **kw):
         return _checks()
 
-    async def fake_name_table(env):
+    async def fake_name_table(env, *_):
         return {"zelda": "char#1"}
 
     monkeypatch.setattr(rp, "run_checks", fake_run_checks)
@@ -415,7 +415,7 @@ async def test_error_reason_in_report_has_no_backend_url(no_window, root, monkey
     async def fake_run_checks(env, **kw):
         return _checks()
 
-    async def fake_name_table(env):
+    async def fake_name_table(env, *_):
         return {}
 
     monkeypatch.setattr(rp, "run_checks", fake_run_checks)

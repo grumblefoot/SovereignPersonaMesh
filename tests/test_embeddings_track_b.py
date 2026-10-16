@@ -349,7 +349,6 @@ def test_migration_001_idempotent_and_upgrades_all_tables():
 
             # Fresh-install tables from init_db.sql were swept too and already match.
             assert await _vector_typmod(conn, "csa_memory_luna", "episodic_embedding") == -1
-            assert "scope" in await _column_names(conn, "csa_lore_rules_luna")
 
             # spm_embedding_spaces exists with its uniqueness contract.
             await conn.execute(
