@@ -101,11 +101,13 @@ class LLMBackendError(RuntimeError):
 
 
 class LemonadeLLMClient:
-    def __init__(self, base_url: Optional[str] = None):
+    def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None):
         # Without an explicit URL the client follows the BACKEND_LLM_URL setting (env or
         # config.json) at call time, so the backend can live on another machine and be
         # changed without a restart. It used to be hard-wired to localhost:13305.
         self._explicit_base_url = base_url.rstrip("/") if base_url else None
+        # None: BACKEND_API_KEY from the settings at call time.
+        self._api_key = api_key
         self._client = None
         self._models_cache: Optional[Tuple[float, List[str]]] = None
         self._models_cache_url: Optional[str] = None
@@ -130,7 +132,11 @@ class LemonadeLLMClient:
     @property
     def client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=120.0)
+            from proxy.backend_client.auth import BackendKeyAuth, backend_api_key
+            # BACKEND_API_KEY for hosted APIs, sent to the backend's own origin only.
+            key = self._api_key if self._api_key is not None else backend_api_key
+            self._client = httpx.AsyncClient(
+                timeout=120.0, auth=BackendKeyAuth(lambda: self.base_url, key))
         return self._client
 
     async def close(self):

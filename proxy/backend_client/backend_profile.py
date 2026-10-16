@@ -269,7 +269,9 @@ async def window_for(client: Any, model: str) -> WindowInfo:
         if task is None:
             http = getattr(client, "_window_http", None)
             if not isinstance(http, httpx.AsyncClient) or http.is_closed:
-                http = httpx.AsyncClient(timeout=REQUEST_TIMEOUT_S)
+                from proxy.backend_client.auth import BackendKeyAuth
+                http = httpx.AsyncClient(timeout=REQUEST_TIMEOUT_S,
+                                         auth=BackendKeyAuth(base_url))
             task = asyncio.ensure_future(_probe_and_cache(base_url, resolved, http))
             _inflight[key] = task
             task.add_done_callback(lambda _t, k=key: _inflight.pop(k, None))

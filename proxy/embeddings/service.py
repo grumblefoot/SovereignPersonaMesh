@@ -470,10 +470,12 @@ def create_embedding_service(
         timeout_s = float(settings.get("EMBEDDING_TIMEOUT_S") or 3)
     except (TypeError, ValueError):
         timeout_s = 3.0
-    api_key = (
-        str(settings.get("EMBEDDING_API_KEY") or "").strip()
-        or str(settings.get("BACKEND_API_KEY") or "").strip()
-    )
+    # EMBEDDING_API_KEY, else BACKEND_API_KEY when the embeddings come from the
+    # chat backend's own server: a hosted chat key never goes to another host.
+    from proxy.backend_client.auth import same_origin
+    api_key = str(settings.get("EMBEDDING_API_KEY") or "").strip()
+    if not api_key and same_origin(base_url, str(settings.get("BACKEND_LLM_URL") or "")):
+        api_key = str(settings.get("BACKEND_API_KEY") or "").strip()
     provider = OpenAICompatProvider(
         base_url=base_url,
         model=model,

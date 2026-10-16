@@ -105,11 +105,24 @@ async def get_admin_stats():
     return JSONResponse(content=stats)
 
 
+# API keys never leave the server: the dashboard gets "" plus <KEY>_SET, and a new
+# key typed into the form replaces the stored one.
+_SECRET_SETTINGS = ("BACKEND_API_KEY", "EMBEDDING_API_KEY")
+
+
+def _public_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(settings)
+    for k in _SECRET_SETTINGS:
+        out[f"{k}_SET"] = bool(str(out.get(k) or "").strip())
+        out[k] = ""
+    return out
+
+
 @router.get("/config")
 async def get_config():
-    """Fetch current dynamic settings."""
+    """Fetch current dynamic settings (API keys masked)."""
     mgr = get_settings_manager()
-    return JSONResponse(content=mgr.get_settings())
+    return JSONResponse(content=_public_settings(mgr.get_settings()))
 
 
 @router.get("/config/saved")
@@ -217,10 +230,11 @@ async def backend_window():
 
 @router.post("/config")
 async def update_config(new_settings: Dict[str, Any]):
-    """Update dynamic settings in config.json."""
+    """Save the given settings (config.local.json); the reply masks API keys."""
     mgr = get_settings_manager()
-    updated = mgr.write_settings(new_settings)
-    return JSONResponse(content={"status": "success", "settings": updated})
+    flags = {f"{k}_SET" for k in _SECRET_SETTINGS}
+    updated = mgr.write_settings({k: v for k, v in new_settings.items() if k not in flags})
+    return JSONResponse(content={"status": "success", "settings": _public_settings(updated)})
 
 
 @router.delete("/sessions/{session_id}")

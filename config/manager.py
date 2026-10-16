@@ -58,7 +58,8 @@ _DEFAULT_VALUES: Dict[str, Any] = {
     # /v1/embeddings on Lemonade, KoboldCpp --embeddingsmodel, llama-server
     # --embedding). A llama.cpp user can point this at a second instance.
     "EMBEDDING_URL": "",
-    # Empty string means "use BACKEND_API_KEY".
+    # Empty string means "use BACKEND_API_KEY" when the embeddings come from the
+    # chat backend's own server (same scheme, host and port); otherwise no key.
     "EMBEDDING_API_KEY": "",
     # Calibrated in a 2026-10-05 bake-off of embedding models:
     # the FLM/NPU embed-gemma build scored recall@5 0.125 (near-random; paraphrase and
