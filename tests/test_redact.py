@@ -458,3 +458,57 @@ def test_user_text_keeps_the_description_but_not_secrets_or_names():
     assert "Sometimes a turn is cut off after two seconds" in out
     assert "Zelda" not in out and "char#1" in out
     assert "sk-ABCDEF" not in out and "/home/tester" not in out
+
+
+# ── FX-E: gaps found by the pre-push review (synthetic text only) ─────────────
+
+_TS = "2026-10-14 20:35:56,233 [INFO] proxy.api.routes: "
+
+
+def _r():
+    return Redactor(names={}, home=HOME, user=USER)
+
+
+def test_authorization_basic_credentials_are_removed():
+    out = _r().text(_TS + "Authorization: Basic dXNlcjpodW50ZXIy and later Basic Zm9vOmJhcg== again")
+    assert "dXNlcjpodW50ZXIy" not in out and "Zm9vOmJhcg" not in out
+    assert "Basic ***" in out
+
+
+def test_prose_with_tabs_double_spaces_and_numbers_is_redacted():
+    line = _TS + "the dragon\twoke  and 3 of the  villagers fled 2 miles into the  dark 4 mountains"
+    out = _r().text(line)
+    assert "dragon" not in out and "villagers" not in out and "mountains" not in out
+
+
+def test_label_number_pairs_and_tags_still_survive():
+    line = _TS + "[SPMProxy] Turn finished for char#1. Monologue chars: 0, Public chars: 2194"
+    assert _r().text(line) == line
+
+
+def test_legacy_session_ids_are_tokenised_but_spm_identifiers_are_not():
+    out = _r().text(_TS + "session st_Brenda_lord_vane ended; st_passthrough_shared_notes=true; "
+                    "see st_extension_setup.md")
+    assert "Brenda" not in out and "vane" not in out and "chat#" in out
+    assert "st_passthrough_shared_notes=true" in out and "st_extension_setup.md" in out
+
+
+def test_ipv6_is_masked_loopback_kept_and_times_untouched():
+    out = _r().text(_TS + "peer [2001:db8:85a3::8a2e:370:7334]:1234 lan fe80::1c2b%eth0 local ::1 at 20:35:56")
+    assert "2001:db8" not in out and "x:x:x:x" in out
+    assert "1c2b" not in out and "fe80::x" in out
+    assert "::1" in out and "at 20:35:56" in out
+
+
+def test_lan_host_names_are_masked_but_file_names_are_not():
+    out = _r().text(_TS + "POST http://brendas-pc.lan:1234/v1 nas.home kestrel-box.local "
+                    "config/config.local.json localhost")
+    assert "brendas" not in out and "<host>.lan:1234" in out
+    assert "nas" not in out and "<host>.home" in out and "<host>.local " in out
+    assert "config/config.local.json" in out and "localhost" in out
+
+
+def test_legacy_personas_from_session_ids():
+    from spm.diagnostics import _legacy_personas
+    chats = ["st_chat_Qh8sKd2mZx47", "st_Brenda_lord_vane", "st_Brenda_zelda", "st_x"]
+    assert _legacy_personas(chats, ["zelda", "lord_vane", "vane"]) == ["Brenda"]

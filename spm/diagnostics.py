@@ -823,8 +823,24 @@ async def _name_table(env: dict) -> Dict[str, str]:
 
     add(chats, "chat")
     add(list(people) + list(chars), "char")
-    add(players, "player")
+    add(list(players) + _legacy_personas(chats, list(people) + list(chars)), "player")
     return table
+
+
+def _legacy_personas(chats: List[str], chars: List[str]) -> List[str]:
+    """Persona names inside legacy session ids "st_<persona>_<character>": the
+    persona is stored nowhere else, so strip a known character id off the end."""
+    out: List[str] = []
+    for sid in chats:
+        if not sid.startswith("st_") or sid.startswith("st_chat_"):
+            continue
+        for ch in sorted((c for c in chars if c), key=len, reverse=True):
+            if sid.endswith("_" + ch) and len(sid) > len(ch) + 4:
+                persona = sid[3:-(len(ch) + 1)]
+                if persona and persona not in out:
+                    out.append(persona)
+                break
+    return out
 
 
 async def name_table(env: dict) -> Dict[str, str]:
