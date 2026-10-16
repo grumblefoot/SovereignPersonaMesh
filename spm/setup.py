@@ -154,7 +154,12 @@ async def run_setup(repo_root: Path, *,
     no_embeddings = emb_model.lower() == "none"
 
     # ── probes: warnings only, never fatal ──────────────────────────────────
-    async with httpx.AsyncClient(timeout=PROBE_TIMEOUT_S) as http:
+    # A hosted API needs BACKEND_API_KEY (from .env or the saved settings); it
+    # goes to the model server's own origin only.
+    from proxy.backend_client.auth import BackendKeyAuth
+    api_key = str(current.get("BACKEND_API_KEY") or env.get("BACKEND_API_KEY") or "").strip()
+    async with httpx.AsyncClient(timeout=PROBE_TIMEOUT_S,
+                                 auth=BackendKeyAuth(url, api_key)) as http:
         models = await _get_json(http, url.rstrip("/") + "/models")
         if models is None:
             print(f"WARNING: could not read {url}/models — is the model server running? "

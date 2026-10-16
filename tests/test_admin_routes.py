@@ -91,14 +91,15 @@ def test_get_config():
         mock_mgr.return_value.get_settings.return_value = {"setting_1": "value"}
         response = client.get("/admin/api/v1/config")
         assert response.status_code == 200
-        assert response.json() == {"setting_1": "value"}
+        # API keys are always masked (empty value plus a *_SET flag).
+        assert response.json() == {"setting_1": "value", "BACKEND_API_KEY": "", "BACKEND_API_KEY_SET": False, "EMBEDDING_API_KEY": "", "EMBEDDING_API_KEY_SET": False}
 
 def test_post_config():
     with patch('proxy.api.admin_routes.get_settings_manager') as mock_mgr:
         mock_mgr.return_value.write_settings.return_value = {"setting_1": "new"}
         response = client.post("/admin/api/v1/config", json={"setting_1": "new"})
         assert response.status_code == 200
-        assert response.json() == {"status": "success", "settings": {"setting_1": "new"}}
+        assert response.json() == {"status": "success", "settings": {"setting_1": "new", "BACKEND_API_KEY": "", "BACKEND_API_KEY_SET": False, "EMBEDDING_API_KEY": "", "EMBEDDING_API_KEY_SET": False}}
 
 def test_get_logs():
     with patch('proxy.api.admin_routes.get_telemetry_collector') as mock_tel:

@@ -188,7 +188,7 @@
       </div>
       <div class="form-group">
         <label>Backend API Key</label>
-        <input type="text" id="cfg-api-key" placeholder="Optional API Key" value="">
+        <input type="password" id="cfg-api-key" placeholder="Optional API key" value="" autocomplete="off">
       </div>
       <div class="form-group">
         <label>SPM Proxy Port</label>
@@ -756,6 +756,13 @@
       public_output_default: 'cfg-public-output-default', context_window_override: 'cfg-context-window-override',
     };
 
+    function setApiKeyField(isSet) {
+      const f = document.getElementById('cfg-api-key');
+      if (!f) return;
+      f.value = '';
+      f.placeholder = isSet ? 'Key set (hidden). Type a new key to replace it.' : 'Optional API key';
+    }
+
     function setConfigStatus(msg, color) {
       const s = document.getElementById('cfg-save-status');
       if (!s) return;
@@ -781,7 +788,9 @@
         }
         const data = await res.json();
         document.getElementById('cfg-llm-url').value = data.BACKEND_LLM_URL || '';
-        document.getElementById('cfg-api-key').value = data.BACKEND_API_KEY || '';
+        // The server never sends the key back: an empty field keeps the stored key,
+        // a typed one replaces it.
+        setApiKeyField(!!data.BACKEND_API_KEY_SET);
         document.getElementById('cfg-port').value = data.SPM_PROXY_PORT || 5050;
         document.getElementById('cfg-cadence').value = data.periodic_review_cadence || 15;
         document.getElementById('cfg-use-alt').checked = data.use_alternate_extraction_model === 'true' || data.use_alternate_extraction_model === true;
@@ -930,6 +939,11 @@
         return;
       }
       Object.assign(loadedConfig, changed);
+      if ('BACKEND_API_KEY' in changed) {
+        // Do not keep the key in the page: clear the field, remember only "set".
+        setApiKeyField(!!changed.BACKEND_API_KEY);
+        loadedConfig.BACKEND_API_KEY = '';
+      }
       setConfigStatus('Saved: ' + Object.keys(changed).join(', ') + '.' + skippedNote, 'var(--success)');
       loadBackendWindowStatus();
       loadConfigProvenance();

@@ -304,9 +304,16 @@ async def check_model_server(env: dict, ctx: _Ctx) -> Check:
     except Exception:
         details["local"] = None
 
+    # BACKEND_API_KEY rides along to the backend's own origin (hosted APIs need
+    # it); the report only says whether one is set, never the key.
+    from proxy.backend_client.auth import BackendKeyAuth
+    api_key = str(_setting(env, ctx, "BACKEND_API_KEY") or "").strip()
+    details["backend_key_set"] = bool(api_key)
+
     # GET /models only — NEVER a generation request (brief R1b).
     try:
-        async with await _make_http(timeout=_SERVER_TIMEOUT_S) as client:
+        async with await _make_http(timeout=_SERVER_TIMEOUT_S,
+                                    auth=BackendKeyAuth(base, api_key)) as client:
             try:
                 resp = await client.get(f"{base}/models")
             except Exception as err:
@@ -320,6 +327,10 @@ async def check_model_server(env: dict, ctx: _Ctx) -> Check:
                     ids = _model_ids(resp.json())
                 except Exception as err:
                     parse_error = f"{type(err).__name__}: {err}"
+            elif resp.status_code in (401, 403):
+                parse_error = (f"HTTP {resp.status_code}: the server refused the request; "
+                               + ("check BACKEND_API_KEY" if api_key
+                                  else "it needs an API key (BACKEND_API_KEY)"))
             else:
                 parse_error = f"HTTP {resp.status_code}"
             details["model_ids"] = ids

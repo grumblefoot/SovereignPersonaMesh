@@ -244,7 +244,8 @@ async def enhanced_analysis(env: dict, checks: List[Check], description: str, *,
         if client is None:
             from proxy.backend_client.lemonade_client import LemonadeLLMClient
             base = _backend_url(env, repo_root=repo_root)
-            client = LemonadeLLMClient(base_url=base or None)
+            client = LemonadeLLMClient(base_url=base or None,
+                                       api_key=_backend_key(env, repo_root=repo_root))
         base_url = str(getattr(client, "base_url", "") or "").strip().rstrip("/")
 
         if model is None:
@@ -571,6 +572,20 @@ def _stdin_tty() -> bool:
         return sys.stdin.isatty()
     except (AttributeError, ValueError):
         return False
+
+
+def _backend_key(env: dict, repo_root=None) -> str:
+    """BACKEND_API_KEY by the same rule as _backend_url (settings file, then the
+    environment including .env). Never printed or written anywhere."""
+    from types import SimpleNamespace
+
+    from .diagnostics import _effective_settings
+    root = Path(repo_root) if repo_root is not None else default_repo_root()
+    try:
+        settings = _effective_settings(env, SimpleNamespace(root=root))[0]
+        return str(settings.get("BACKEND_API_KEY") or "").strip()
+    except Exception:
+        return str(env.get("BACKEND_API_KEY") or "").strip()
 
 
 def _backend_url(env: dict, repo_root=None) -> str:
