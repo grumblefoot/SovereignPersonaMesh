@@ -22,6 +22,10 @@ Purely normative checks on the visible request headers; no DNS, no sockets.
 from urllib.parse import urlsplit
 
 _ADMIN_PREFIX = "/admin"
+# The world engine mounts the same guard on its whole API (/api/v1): it binds loopback
+# by default and its endpoints (shutdown, reset, room/character mutations) take simple
+# POSTs that any web page could send without a preflight (second review, item 1).
+_ENGINE_PREFIX = "/api/v1"
 _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
 
@@ -85,9 +89,10 @@ def is_referer_same_site(referer_header: str, own_origin: str) -> bool:
     return referer in allowed_origins(own_origin)
 
 
-def _host_ok(host_header: str) -> bool:
-    """Loopback Host names are always fine. Other names only when SPM was deliberately
-    opened to the network (SPM_HOST not a loopback address); a test client's default
+def _host_ok(host_header: str, bind_env: str = "SPM_HOST") -> bool:
+    """Loopback Host names are always fine. Other names only when the service was
+    deliberately opened to the network (`bind_env` — SPM_HOST for the proxy,
+    SPM_ENGINE_HOST for the engine — not a loopback address); a test client's default
     'testserver' counts as local."""
     import os
     name = host_header.strip().lower()
@@ -97,22 +102,29 @@ def _host_ok(host_header: str) -> bool:
         name = name.split(":", 1)[0]
     if name in ("127.0.0.1", "localhost", "::1", "testserver", ""):
         return True
+    if name == "test" or name.endswith(".test"):
+        # RFC 2606 reserves .test: it can never resolve on the public DNS, so no
+        # rebinding page can carry it. The suite's ASGI clients use such hosts.
+        return True
     if os.getenv("SPM_IN_CONTAINER") == "1" and os.getenv("SPM_LAN_ACCESS") != "1":
         # The Docker bundle binds 0.0.0.0 inside the container but publishes 127.0.0.1 only.
         return False
-    bind = os.getenv("SPM_HOST", "127.0.0.1").strip().lower()
+    bind = os.getenv(bind_env, "127.0.0.1").strip().lower()
     return bind not in ("127.0.0.1", "localhost", "::1")
 
 
 class OriginGuardMiddleware:
-    """Pure ASGI middleware guarding /admin paths against cross-site requests."""
+    """Pure ASGI middleware guarding `prefixes` (default: /admin) against cross-site
+    requests. The engine passes prefixes=("/api/v1",) and bind_env="SPM_ENGINE_HOST"."""
 
-    def __init__(self, app):
+    def __init__(self, app, prefixes=(_ADMIN_PREFIX,), bind_env: str = "SPM_HOST"):
         self.app = app
+        self.prefixes = tuple(prefixes)
+        self.bind_env = bind_env
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or \
-                not scope.get("path", "").startswith(_ADMIN_PREFIX):
+                not scope.get("path", "").startswith(self.prefixes):
             await self.app(scope, receive, send)
             return
 
@@ -125,7 +137,7 @@ class OriginGuardMiddleware:
         # DNS rebinding: a page on evil.example can make its own name resolve to 127.0.0.1;
         # its requests then carry Host: evil.example and look same-origin. While SPM listens
         # on this machine only (the default), an admin request must name a loopback host.
-        if not _host_ok(headers.get("host", "")):
+        if not _host_ok(headers.get("host", ""), self.bind_env):
             await self._deny(send)
             return
 

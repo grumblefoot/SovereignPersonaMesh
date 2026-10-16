@@ -38,6 +38,14 @@ async def _lifespan(_app):
 
 app = FastAPI(title="Evennia World State Engine Liaison API", version="0.2.0", lifespan=_lifespan)
 
+# Second pre-push review, item 1: the engine binds loopback by default, but any web page
+# in the user's browser could still send a simple POST to /api/v1/world/admin/shutdown
+# (or reset / move / create_room with a Content-Type-less JSON body) and the peer looked
+# local. The same guard the proxy mounts on /admin refuses cross-site requests here on the
+# whole API; server-side callers (the proxy, curl, tests) send no Origin and pass.
+from proxy.api.origin_guard import OriginGuardMiddleware, _ENGINE_PREFIX  # noqa: E402
+app.add_middleware(OriginGuardMiddleware, prefixes=(_ENGINE_PREFIX,), bind_env="SPM_ENGINE_HOST")
+
 # ── Internal state ──────────────────────────────────────────────────────
 lock_manager = SessionLockManager()
 world_builder = HybridWorldBuilder()

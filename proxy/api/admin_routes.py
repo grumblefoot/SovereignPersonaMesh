@@ -10,6 +10,7 @@ Mounted under /admin/api/v1/:
 """
 
 import logging
+import os
 import re
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Request
@@ -109,6 +110,14 @@ async def get_config():
     """Fetch current dynamic settings."""
     mgr = get_settings_manager()
     return JSONResponse(content=mgr.get_settings())
+
+
+@router.get("/config/saved")
+async def get_config_saved():
+    """Which settings the user saved (dashboard / spm init) and therefore override .env
+    and the defaults (second review, item 11). POST /config with {"key": null} un-saves one."""
+    mgr = get_settings_manager()
+    return JSONResponse(content={"saved_keys": mgr.saved_keys()})
 
 
 @router.get("/logs")
@@ -342,10 +351,10 @@ async def shutdown_system(request: Request):
     Brief FX-B: loopback client only, like the engine's shutdown endpoint.
     """
     import os, signal, asyncio
-    require_loopback(request)
-    logger.warning("[AdminAPI] Received shutdown request. Shutting down services...")
-
     if os.environ.get("SPM_IN_CONTAINER") == "1":
+        # Checked BEFORE the loopback rule: inside the bundle the browser's request
+        # arrives from the Docker bridge gateway, so the loopback check would answer
+        # 403 instead of this explanation (second review, item 7).
         # Inside the Docker bundle a self-kill just restarts the container and
         # strands the database container. Point at the bundle's stop instead.
         return JSONResponse(content={
@@ -354,6 +363,8 @@ async def shutdown_system(request: Request):
                         "scripts\\docker\\stop.cmd (Windows) or scripts/docker/stop.sh "
                         "(Linux/macOS), or the Stop button of the 'spm' group in "
                         "Docker Desktop. Your data is kept.")})
+    require_loopback(request)
+    logger.warning("[AdminAPI] Received shutdown request. Shutting down services...")
 
     # Engine URL from the existing, configured evennia client (its base_url ends
     # in /api/v1, so the new engine shutdown endpoint hangs off it directly).
@@ -482,11 +493,19 @@ async def create_report(body: dict, request: Request):
     confirm_remote = bool(body.get("confirm_remote"))
 
     if full_logs:
+        if os.environ.get("SPM_IN_CONTAINER") == "1":
+            # The browser's request arrives from the bridge gateway, and the private
+            # bundle would sit inside the container anyway (second review, item 7).
+            raise HTTPException(
+                status_code=403,
+                detail="Full logs are not available from the dashboard in Docker. Run "
+                       "`docker compose -f config/docker-compose.yml exec spm python -m "
+                       "spm report --full-logs` and copy the file out with `docker cp`.")
         require_loopback(request)
 
     env = child_env(default_repo_root())
     if enhanced and not confirm_remote:
-        base = spm_report._backend_url(env)
+        base = spm_report._backend_url(env, repo_root=default_repo_root())
         if base and not _is_local(base):
             import urllib.parse
             host = urllib.parse.urlparse(base).hostname or base
@@ -535,15 +554,21 @@ async def download_report(name: str):
 
     if not _REPORT_BUNDLE_RE.fullmatch(name or ""):
         raise HTTPException(status_code=404, detail="report not found")
-    if "PRIVATE" in name:
-        reports_path = _reports_dir()
+    def _private():
         return JSONResponse(
             status_code=403,
             content={"error": "Private reports are not served over the network. "
-                              f"Open {reports_path}/{name} on this machine."})
+                              f"Open reports/{name} in the SPM folder on this machine."})
+    # Case-insensitive on purpose, and re-checked on the name the filesystem resolves to:
+    # on Windows/macOS `spm-report-private-x.zip` opens the real PRIVATE file (second
+    # review, item 3). The message names the file only, never the absolute path.
+    if "private" in name.lower():
+        return _private()
     path = _reports_dir() / name
     if not path.is_file():
         raise HTTPException(status_code=404, detail="report not found")
+    if "private" in path.resolve().name.lower():
+        return _private()
     return FileResponse(path, media_type="application/zip", filename=name)
 
 

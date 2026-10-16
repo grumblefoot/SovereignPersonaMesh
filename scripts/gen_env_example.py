@@ -67,7 +67,7 @@ DIRECT = [
     ("CONSOLIDATION_MODEL_NAME", "Gemma-4-E4B-it-GGUF",
      "Model used by the sleep-cycle memory consolidation.", "Behaviour"),
     ("SPM_CONFIG_PATH", "",
-     "Settings file. Default: config/config.local.json if it exists (dashboard settings are saved there), else config/config.json.", "Development"),
+     "Settings file (what the dashboard and spm init saved; overrides .env). Default: config/config.local.json. The tracked config/config.json is read underneath as repo defaults and never written.", "Development"),
     ("SPM_RELOAD", "0",
      "1 = uvicorn autoreload for proxy development.", "Development"),
     ("SPM_LOG_HEADERS", "0",

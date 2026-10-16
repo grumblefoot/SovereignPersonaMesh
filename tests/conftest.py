@@ -114,6 +114,18 @@ def reset_clients():
 
 
 @pytest.fixture(autouse=True)
+def _no_container_cli_from_dotenv(monkeypatch):
+    """A developer's .env (loaded into os.environ when proxy.main is imported at
+    collection) must never make the suite reach a real docker/podman CLI or take
+    the in-container code paths: with SPM_DB_CONTAINER set, cmd_stop ran a real
+    `docker stop <name>` (second review). Tests that exercise those paths set the
+    variables explicitly."""
+    for var in ("SPM_DB_CONTAINER", "SPM_IN_CONTAINER"):
+        monkeypatch.delenv(var, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_real_pid_file(tmp_path, monkeypatch):
     """Never let a test touch the real run/spm.pids (a shutdown test deleted the live
     SPM's PID file when the suite ran in the live checkout, 2026-10-14)."""

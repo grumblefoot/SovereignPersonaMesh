@@ -276,20 +276,160 @@ def test_remote_without_yes_falls_back_to_traditional(monkeypatch, root, capsys)
         assert "## Enhanced analysis" not in zf.read("report.md").decode("utf-8")
 
 
-def test_remote_with_yes_proceeds(monkeypatch, root, capsys):
-    """Sync test: cmd_report calls asyncio.run, which needs no outer loop."""
+def test_remote_with_yes_alone_falls_back(monkeypatch, root, capsys):
+    """--yes is non-interactive, not consent (FX-G 3): a remote server with
+    --yes and no --confirm-remote means the Traditional report, no model call."""
     from spm.__main__ import main
     monkeypatch.setenv("BACKEND_LLM_URL", REMOTE_URL)
+    monkeypatch.setattr(rp.webbrowser, "open", lambda url: None)
+    _cli_patched(monkeypatch, root)
+    client = FakeClient([_text()])
+
+    def no_prompt(prompt):
+        raise AssertionError("--yes must never prompt")
+
+    rc = main(["report", "--yes", "--enhanced", "--description", "x"],
+              repo_root=root, enhanced_client=client, input_fn=no_prompt)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "a remote service (this may cost tokens)" in out
+    assert "--confirm-remote" in out
+    assert "Falling back to the Traditional report." in out
+    assert client.calls == []
+    bundles = list((root / "reports").glob("spm-report-*.zip"))
+    with zipfile.ZipFile(bundles[0]) as zf:
+        assert "## Enhanced analysis" not in zf.read("report.md").decode("utf-8")
+
+
+@pytest.mark.parametrize("extra", [["--yes"], []])
+def test_remote_with_confirm_remote_proceeds(monkeypatch, root, capsys, extra):
+    """--confirm-remote is the consent, with or without --yes; no prompt."""
+    from spm.__main__ import main
+    monkeypatch.setenv("BACKEND_LLM_URL", REMOTE_URL)
+    monkeypatch.setattr(rp.webbrowser, "open", lambda url: None)
     _cli_patched(monkeypatch, root)
     async def fake_window(base_url, model, client):
         return None
     monkeypatch.setattr(rp, "_window_tokens", fake_window)
     client = FakeClient([_text()])
-    rc = main(["report", "--yes", "--enhanced", "--description", "x"],
-              repo_root=root, enhanced_client=client)
+
+    def no_prompt(prompt):
+        raise AssertionError("--confirm-remote must never prompt")
+
+    rc = main(["report", "--enhanced", "--confirm-remote", "--description", "x"] + extra,
+              repo_root=root, enhanced_client=client, input_fn=no_prompt)
     assert rc == 0
     assert "a remote service (this may cost tokens)" in capsys.readouterr().out
-    assert len(client.calls) == 1  # --yes is the consent
+    assert len(client.calls) == 1
+
+
+def test_consent_reads_the_given_repo_root_not_the_checkout(tmp_path, monkeypatch, capsys):
+    """The remote/local decision follows repo_root's settings file (file wins
+    over env), never the developer's real config.local.json."""
+    import json as _json
+    monkeypatch.delenv("SPM_CONFIG_PATH", raising=False)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.local.json").write_text(
+        _json.dumps({"BACKEND_LLM_URL": REMOTE_URL}), encoding="utf-8")
+    env = {"BACKEND_LLM_URL": LOCAL_URL}
+    assert rp._enhanced_consent(env, yes=True, repo_root=tmp_path) is False
+    assert "a remote service" in capsys.readouterr().out
+    assert rp._enhanced_consent(env, yes=True, repo_root=tmp_path, confirm_remote=True) is True
+    # and a root without a settings file falls back to the environment (local)
+    other = tmp_path / "empty"
+    other.mkdir()
+    assert rp._enhanced_consent(env, yes=True, repo_root=other) is True
+
+
+async def test_enhanced_analysis_passes_repo_root_to_backend_url(monkeypatch, tmp_path):
+    seen = []
+
+    def fake_backend_url(env, repo_root=None):
+        seen.append(repo_root)
+        raise RuntimeError("stop here: no client is built in this test")
+
+    monkeypatch.setattr(rp, "_backend_url", fake_backend_url)
+    out = await rp.enhanced_analysis({}, _checks(), "x", repo_root=tmp_path)
+    assert "error" in out and seen == [tmp_path]
+
+
+# ── FX-G 1: model output and error reasons are redacted in the report ────────
+
+PLANTED_KEY = "sk-" + "Q" * 24
+
+
+def _poisoned_payload():
+    return _payload(
+        summary="Zelda's turn stalls;  key " + PLANTED_KEY + "\nnext line "
+                "POSTGRES_PASSWORD=hunter2-supersecret",
+        likely_causes=[{"cause": "logs in /home/someoneelse/spm say Zelda left",
+                        "evidence": "peer 203.0.113.9 and brendas-pc",
+                        "fix": "x" * 5000}],
+        what_to_try=["mail brenda@example.org", "restart\n\nthe server"],
+        severity="high")
+
+
+def test_enhanced_markdown_redacts_model_output_and_errors():
+    from spm.redact import Redactor
+    r = Redactor(names={"zelda": "char#1"}, home="/home/tester", user="tester")
+    md = "\n".join(rp._enhanced_markdown(_poisoned_payload(), r))
+    for leak in ("Zelda", PLANTED_KEY, "hunter2-supersecret", "/home/someoneelse",
+                 "203.0.113.9", "brendas-pc", "brenda@example.org"):
+        assert leak not in md, leak
+    assert "char#1" in md and "<email>" in md and "<host>" in md
+    assert "Summary: char#1 turn stalls; key *** next line POSTGRES_PASSWORD=***" in md
+    assert all(len(line) <= 2100 for line in md.splitlines())
+    assert "- restart the server" in md  # whitespace collapsed to one line
+    err = ("ConnectError at https://api.example-llm.com/v1/chat/completions "
+           "for Zelda\nfrom /home/someoneelse " + "e" * 1000)
+    line = [l for l in rp._enhanced_markdown({"error": err}, r)
+            if l.startswith("Enhanced analysis unavailable:")][0]
+    assert "api.example-llm.com" not in line and "<url>" in line
+    assert "Zelda" not in line and "/home/someoneelse" not in line
+    assert "\n" not in line and len(line) <= 300 + len("Enhanced analysis unavailable: ")
+    assert rp._enhanced_markdown({"severity": "bogus", "summary": "s",
+                                  "need_checks": ["drop_table", "chat_overview"]}, r)[-1] \
+        == "Checks requested by the analysis: chat_overview"
+
+
+async def test_report_md_never_carries_raw_model_output(no_window, root, monkeypatch):
+    async def fake_run_checks(env, **kw):
+        return _checks()
+
+    async def fake_name_table(env):
+        return {"zelda": "char#1"}
+
+    monkeypatch.setattr(rp, "run_checks", fake_run_checks)
+    monkeypatch.setattr(rp, "name_table", fake_name_table)
+    client = FakeClient([json.dumps(_poisoned_payload())])
+    report = await rp.build_report({}, description="x", enhanced=True,
+                                   repo_root=root, enhanced_client=client)
+    for leak in ("Zelda", PLANTED_KEY, "hunter2-supersecret", "/home/someoneelse",
+                 "203.0.113.9", "brendas-pc", "brenda@example.org"):
+        assert leak not in report.markdown, leak
+    with zipfile.ZipFile(report.path) as zf:
+        assert PLANTED_KEY not in zf.read("report.md").decode("utf-8")
+
+
+async def test_error_reason_in_report_has_no_backend_url(no_window, root, monkeypatch):
+    async def fake_run_checks(env, **kw):
+        return _checks()
+
+    async def fake_name_table(env):
+        return {}
+
+    monkeypatch.setattr(rp, "run_checks", fake_run_checks)
+    monkeypatch.setattr(rp, "name_table", fake_name_table)
+    client = FakeClient([RuntimeError("POST https://api.example-llm.com/v1/chat/completions "
+                                      "refused; token=abc123 at /home/someoneelse/x"),
+                         RuntimeError("again")])
+    report = await rp.build_report({}, description="x", enhanced=True,
+                                   repo_root=root, enhanced_client=client)
+    line = [l for l in report.markdown.splitlines()
+            if l.startswith("Enhanced analysis unavailable:")][0]
+    assert "api.example-llm.com" not in line and "<url>" in line
+    assert "abc123" not in line and "/home/someoneelse" not in line
+    assert "the model server call failed: RuntimeError" in line
 
 
 def test_backend_url_follows_the_settings_file(tmp_path):

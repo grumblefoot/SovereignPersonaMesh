@@ -465,8 +465,8 @@ def test_user_text_keeps_the_description_but_not_secrets_or_names():
 _TS = "2026-10-14 20:35:56,233 [INFO] proxy.api.routes: "
 
 
-def _r():
-    return Redactor(names={}, home=HOME, user=USER)
+def _r(**kw):
+    return Redactor(names={}, home=HOME, user=USER, **kw)
 
 
 def test_authorization_basic_credentials_are_removed():
@@ -512,3 +512,108 @@ def test_legacy_personas_from_session_ids():
     from spm.diagnostics import _legacy_personas
     chats = ["st_chat_Qh8sKd2mZx47", "st_Brenda_lord_vane", "st_Brenda_zelda", "st_x"]
     assert _legacy_personas(chats, ["zelda", "lord_vane", "vane"]) == ["Brenda"]
+
+
+# ── FX-G: gaps found by the second review (synthetic text only) ───────────────
+
+def test_dotted_token_is_linear_time():
+    """A 16k-char dotted token took >3 s (the secret rule retried at every
+    segment); it must stay well under 0.2 s now."""
+    r = _r()
+    r.text("warm up")
+    for sep in ".-@:/":
+        line = "trace " + sep.join(["a1"] * 8000)
+        t0 = time.perf_counter()
+        out = r.text(line)
+        assert time.perf_counter() - t0 < 0.2, sep
+        assert out == line  # nothing to redact, nothing changed
+    # the dotted keys that motivated the look-behind still work
+    assert r.text("db.password: hunter2x") == "db.password: ***"
+    assert r.text("X.POSTGRES_PASSWORD=hunter2x") == "X.POSTGRES_PASSWORD=***"
+    assert r.text("settings.api_key=hunter2x") == "settings.api_key=***"
+
+
+def test_email_addresses_become_email_token():
+    r = Redactor(names={"brenda": "player#1"}, home="/home/tester", user="tester")
+    assert r.text(_TS + "mail brenda@example.org bounced") == _TS + "mail <email> bounced"
+    out = r.text(_TS + "mail brenda.smith@example.org bounced")
+    assert "<email>" in out and "smith" not in out and "player#1." not in out
+    assert r.user_text("write to brenda.smith@example.org please") == "write to <email> please"
+    # a bare "@" with no domain dot is not an e-mail address
+    assert "@" in r.text("ping user@localhost")
+
+
+@pytest.mark.parametrize("url, host", [
+    ("postgresql://spm_user:hun/ter2@localhost/db", "localhost/db"),
+    ("redis://:secretpass@host", "host"),
+    ("amqp://u:p@ss@h.example.com/v", "h.example.com/v"),
+    ("postgresql://spm_user:plain@localhost/spm_db", "localhost/spm_db"),
+])
+def test_url_credentials_with_slash_or_at_in_the_password(url, host):
+    out = _r().text(_TS + "dsn " + url)
+    scheme = url.split("://")[0]
+    assert out == _TS + f"dsn {scheme}://***@{host}", out
+    for leak in ("hun/ter2", "secretpass", "p@ss", "plain"):
+        assert leak not in out
+
+
+def test_bare_machine_names_are_masked():
+    r = Redactor(names={"brenda": "player#1"}, home="/home/tester", user="tester")
+    assert r.text(_TS + "peer brendas-pc:1234 answered") == _TS + "peer <host>:1234 answered"
+    assert r.text(_TS + "node DESKTOP-ABC123 boot") == _TS + "node <host> boot"
+    assert r.text(_TS + "host 'brendas-desktop' down") == _TS + "host '<host>' down"
+    assert r.text(_TS + "ddns brendas-pc.dyndns.org") == _TS + "ddns <host>.dyndns.org"
+    assert r.text(_TS + "LAPTOP-XY12 and Brendas-Laptop") == _TS + "<host> and <host>"
+    assert r.user_text("it ran on brendas-nas") == "it ran on <host>"
+    # service and well-known names stay readable
+    keep = "localhost:5050 host.docker.internal postgres redis"
+    assert r.text(_TS + keep) == _TS + keep
+
+
+def test_name_tokens_do_not_split_prose_runs():
+    """A 7-word tail after a replaced name used to survive (the token counted
+    as a run break); tokens are neutral now, so the whole sentence goes."""
+    r = Redactor(names={"zelda": "char#1"}, home="/home/tester", user="tester")
+    out = r.text(_TS + "the party rides out at dawn with Zelda and the whole village")
+    assert out == _TS + "<redacted 11 words>", out
+    out = r.text(_TS + "session chat#ab12 saw the party ride out at dawn today, friends")
+    assert "<redacted" in out and "friends" not in out
+    # a short technical line with a token keeps its shape
+    short = _TS + "memory write skipped for char#1 (cooldown)"
+    assert r.text(short) == short
+
+
+@pytest.mark.parametrize("line, keep", [
+    ("google key AIza" + "A" * 35 + " used", "google key *** used"),
+    ("gh ghp_" + "B" * 36 + " used", "gh *** used"),
+    ("hf hf_" + "C" * 34 + " used", "hf *** used"),
+    ("jwt eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.SflKxwRJSMeKKF2QT4 used", "jwt *** used"),
+    ("GET /v1/models?key=abc123&x=1", "GET /v1/models?key=***&x=1"),
+    ("GET /v1/x?a=1&key=zzz", "GET /v1/x?a=1&key=***"),
+    ("Server=db;Pwd=hunter2x;Db=spm", "Server=db;Pwd=***;Db=spm"),
+    ("pwd=hunter2x ok", "pwd=*** ok"),
+])
+def test_common_key_shapes_and_query_parameters(line, keep):
+    assert _r().text(_TS + line) == _TS + keep
+
+
+@pytest.mark.parametrize("line", [
+    "max_tokens=800", "tokens=512", "token_count: 55", "completion_tokens=3",
+    "prompt_tokens=1 total_tokens=4 n_tokens=9", "tokenizer=llama",
+])
+def test_token_counters_are_not_secrets(line):
+    assert _r().text(_TS + line) == _TS + line
+    assert _r(keep_content=True).text(line) == line
+
+
+@pytest.mark.parametrize("line, keep", [
+    ("token=abc123", "token=***"),
+    ("my_token=abc123", "my_token=***"),
+    ("HF_TOKEN=abc123", "HF_TOKEN=***"),
+    ("access-token: abc123", "access-token: ***"),
+    ("accessToken=abc123", "accessToken=***"),
+    ('"token": "abc123"', '"token": "***"'),
+    ("x.token=abc123", "x.token=***"),
+])
+def test_real_token_keys_are_still_secrets(line, keep):
+    assert _r().text(_TS + line) == _TS + keep

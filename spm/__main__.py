@@ -54,11 +54,19 @@ def build_parser() -> argparse.ArgumentParser:
                           help="include the full recent logs (PRIVATE: chat text; "
                                "send only to the developers, never post publicly)")
     p_report.add_argument("--yes", action="store_true",
-                          help="do not open the issue URL in a browser")
+                          help="non-interactive: do not open the issue URL in a "
+                               "browser and never prompt (this is NOT consent to a "
+                               "remote model server; see --confirm-remote)")
     p_report.add_argument("--enhanced", action="store_true",
                           help="model-powered analysis of the checks (sends the "
                                "redacted diagnostics to the configured model "
                                "server; a remote server asks for confirmation)")
+    p_report.add_argument("--confirm-remote", action="store_true",
+                          help="with --enhanced: allow sending the redacted "
+                               "diagnostics to a REMOTE model server (not loopback, "
+                               "LAN or a .local/.lan host); without it, a remote "
+                               "server gets an interactive [y/N] prompt, or with "
+                               "--yes the Traditional report instead")
     return parser
 
 
@@ -92,6 +100,7 @@ def main(argv: list[str] | None = None, *, repo_root: Path | None = None,
             full_logs=args.full_logs,
             yes=args.yes,
             enhanced=args.enhanced,
+            confirm_remote=args.confirm_remote,
             enhanced_client=enhanced_client,
             input_fn=input_fn)
     return 2  # unreachable: argparse enforces the subcommand

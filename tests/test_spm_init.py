@@ -129,10 +129,16 @@ async def test_unrelated_tables_refuse_even_with_existing(init_env, capsys):
         await conn.close()
 
 
-def test_unreachable_host_exit_1_no_traceback(tmp_path, capsys):
+def test_unreachable_host_exit_1_no_traceback(tmp_path, monkeypatch, capsys):
     """Brief FX-D: connection errors give one friendly line naming host and
     port and exit 1 — no traceback. Port 1 on localhost: refused instantly."""
     from spm.db import cmd_init
+    # child_env merges os.environ with the .env WITHOUT overriding: a developer's
+    # .env (in os.environ since collection) would otherwise win over the tmp .env
+    # and this test would talk to a real server. POSTGRES_DB stays as conftest
+    # sets it unless the tmp .env below is the only source.
+    for var in ("POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_USER", "POSTGRES_PASSWORD"):
+        monkeypatch.delenv(var, raising=False)
     (tmp_path / ".env").write_text(
         "POSTGRES_HOST=127.0.0.1\nPOSTGRES_PORT=1\n"
         "POSTGRES_USER=nobody\nPOSTGRES_PASSWORD=nobody\n"

@@ -17,13 +17,17 @@ from config.manager import default_config_path
 
 # ── config path choice (config/manager.py) ──────────────────────────────────
 
-def test_default_config_path_prefers_local_when_present(tmp_path):
+def test_default_config_path_is_always_the_local_file(tmp_path):
+    """Second pre-push review, item 4: the save target is config.local.json whether
+    or not it exists yet (a dashboard save must never dirty the tracked file); the
+    tracked config.json is only read underneath it."""
+    from config.manager import tracked_config_path
     tracked = tmp_path / "config.json"
     local = tmp_path / "config.local.json"
-    # No local file: the tracked file (unchanged behaviour).
-    assert default_config_path(str(tmp_path)) == str(tracked)
+    assert default_config_path(str(tmp_path)) == str(local)      # no local file yet
     local.write_text("{}", encoding="utf-8")
     assert default_config_path(str(tmp_path)) == str(local)
+    assert tracked_config_path(str(tmp_path)) == str(tracked)
 
 
 def test_settings_manager_writes_the_chosen_local_file(tmp_path, monkeypatch):
@@ -136,7 +140,10 @@ async def test_setup_merges_existing_local_file(repo, monkeypatch):
     written = json.loads(local.read_text(encoding="utf-8"))
     assert written["gm_actions_mode"] == "off"                  # kept
     assert written["EMBEDDING_PROVIDER"] == "none"              # new choice
-    assert "EMBEDDING_MODEL" not in written or written["EMBEDDING_PROVIDER"] == "none"
+    # 'none' writes only the provider: no model or URL keys appear in the local file
+    assert "EMBEDDING_MODEL" not in written and "EMBEDDING_URL" not in written
+    assert written == {"gm_actions_mode": "off", "BACKEND_LLM_URL": "http://fake/v1",
+                       "EMBEDDING_PROVIDER": "none"}
 
 
 async def test_setup_yes_writes_env_backend_url(repo, monkeypatch):

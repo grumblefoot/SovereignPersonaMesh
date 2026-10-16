@@ -8,6 +8,7 @@ which host the server would be started on.
 
 import os
 import runpy
+from unittest.mock import patch
 
 import pytest
 
@@ -35,7 +36,11 @@ def _run_main(module_name, monkeypatch, env):
     for var, value in env.items():
         monkeypatch.setenv(var, value)
 
-    runpy.run_module(module_name, run_name="__main__", alter_sys=False)
+    # proxy.main's __main__ block runs load_dotenv() again: whatever the repo .env
+    # holds would land in os.environ for the rest of the session (second review).
+    # Snapshot/restore so nothing leaks past this call.
+    with patch.dict(os.environ):
+        runpy.run_module(module_name, run_name="__main__", alter_sys=False)
 
     assert len(calls) == 1, f"{module_name} should call uvicorn.run exactly once"
     return calls[0]["kwargs"]

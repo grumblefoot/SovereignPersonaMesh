@@ -17,19 +17,22 @@ _CONFIG_DIR = os.path.join(
 
 
 def default_config_path(config_dir: Optional[str] = None) -> str:
-    """Pick the settings file when SPM_CONFIG_PATH is not set (brief P4).
+    """The settings file when SPM_CONFIG_PATH is not set: config/config.local.json.
 
-    Settings saved from the admin dashboard are user data, so they must not live
-    in the tracked config/config.json (every user's backend URL would show up as
-    a local change to a repo file). Prefer the git-ignored config.local.json when
-    it exists; fall back to config/config.json (the repo default) when it does
-    not. Reads and writes both go to the chosen file.
+    Settings saved from the admin dashboard are user data, so they must never land in
+    the tracked config/config.json (second pre-push review, item 4: when the local file
+    did not exist yet, reads AND writes went to the tracked file, and a dashboard save
+    dirtied the repo). The local file is always the save target; the tracked file is read
+    underneath it as the repo's own defaults (see tracked_config_path / get_settings).
     """
     directory = config_dir or _CONFIG_DIR
-    local = os.path.join(directory, "config.local.json")
-    if os.path.exists(local):
-        return local
-    return os.path.join(directory, "config.json")
+    return os.path.join(directory, "config.local.json")
+
+
+def tracked_config_path(config_dir: Optional[str] = None) -> str:
+    """The tracked config/config.json: repo defaults for keys that have no env var
+    (extraction cadence, alternate extraction model). Read-only for SPM."""
+    return os.path.join(config_dir or _CONFIG_DIR, "config.json")
 
 
 # SPM_CONFIG_PATH lets a deployment keep its settings outside the repo file. Resolved
@@ -228,39 +231,47 @@ class SettingsManager:
         editing .env silently did nothing.
         """
 
+    def _read_json(self, path: str) -> Optional[Dict[str, Any]]:
+        """A JSON object from `path`; None when missing, unreadable or not an object
+        (a warning for the unreadable case)."""
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, ValueError, TypeError, OSError) as e:
+            logger.warning("[SettingsManager] Failed to parse %s, ignoring it: %s", path, e)
+            return None
+        return data if isinstance(data, dict) else None
+
+    def saved_keys(self) -> list:
+        """The keys the user saved (dashboard / spm init) in the settings file —
+        the ones that currently override .env and the defaults."""
+        return sorted((self._read_json(self.config_path) or {}).keys())
+
     def get_settings(self) -> Dict[str, Any]:
-        """Read and return current settings from config.json with env fallbacks.
+        """Effective settings: saved file > tracked config.json > env > built-in defaults.
 
-        Merge strategy (most-resilient-first):
-        1. Try to load config.json → merge with defaults (file overrides defaults).
-        2. If loading fails (missing file, corrupt JSON, I/O error) → use get_default_settings()
-           which reads env vars at call time and applies typed defaults.
-
-        This avoids the old behaviour where a corrupt config silently fell through
-        to a second os.getenv() call that could diverge from the file's own defaults.
+        Layers (each overrides the one before):
+        1. built-in defaults with env-var overrides (get_default_settings, lazy os.getenv);
+        2. the tracked config/config.json — repo defaults for keys without an env var;
+           it carries no env-backed keys (brief FX-C), so it cannot hide a .env value;
+        3. the settings file (config.local.json or SPM_CONFIG_PATH): only what the user
+           saved. Missing or corrupt files are skipped with a warning.
         """
-        if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                # Merge: defaults first, then file values override.  Defaults
-                # are built unvalidated so an invalid gm_actions_mode warns
-                # exactly once — on the final merged dict below.
-                merged = {**_build_default_settings(validate=False), **data}
-                # Re-cast known integer keys in case the file stored them as strings.
-                for k in _INT_KEYS:
-                    if k in merged:
-                        merged[k] = int(merged[k])
-                return _validate_gm_actions_mode(merged)
-            except (json.JSONDecodeError, ValueError, TypeError, OSError) as e:
-                logger.warning(
-                    "[SettingsManager] Failed to parse %s, falling back to env defaults: %s",
-                    self.config_path,
-                    e,
-                )
-
-        # Fallback: fresh env-var read + typed defaults.
-        return get_default_settings()
+        merged = _build_default_settings(validate=False)
+        tracked = tracked_config_path()
+        if os.path.abspath(tracked) != os.path.abspath(self.config_path):
+            merged.update(self._read_json(tracked) or {})
+        merged.update(self._read_json(self.config_path) or {})
+        # Re-cast known integer keys in case a file stored them as strings.
+        for k in _INT_KEYS:
+            if k in merged:
+                try:
+                    merged[k] = int(merged[k])
+                except (TypeError, ValueError):
+                    merged[k] = _DEFAULT_VALUES[k]
+        return _validate_gm_actions_mode(merged)
 
     def write_settings(self, new_settings: Dict[str, Any]) -> Dict[str, Any]:
         """Save ONLY `new_settings` into the settings file (brief FX-C).
@@ -268,29 +279,28 @@ class SettingsManager:
         The file holds only what the user saved; everything else keeps coming
         from `.env` (environment) or the built-in defaults, so editing `.env`
         after a dashboard save still works for the keys the dashboard did not
-        touch. Returns the merged effective settings as before.
+        touch. A value of None UN-saves that key (second review, item 11): the
+        setting falls back to .env / defaults again. Returns the merged effective
+        settings as before.
         """
         saved: Dict[str, Any] = {}
         if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    saved = loaded
-            except (json.JSONDecodeError, ValueError, OSError) as e:
+            loaded = self._read_json(self.config_path)
+            if loaded is None and os.path.exists(self.config_path):
                 logger.warning(
                     "[SettingsManager] Could not read %s before writing; "
-                    "replacing it with the saved keys only: %s",
-                    self.config_path, e,
-                )
-        saved.update(new_settings)
-        os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
+                    "replacing it with the saved keys only", self.config_path)
+            saved = loaded or {}
+        for key, value in new_settings.items():
+            if value is None:
+                saved.pop(key, None)
+            else:
+                saved[key] = value
+        os.makedirs(os.path.dirname(self.config_path) or ".", exist_ok=True)
         with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(saved, f, indent=2)
         logger.info("[SettingsManager] Updated settings in %s", self.config_path)
-        merged = self.get_settings()
-        merged.update(new_settings)
-        return merged
+        return self.get_settings()
 
     update = write_settings
 

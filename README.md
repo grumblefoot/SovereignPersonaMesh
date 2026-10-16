@@ -100,14 +100,16 @@ root.) `start` detaches both services, waits for their health endpoints, writes 
 `run/spm.pids` and appends their output to `logs/`. `start --foreground` stays attached and
 stops both on Ctrl+C — that is what a container runs.
 
-Or, by hand:
+Or, by hand (note: the proxy reads `.env` itself, the world engine does not — export the
+`POSTGRES_*` values first or use `spm start`, which passes `.env` to both):
 
 ```bash
 .venv/bin/python -m evennia_world.app &   # world engine, port 4005
 .venv/bin/python -m proxy.main            # SPM proxy, port 5050
 ```
 
-Both services listen on this machine only (127.0.0.1). To reach SPM from another device on your
+Both services listen on this machine only (127.0.0.1) and refuse requests that other web pages
+open in your browser try to send them. To reach SPM from another device on your
 network (for example SillyTavern on a laptop), set `SPM_HOST=0.0.0.0` (and
 `SPM_ENGINE_HOST=0.0.0.0` only if the engine must be reachable too) — but the admin dashboard has
 no login, so do this only on a trusted network. Containers set both to `0.0.0.0` themselves.
@@ -166,6 +168,11 @@ dashboard's **Quit** button also explains how to stop the bundle.
   healthcheck is ignored there unless images are built in Docker format.
 - On first boot the container runs `spm init` to create and prepare the database; settings
   saved from the admin dashboard persist on a named volume across rebuilds.
+- Always pass `--env-file .env` to raw `docker compose` commands (the scripts do): Compose
+  reads `config/.env`, not the repo's `.env`, for the `${POSTGRES_*}` values, so without it the
+  database is created with the default password while SPM uses yours. Needs Compose 2.24+.
+- The dashboard's Quit button and the "full logs" report option do not work inside Docker;
+  use the stop scripts, and `docker compose ... exec spm python -m spm report --full-logs`.
 - Admin dashboard: `http://127.0.0.1:5050/admin`
 - SillyTavern URL: `http://127.0.0.1:5050/v1`
 
@@ -213,7 +220,9 @@ See [known_issues.md](known_issues.md).
 Common fixes are in [docs/troubleshooting.md](docs/troubleshooting.md). To file
 a bug: `python -m spm report` runs safe read-only checks, writes a redacted
 bundle to `reports/` and prints a prefilled GitHub issue link. Read the bundle
-before attaching it — nothing is uploaded automatically.
+before attaching it — nothing is uploaded automatically. `--enhanced` adds an
+analysis by your own model server; if that server is not local, the command asks
+first (`--confirm-remote` allows it non-interactively; `--yes` alone does not).
 
 ## License and credits
 

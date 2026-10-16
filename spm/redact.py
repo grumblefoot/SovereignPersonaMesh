@@ -8,8 +8,16 @@ Hermes plan review") for the policy this encodes:
 - message-content log lines are dropped entirely (public mode);
 - secrets (api keys, passwords, secrets, bearer tokens, sk-... keys) -> ***;
   any "Authorization: <scheme> <credentials>" -> "Authorization: *** ***",
-  and "Basic <base64>" anywhere -> "Basic ***";
-- URL credentials (scheme://user:pass@host) -> scheme://***@host;
+  and "Basic <base64>" anywhere -> "Basic ***"; a key=value secret needs a
+  key that is "token"/"pwd" alone or ends in _token (max_tokens=800 and
+  token_count: 55 are not secrets), or that contains api_key / password /
+  passwd / secret / authorization;
+- well-known key shapes (AIza..., ghp_..., hf_..., JWTs) -> ***, and
+  ?key= / &key= / pwd= style query parameters -> key=***;
+- URL credentials (scheme://user:pass@host) -> scheme://***@host, with any
+  "/" or "@" inside the password;
+- e-mail addresses -> <email>; machine names (brendas-pc, DESKTOP-AB12CD,
+  LAPTOP-XY) -> <host>;
 - home paths -> ~, other users' home roots -> ~user, the OS user name -> user;
 - session ids -> stable short hashes (chat#a1b2);
 - character names -> tokens (also plural/possessive forms: "zeldas",
@@ -63,11 +71,21 @@ _CONTENT_MARKS = ("'content':", '"content":', "'messages':", '"messages":')
 # e.g. POSTGRES_PASSWORD, X_API_KEY, "api_key") containing one of the secret
 # words, followed by = or : and a quoted or bare value. Bearer is masked first
 # so "Authorization: Bearer <tok>" keeps its shape.
-_SECRET_WORDS = r"(?:api[_-]?key|password|passwd|secret|token|authorization)"
+# "token" is special (FX-G): max_tokens, tokens, token_count, n_tokens and
+# *_tokens are counters, so the key must be "token" (or "pwd") alone, or end
+# in _token / -token / .token / camelCase Token. The look-behind includes "."
+# so a dotted token (a.b.c....) is tried once, not once per segment
+# (quadratic before).
+_SECRET_WORDS = r"(?:api[_-]?key|password|passwd|secret|authorization)"
 _SECRET_KV_RE = re.compile(
     r"""(?xi)
-    (?<![A-Za-z0-9_-])
-    (?P<key>["']?[A-Za-z0-9_.-]*""" + _SECRET_WORDS + r"""[A-Za-z0-9_.-]*["']?)
+    (?<![A-Za-z0-9_.-])
+    (?P<key>["']?
+        (?:[A-Za-z0-9_.-]*""" + _SECRET_WORDS + r"""[A-Za-z0-9_.-]*
+          |(?:[A-Za-z0-9_.-]*[_.-])?(?:token|pwd)
+          |(?-i:[A-Za-z0-9_.-]*[a-z]Token)
+        )
+    ["']?)
     (?P<sep>[ \t]*[=:][ \t]*)
     (?P<val>"[^"\\]*(?:\\.[^"\\]*)*"            # "double-quoted value"
           |'[^'\\]*(?:\\.[^'\\]*)*'             # 'single-quoted value'
@@ -82,9 +100,35 @@ _AUTH_HEADER_RE = re.compile(
     r"(?i)\bAuthorization[ \t]*:[ \t]*[A-Za-z][A-Za-z0-9._-]*[ \t]+[^\s,;}\"']+"
 )
 _SK_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{16,}")
+# Well-known key shapes: Google API keys, GitHub and Hugging Face tokens, JWTs.
+_KEY_SHAPES_RE = re.compile(
+    r"\bAIza[0-9A-Za-z_-]{30,}|\bghp_[0-9A-Za-z]{30,}|\bhf_[0-9A-Za-z]{30,}"
+    r"|\beyJ[\w-]+\.[\w-]+\.[\w-]+"
+)
+# ?key=... / &key=... / pwd=... style query parameters.
+_QUERY_SECRET_RE = re.compile(
+    r"(?i)([?&](?:key|apikey|api_key|api-key|token|access_token|pwd|password|secret)=)"
+    r"[^&\s\"'#]+"
+)
 
-# scheme://user:pass@host -> scheme://***@host
-_URL_CRED_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^\s/@:]+:[^\s/@]+@")
+# scheme://user:pass@host -> scheme://***@host. The password may hold "/" or
+# "@" (postgresql://u:hun/ter2@h, redis://:p@ss@h): it runs to the LAST "@" of
+# the token; the user part may be empty (redis://:pass@host).
+_URL_CRED_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*://)[^\s/@:]*:[^\s@]+(?:@[^\s@]+)*@"
+)
+
+# E-mail addresses -> <email> (before the name rule, which would otherwise
+# turn brenda.smith@example.org into player#1.smith@example.org).
+_EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+(?![\w-])")
+
+# Machine names: brendas-pc, brendas-desktop, DESKTOP-ABC123, LAPTOP-XY12 ->
+# <host> (the look-behind starts one attempt per token, so a long hyphenated
+# token stays linear). localhost, host.docker.internal and service names such
+# as "postgres" are untouched.
+_HOSTNAME_RE = re.compile(
+    r"(?<![\w-])(?:[\w-]+-(?i:pc|desktop|laptop|box|nas)|(?:DESKTOP|LAPTOP)-\w+)(?!\w)"
+)
 
 # Session ids: the SillyTavern-style id, and session= / session_id= values
 # (already-tokenised "chat#xxxx" values are left alone).
@@ -142,6 +186,10 @@ _TOKEN_RE = re.compile(r"\S+")
 _HAS_WORD_CHAR_RE = re.compile(r"\w")
 # A plain number is neutral inside a word run: it neither counts nor breaks.
 _PLAIN_NUMBER_RE = re.compile(r"\d+[.,]?")
+# So is a replacement token the name table produced (char#1, chat#ab12,
+# player#1, with trailing punctuation): a name inside prose must not split the
+# run into two short survivors.
+_NEUTRAL_TOKEN_RE = re.compile(r"(?:chat|char|player|world)#\w+[^\w]*")
 
 # Other users' home roots: /home/<x>, /Users/<x>, C:\Users\<x> -> ~user
 # (drive-letter paths are unreliable in case, so matching is case-insensitive).
@@ -192,6 +240,14 @@ _LAN_HOST_RE = re.compile(
     r"(?i)(?<![\w.-])[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9-]+)*"
     r"\.(lan|local|home|internal|localdomain)(?![\w-]|\.\w)"
 )
+# Docker's well-known gateway name is not a user's machine.
+_LAN_HOST_KEEP = frozenset({"host.docker.internal"})
+
+
+def _mask_lan_host(m: re.Match) -> str:
+    if m.group(0).lower() in _LAN_HOST_KEEP:
+        return m.group(0)
+    return f"<host>.{m.group(1)}"
 
 
 def _chat_token(value: str) -> str:
@@ -241,9 +297,9 @@ def _redact_word_run_seq(seq: str) -> str:
 
     Greedy maximal runs; the replacement is "<redacted N words>". Splitting
     is on ANY whitespace (double spaces and tabs used to break runs, FX-E 2).
-    Plain numbers ("\\d+[.,]?") and punctuation-only tokens (not technical
-    characters such as & or =) are neutral: they
-    neither count nor break a run. A "label:" followed by a number is a
+    Plain numbers ("\\d+[.,]?"), name-table tokens (char#1, chat#ab12) and
+    punctuation-only tokens (not technical characters such as & or =) are
+    neutral: they neither count nor break a run. A "label:" followed by a number is a
     key/value pair ("Public chars: 2194") and breaks the run, like everything
     else that is not a prose word (key=value, URLs, paths, [Tags], quoted
     spans and their placeholders), which passes through untouched.
@@ -252,7 +308,8 @@ def _redact_word_run_seq(seq: str) -> str:
     kinds: List[str] = []  # "word" | "neutral" | "break"
     for k, m in enumerate(toks):
         t = m.group(0)
-        if _PLAIN_NUMBER_RE.fullmatch(t) or not (_HAS_WORD_CHAR_RE.search(t) or _TECH_CHARS & set(t)):
+        if _PLAIN_NUMBER_RE.fullmatch(t) or _NEUTRAL_TOKEN_RE.fullmatch(t) \
+                or not (_HAS_WORD_CHAR_RE.search(t) or _TECH_CHARS & set(t)):
             kinds.append("neutral")
         elif t.endswith(":") and k + 1 < len(toks) and _PLAIN_NUMBER_RE.fullmatch(toks[k + 1].group(0)):
             kinds.append("break")
@@ -320,9 +377,10 @@ class Redactor:
     user          the OS user name; defaults to getpass.getuser() (guarded);
                   ignored when shorter than 3 characters.
     keep_content  True only for the private full-logs mode: lines() skips the
-                  content-line filter, and the quote and name rules of text()
-                  are skipped; the secret, URL-credential, home-path,
-                  user-name, session-id and IP rules still apply.
+                  content-line filter and the quote, name and prose rules; the
+                  secret, URL-credential, home-path, user-name, session-id,
+                  IP and host rules still apply. text() always applies the
+                  full public rule set; user_text() is the readable variant.
     """
 
     names: Mapping[str, str] = field(default_factory=dict)
@@ -449,9 +507,13 @@ class Redactor:
         s = _BASIC_RE.sub("Basic ***", s)
         s = _SECRET_KV_RE.sub(_sub_secret, s)
         s = _SK_RE.sub("***", s)
+        s = _KEY_SHAPES_RE.sub("***", s)
+        s = _QUERY_SECRET_RE.sub(r"\1***", s)
 
-        # URL credentials.
+        # URL credentials, e-mail addresses, machine names.
         s = _URL_CRED_RE.sub(r"\1***@", s)
+        s = _EMAIL_RE.sub("<email>", s)
+        s = _HOSTNAME_RE.sub("<host>", s)
 
         # Home paths, other users' homes, the OS user name.
         for pat in self._home_res:
@@ -492,5 +554,5 @@ class Redactor:
         # IP addresses and LAN host names.
         s = _IP_RE.sub(_mask_ip, s)
         s = _IPV6_RE.sub(_mask_ipv6, s)
-        s = _LAN_HOST_RE.sub(lambda m: f"<host>.{m.group(1)}", s)
+        s = _LAN_HOST_RE.sub(_mask_lan_host, s)
         return s
