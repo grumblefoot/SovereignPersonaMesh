@@ -532,8 +532,9 @@ async def test_name_table_real_db():
         await conn.close()
     table = await dx.name_table(_real_db_env())
     assert table.get(sess, "").startswith("chat#")
-    assert table.get(f"DiagChar_{int(sess.split('_')[-1])}", "").startswith("char#") or \
-        any(v.startswith("char#") for v in table.values())
+    # the perception recipient id is the character name (actor 'user' is skipped)
+    uniq = sess.split("_")[-1]
+    assert table.get(f"DiagChar_{uniq}", "").startswith("char#")
     assert table.get(player, "").startswith("player#")
     assert "user" not in table
 
@@ -600,6 +601,60 @@ async def test_recent_errors_clean_logs(tmp_path):
 async def test_recent_errors_no_logs_dir(tmp_path):
     c = await dx.check_recent_errors({}, _ctx(tmp_path))
     assert c.status == "ok"
+
+
+async def test_recent_errors_reads_only_the_tail_window(tmp_path):
+    """FX-G 5a: a huge log is not read whole; only the last 512 KiB count."""
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    early = "2026-10-14 03:04:05 [ERROR] x: early error outside the window"
+    late = "2026-10-14 03:04:06 [ERROR] x: late error inside the window"
+    filler = "2026-10-14 03:04:05 [INFO] x: " + ("f" * 90) + "\n"
+    body = early + "\n" + filler * (dx._SCAN_WINDOW_BYTES // len(filler) + 50) + late + "\n"
+    (logs / "spm_proxy.out").write_text(body, encoding="utf-8")
+    assert len(body) > dx._SCAN_WINDOW_BYTES + 2000
+    raw = dx._scan_logs(tmp_path, 50)
+    assert raw == [late]
+    c = await dx.check_recent_errors({}, _ctx(tmp_path))
+    assert c.details["lines_matched"] == 1
+
+
+async def test_blocking_subprocess_is_preempted_by_the_check_timeout(tmp_path, monkeypatch):
+    """FX-G 5b: subprocess helpers run off the event loop, so a hung git/GPU
+    probe cannot outlive the per-check cap."""
+    def hung_run(args, timeout):
+        time.sleep(1.0)
+        return type("R", (), {"returncode": 0, "stdout": "abc1234\n", "stderr": ""})()
+
+    monkeypatch.setattr(dx, "_subprocess_run", hung_run)
+    t0 = time.perf_counter()
+    results = await dx.run_checks({}, names=("install", "system"), system_info=True,
+                                  repo_root=tmp_path, per_check_timeout=0.1)
+    elapsed = time.perf_counter() - t0
+    assert [r.status for r in results] == ["fail", "fail"], results
+    assert all("timed out" in r.summary for r in results)
+    assert elapsed < 0.8, elapsed
+
+
+def test_gpu_names_fall_back_to_powershell_when_wmic_is_missing(monkeypatch):
+    """FX-G 5c: wmic is gone on Windows 11 24H2."""
+    seen = []
+
+    def fake_run(args, timeout):
+        seen.append((list(args), timeout))
+        if args[0] == "wmic":
+            raise FileNotFoundError("wmic")
+        return type("R", (), {"returncode": 0, "stderr": "",
+                              "stdout": "\nNVIDIA GeForce RTX 4070\n\n"})()
+
+    monkeypatch.setattr(dx, "_subprocess_run", fake_run)
+    monkeypatch.setattr(dx.os, "name", "nt")
+    assert dx._gpu_names() == ["NVIDIA GeForce RTX 4070"]
+    assert seen == [
+        (["wmic", "path", "win32_VideoController", "get", "name"], 2.0),
+        (["powershell", "-NoProfile", "-Command",
+          "(Get-CimInstance Win32_VideoController).Name"], 2.0),
+    ]
 
 
 async def test_recent_errors_full_uses_larger_limit(tmp_path):

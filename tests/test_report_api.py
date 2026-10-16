@@ -141,7 +141,20 @@ def test_download_refuses_private_bundle(reports_dir):
     assert res.status_code == 403
     body = res.json()["error"]
     assert "Private reports are not served over the network." in body
-    assert str(reports_dir / name) in body
+    assert name in body
+    # Second review, item 14: the message names the file, never the absolute path.
+    assert str(reports_dir) not in body
+
+
+def test_download_refuses_private_bundle_case_insensitively(reports_dir):
+    # Second review, item 3: on Windows/macOS `spm-report-private-x.zip` opens the real
+    # PRIVATE file, so the check must not depend on case.
+    real = "spm-report-PRIVATE-20261014-101113.zip"
+    (reports_dir / real).write_bytes(b"PK\x05\x06" + b"\0" * 18)
+    for name in (real.lower(), real.replace("PRIVATE", "Private")):
+        res = client.get(f"/admin/api/v1/report/{name}")
+        assert res.status_code == 403, name
+        assert "Private reports" in res.json()["error"]
 
 
 def test_download_rejects_traversal_and_bad_names(reports_dir):

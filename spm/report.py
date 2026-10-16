@@ -10,9 +10,12 @@ no URL at all.
 Safety: nothing here starts services or talks to the live database beyond what
 the read-only checks do. Enhanced analysis (brief R3) sends the *redacted*
 description and check results to the configured model server; with a remote
-server the CLI prints a notice and requires consent first (plan: same
-``_is_local`` rule as reasoning). Any failure falls back to the Traditional
-report plus an "Enhanced analysis unavailable: <reason>" line.
+server the CLI prints a notice and requires explicit consent first
+(``--confirm-remote`` or an interactive "y"; ``--yes`` is NOT consent — plan:
+same ``_is_local`` rule as reasoning). Any failure falls back to the
+Traditional report plus an "Enhanced analysis unavailable: <reason>" line.
+Everything the model returns, and every error reason, passes through the
+Redactor (with the name table) before it is rendered.
 """
 
 from __future__ import annotations
@@ -193,24 +196,54 @@ def _first_line(err: Exception) -> str:
     return " ".join(msg.split())[:200] if msg else ""
 
 
+# Model output and error reasons are untrusted text (FX-G 1): one line each,
+# length-capped, and through the Redactor with the name table before they land
+# in report.md or the returned Report.
+_FIELD_MAX_CHARS = 2000
+_ERROR_MAX_CHARS = 300
+_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"<>]+")
+
+
+def _safe_field(value, redactor: Optional[Redactor] = None,
+                limit: int = _FIELD_MAX_CHARS) -> str:
+    """One redacted line of model output (summary, cause, evidence, fix,
+    what_to_try step): whitespace collapsed, capped, names/secrets/paths/IPs/
+    hosts removed (user_text keeps the prose readable)."""
+    text = " ".join(str(value if value is not None else "").split())
+    text = (redactor or Redactor()).user_text(text)
+    return text[:limit]
+
+
+def _safe_error(value, redactor: Optional[Redactor] = None) -> str:
+    """One redacted line for an error reason: as _safe_field, plus any URL
+    (which carries the backend host) becomes <url>."""
+    text = _URL_RE.sub("<url>", " ".join(str(value or "").split()))
+    return _safe_field(text, redactor, _ERROR_MAX_CHARS)
+
+
 async def enhanced_analysis(env: dict, checks: List[Check], description: str, *,
                             client=None, model: Optional[str] = None,
-                            run_extra=run_checks) -> dict:
+                            run_extra=run_checks, redactor: Optional[Redactor] = None,
+                            repo_root=None) -> dict:
     """Ask SPM's configured model for a structured breakdown of the checks.
 
     Returns the breakdown dict (summary / likely_causes / what_to_try /
     severity, plus 'need_checks' listing the extra checks it asked for and we
     ran), or {"error": reason} on any failure — connection, timeout, or twice
     invalid JSON — so the caller can still deliver the Traditional report.
-    Never raises.
+    Never raises. ``redactor`` (ideally built with the name table) redacts the
+    description before it goes into the prompt and every error reason that
+    comes back; ``repo_root`` is the checkout whose settings pick the model
+    server (never the real checkout's config.local.json during tests).
     """
     from proxy.core import reasoning as reasoning_mod
     from proxy.rag.budget import estimate_tokens
 
+    redactor = redactor if redactor is not None else Redactor()
     try:
         if client is None:
             from proxy.backend_client.lemonade_client import LemonadeLLMClient
-            base = _backend_url(env)
+            base = _backend_url(env, repo_root=repo_root)
             client = LemonadeLLMClient(base_url=base or None)
         base_url = str(getattr(client, "base_url", "") or "").strip().rstrip("/")
 
@@ -230,7 +263,7 @@ async def enhanced_analysis(env: dict, checks: List[Check], description: str, *,
         budget = int((window or _FALLBACK_WINDOW_TOKENS)
                      * _PROMPT_BUDGET_FRACTION)
 
-        safe_desc = Redactor().user_text(description or "")
+        safe_desc = redactor.user_text(description or "")
         checks_json = _checks_payload(checks, drop_ok_details=False)
         user_prompt = ("User description:\n" + (safe_desc.strip() or "(none)")
                        + "\n\nDiagnostic checks (JSON):\n" + checks_json
@@ -277,7 +310,7 @@ async def enhanced_analysis(env: dict, checks: List[Check], description: str, *,
 
         data, err = await ask_valid(messages)
         if err:
-            return {"error": err}
+            return {"error": _safe_error(err, redactor)}
 
         requested = [n for n in (data.get("need_checks") or [])
                      if n in EXTRA_CHECKS][:_MAX_NEED_CHECKS]
@@ -287,8 +320,9 @@ async def enhanced_analysis(env: dict, checks: List[Check], description: str, *,
             try:
                 extra = await run_extra(env, names=requested)
             except Exception as err:
-                return {"error": f"the requested extra checks failed: "
-                                 f"{type(err).__name__}: {_first_line(err)}"}
+                return {"error": _safe_error(
+                    f"the requested extra checks failed: "
+                    f"{type(err).__name__}: {_first_line(err)}", redactor)}
             round2 = messages + [
                 {"role": "assistant", "content": json.dumps(data)},
                 {"role": "user",
@@ -298,20 +332,23 @@ async def enhanced_analysis(env: dict, checks: List[Check], description: str, *,
             ]
             data2, err2 = await ask_valid(round2)
             if err2:
-                return {"error": err2}
+                return {"error": _safe_error(err2, redactor)}
             data = data2
 
         result = {
-            "summary": data["summary"],
-            "likely_causes": data["likely_causes"],
-            "what_to_try": data["what_to_try"],
+            "summary": _safe_field(data["summary"], redactor),
+            "likely_causes": [
+                {k: _safe_field(c.get(k), redactor) for k in ("cause", "evidence", "fix")}
+                for c in data["likely_causes"]],
+            "what_to_try": [_safe_field(step, redactor) for step in data["what_to_try"]],
             "severity": data["severity"],
         }
         if requested:
             result["need_checks"] = requested
         return result
     except Exception as err:  # belt and braces: the report must still build
-        return {"error": f"{type(err).__name__}: {_first_line(err)}"}
+        return {"error": _safe_error(f"{type(err).__name__}: {_first_line(err)}",
+                                     redactor)}
 
 
 # ── Markdown ──────────────────────────────────────────────────────────────────
@@ -336,40 +373,46 @@ def _status_table(checks: List[Check]) -> str:
     return "\n".join(rows)
 
 
-def _enhanced_markdown(enhanced) -> List[str]:
+def _enhanced_markdown(enhanced, redactor: Optional[Redactor] = None) -> List[str]:
     """The '## Enhanced analysis' section (brief R3 item 7). Accepts the
     breakdown dict from enhanced_analysis, {'error': reason}, or None (no
-    section)."""
+    section). Every model-output string and every error reason is rendered
+    through _safe_field / _safe_error (redacted, one line, capped), whatever
+    the caller passed in."""
     if not enhanced:
         return []
     if not isinstance(enhanced, dict):
-        return ["", "## Enhanced analysis", "", str(enhanced)]
+        return ["", "## Enhanced analysis", "", _safe_field(enhanced, redactor)]
     if enhanced.get("error"):
         return ["", "## Enhanced analysis", "",
-                f"Enhanced analysis unavailable: {enhanced['error']}"]
-    lines = ["", "## Enhanced analysis", "", "Summary: " + str(enhanced.get("summary", ""))]
+                f"Enhanced analysis unavailable: {_safe_error(enhanced['error'], redactor)}"]
+    lines = ["", "## Enhanced analysis", "",
+             "Summary: " + _safe_field(enhanced.get("summary", ""), redactor)]
     causes = enhanced.get("likely_causes") or []
     lines += ["", "Likely causes:"]
     if not causes:
         lines.append("- (none identified)")
     for c in causes:
         if isinstance(c, dict):
-            lines.append(f"- {c.get('cause', '')} — evidence: {c.get('evidence', '')}"
-                         f" — fix: {c.get('fix', '')}")
+            cause, evidence, fix = (_safe_field(c.get(k, ""), redactor)
+                                    for k in ("cause", "evidence", "fix"))
+            lines.append(f"- {cause} — evidence: {evidence} — fix: {fix}")
         else:
-            lines.append(f"- {c}")
+            lines.append(f"- {_safe_field(c, redactor)}")
     lines += ["", "What to try:"]
     for step in (enhanced.get("what_to_try") or []):
-        lines.append(f"- {step}")
-    lines += ["", f"Severity: {enhanced.get('severity', 'unknown')}"]
-    if enhanced.get("need_checks"):
-        lines += ["", "Checks requested by the analysis: "
-                  + ", ".join(str(n) for n in enhanced["need_checks"])]
+        lines.append(f"- {_safe_field(step, redactor)}")
+    severity = enhanced.get("severity")
+    lines += ["", f"Severity: {severity if severity in _SEVERITIES else 'unknown'}"]
+    requested = [n for n in (enhanced.get("need_checks") or []) if n in EXTRA_CHECKS]
+    if requested:
+        lines += ["", "Checks requested by the analysis: " + ", ".join(requested)]
     return lines
 
 
 def _report_markdown(description: str, checks: List[Check], *, version: str,
-                     private: bool, enhanced=None) -> str:
+                     private: bool, enhanced=None,
+                     redactor: Optional[Redactor] = None) -> str:
     lines = ["# SPM bug report", ""]
     lines.append(f"- Time (UTC): {_utc_stamp()}")
     lines.append(f"- SPM version: {version}")
@@ -381,7 +424,7 @@ def _report_markdown(description: str, checks: List[Check], *, version: str,
         lines += ["", f"## Check: {c.name}", "", "```json",
                   json.dumps(c.details, indent=2, ensure_ascii=False, default=str),
                   "```"]
-    lines += _enhanced_markdown(enhanced)
+    lines += _enhanced_markdown(enhanced, redactor)
     lines.append("")
     return "\n".join(lines)
 
@@ -481,17 +524,21 @@ async def build_report(env: dict, *, description: str = "", system_info: bool = 
     checks = await run_checks(env, system_info=system_info, repo_root=root,
                               redactor=redactor)
 
-    if private:
-        # Private keeps prose; secrets, paths, sessions and IPs are still removed.
-        desc_shown = Redactor(names=names, keep_content=True).text(description)
-    else:
-        desc_shown = redactor.user_text(description)
+    # The description is meant to be read, in both modes: prose and quotes
+    # stay, secrets, paths, session ids, IPs, hosts and names (name table) go.
+    # (Redactor.text() always applies the public rule set, whatever
+    # keep_content says, so the private report used to lose an 8+ word
+    # description to "<redacted N words>" and the prompt was re-redacted
+    # without the name table — FX-G 4.)
+    desc_shown = redactor.user_text(description)
 
     if enhanced is True:
         enhanced = await enhanced_analysis(env, checks, desc_shown,
-                                           client=enhanced_client)
+                                           client=enhanced_client, redactor=redactor,
+                                           repo_root=root)
     markdown = _report_markdown(desc_shown, checks, version=_version(root),
-                                private=private, enhanced=enhanced)
+                                private=private, enhanced=enhanced,
+                                redactor=redactor)
 
     if private:
         raw = _read_log_lines(root, FULL_LOG_LIMIT)
@@ -530,7 +577,7 @@ def _backend_url(env: dict, repo_root=None) -> str:
     """The model server SPM really uses: the settings file wins over the environment
     (same rule as the checks). Reading only the environment pointed the Enhanced analysis
     at Lemonade on a machine where SPM used another server: Lemonade would have loaded a
-    chat model next to a running gufo (Claude's review, 2026-10-14)."""
+    chat model next to another server already using the GPU (review, 2026-10-14)."""
     from types import SimpleNamespace
 
     from .diagnostics import _effective_settings
@@ -542,20 +589,28 @@ def _backend_url(env: dict, repo_root=None) -> str:
         return str(env.get("BACKEND_LLM_URL") or "").strip().rstrip("/")
 
 
-def _enhanced_consent(env: dict, *, yes: bool, input_fn=None) -> bool:
+def _enhanced_consent(env: dict, *, yes: bool, input_fn=None,
+                      confirm_remote: bool = False, repo_root=None) -> bool:
     """Cloud confirmation for --enhanced (brief R3): when the configured model
     server is not local, the redacted diagnostics leave this machine, so ask
-    first. True = go ahead; False = fall back to the Traditional report."""
+    first. True = go ahead; False = fall back to the Traditional report.
+
+    Consent is ``--confirm-remote`` or an interactive "y". ``--yes`` only
+    suppresses prompts: with ``--yes`` and no ``--confirm-remote`` a remote
+    server means the Traditional report (FX-G 3)."""
     from proxy.core.reasoning import _is_local
 
-    base = _backend_url(env)
+    base = _backend_url(env, repo_root=repo_root)
     if not base or _is_local(base):
         return True
     host = urllib.parse.urlparse(base).hostname or base
     print(f"Enhanced analysis sends the redacted diagnostics to {host}, "
           "a remote service (this may cost tokens).")
-    if yes:
+    if confirm_remote:
         return True
+    if yes:
+        print("Pass --confirm-remote to allow that (--yes alone does not).")
+        return False
     prompt = "Continue? [y/N]: "
     try:
         answer = (input_fn(prompt) if input_fn else input(prompt)).strip().lower()
@@ -567,7 +622,7 @@ def _enhanced_consent(env: dict, *, yes: bool, input_fn=None) -> bool:
 
 def cmd_report(repo_root: Path, *, description: str = "", system_info: bool = False,
                full_logs: bool = False, yes: bool = False, enhanced: bool = False,
-               input_fn=None, enhanced_client=None) -> int:
+               input_fn=None, enhanced_client=None, confirm_remote: bool = False) -> int:
     """`python -m spm report`: print the check table, the bundle path and the
     issue URL. Always exits 0 (even when checks fail)."""
     if not description and (input_fn is not None or _stdin_tty()):
@@ -579,7 +634,9 @@ def cmd_report(repo_root: Path, *, description: str = "", system_info: bool = Fa
             description = ""
 
     env = child_env(repo_root)
-    if enhanced and not _enhanced_consent(env, yes=yes, input_fn=input_fn):
+    if enhanced and not _enhanced_consent(env, yes=yes, input_fn=input_fn,
+                                          confirm_remote=confirm_remote,
+                                          repo_root=repo_root):
         print("Falling back to the Traditional report.")
         enhanced = False
     report = asyncio.run(build_report(env, description=description,

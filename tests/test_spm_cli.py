@@ -4,6 +4,7 @@ subprocess.Popen and the health check are patched."""
 import json
 import os
 import signal
+import subprocess
 import sys
 
 import pytest
@@ -42,18 +43,50 @@ def _reset_procs():
     yield
 
 
+class FakeRun:
+    """Stands in for subprocess.run: records argv, canned result."""
+
+    def __init__(self, returncode=0, error=None):
+        self.calls = []
+        self.returncode = returncode
+        self.error = error
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append((cmd, kwargs))
+        if self.error:
+            raise self.error
+        return subprocess.CompletedProcess(cmd, self.returncode, stdout="", stderr="boom")
+
+
 @pytest.fixture()
 def repo(tmp_path, monkeypatch):
     """Temp repo root with a .env; module pointed at it (and at the temp dir)
     so nothing touches the real repo's logs/ or run/. The real environment's
-    port variables are cleared so the .env values under test actually apply."""
-    for var in ("SPM_ENGINE_PORT", "SPM_PORT"):
+    port variables are cleared so the .env values under test actually apply.
+
+    Container isolation (second review): a developer's .env is in os.environ
+    for the whole session (proxy.main runs load_dotenv at collection) and
+    cmd_start/cmd_stop run a REAL `docker start/stop <SPM_DB_CONTAINER>` when
+    that variable is set. Clear the container variables and replace
+    spm.run.subprocess.run with a recording fake by default; tests of the
+    container path set SPM_DB_CONTAINER and their own fake explicitly."""
+    for var in ("SPM_ENGINE_PORT", "SPM_PORT", "SPM_DB_CONTAINER",
+                "SPM_IN_CONTAINER", "SPM_LAN_ACCESS"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(spm_run.subprocess, "run", FakeRun())
     (tmp_path / ".env").write_text(
         "SPM_ENGINE_PORT=4105\nSPM_PORT=5105\nSPM_ONLY_FROM_DOTENV=yes\n",
         encoding="utf-8",
     )
     return tmp_path
+
+
+@pytest.fixture()
+def fake_docker(monkeypatch):
+    """A container CLI 'installed' without a real binary on PATH: the container
+    tests must not depend on docker being present on the machine running them."""
+    monkeypatch.setattr(spm_run.shutil, "which",
+                        lambda c: "/fake/bin/docker" if c == "docker" else None)
 
 
 @pytest.fixture()
@@ -88,20 +121,31 @@ def _health_bodies(*, up_engine=True, up_proxy=True, healthy_before_spawn=False,
 
 def test_start_spawns_engine_before_proxy_and_writes_pids(repo, patch_popen, monkeypatch, capsys):
     monkeypatch.setattr(spm_run, "health_json", _health_bodies())
+    # Record, at each spawn, which children already exist: the proxy must be
+    # spawned only after the engine (its /health answers once it has been spawned).
+    existing_at_spawn: list[list[str]] = []
+    real_spawn = spm_run._spawn
+
+    def spawn(root, module, log_path, env):
+        existing_at_spawn.append([p.cmd[-1] for p in FakeProc.instances])
+        return real_spawn(root, module, log_path, env)
+    monkeypatch.setattr(spm_run, "_spawn", spawn)
+
     rc = spm_run.cmd_start(repo, poll_s=0.01)
     assert rc == 0
 
     procs = patch_popen.instances
+    # Spawn order: the engine first, the proxy second (the proxy needs the engine).
     assert [p.cmd[-1] for p in procs] == ["evennia_world.app", "proxy.main"]
+    assert existing_at_spawn == [[], ["evennia_world.app"]]
 
-    # engine spawned before proxy became healthy, proxy before its own spawn:
     # both children got the .env values (engine does not load .env itself)
     for p in procs:
         assert p.kwargs["env"]["SPM_ONLY_FROM_DOTENV"] == "yes"
         assert p.kwargs["env"]["SPM_ENGINE_PORT"] == "4105"
         assert p.kwargs["cwd"] == str(repo)
-    # engine only waited on engine health before spawning the proxy
-    assert procs[0].kwargs["stderr"] is spm_run.subprocess.STDOUT
+        # both log streams go to the per-service log file
+        assert p.kwargs["stderr"] is spm_run.subprocess.STDOUT
 
     pid_file = repo / "run" / "spm.pids"
     assert json.loads(pid_file.read_text(encoding="utf-8")) == {
@@ -310,22 +354,6 @@ def test_windows_uses_detached_creation_flags(repo, patch_popen, monkeypatch):
 # ── optional database container (brief L1) ──────────────────────────────
 
 
-class FakeRun:
-    """Stands in for subprocess.run: records argv, canned result."""
-
-    def __init__(self, returncode=0, error=None):
-        self.calls = []
-        self.returncode = returncode
-        self.error = error
-
-    def __call__(self, cmd, **kwargs):
-        self.calls.append((cmd, kwargs))
-        if self.error:
-            raise self.error
-        return type("R", (), {"returncode": self.returncode,
-                              "stdout": "", "stderr": "boom"})()
-
-
 def test_container_cli_prefers_docker_then_podman(monkeypatch):
     monkeypatch.setattr(spm_run.shutil, "which", lambda c: c if c == "docker" else None)
     assert spm_run._container_cli() == "docker"
@@ -343,20 +371,33 @@ def test_db_container_empty_env_is_noop(monkeypatch):
     assert fake.calls == []
 
 
-def test_start_runs_cli_start_before_spawning_engine(repo, patch_popen, monkeypatch):
+def test_start_runs_cli_start_before_spawning_engine(repo, patch_popen, fake_docker, monkeypatch):
     monkeypatch.setattr(spm_run, "health_json", _health_bodies())
     monkeypatch.setattr(spm_run, "_wait_db_port", lambda env, t: True)
     monkeypatch.setenv("SPM_DB_CONTAINER", "spm-postgres")
-    fake = FakeRun()
+    order: list[str] = []
+    real_spawn = spm_run._spawn
+
+    def spawn(root, module, log_path, env):
+        order.append(f"spawn:{module}")
+        return real_spawn(root, module, log_path, env)
+    monkeypatch.setattr(spm_run, "_spawn", spawn)
+
+    class OrderedRun(FakeRun):
+        def __call__(self, cmd, **kwargs):
+            order.append("cli:" + " ".join(cmd))
+            return super().__call__(cmd, **kwargs)
+    fake = OrderedRun()
     monkeypatch.setattr(spm_run.subprocess, "run", fake)
     assert spm_run.cmd_start(repo, poll_s=0.01) == 0
     assert [c[0] for c in fake.calls] == [["docker", "start", "spm-postgres"]]
     assert fake.calls[0][1]["timeout"] == 60
-    # the container ran before any service was spawned
-    assert len(patch_popen.instances) == 2
+    # the container was started before any service was spawned
+    assert order == ["cli:docker start spm-postgres",
+                     "spawn:evennia_world.app", "spawn:proxy.main"]
 
 
-def test_start_without_db_container_never_calls_cli(repo, patch_popen, monkeypatch):
+def test_start_without_db_container_never_calls_cli(repo, patch_popen, fake_docker, monkeypatch):
     monkeypatch.setattr(spm_run, "health_json", _health_bodies())
     monkeypatch.delenv("SPM_DB_CONTAINER", raising=False)
     fake = FakeRun()
@@ -365,7 +406,7 @@ def test_start_without_db_container_never_calls_cli(repo, patch_popen, monkeypat
     assert fake.calls == []
 
 
-def test_stop_runs_cli_stop_after_services(repo, monkeypatch, capsys):
+def test_stop_runs_cli_stop_after_services(repo, fake_docker, monkeypatch, capsys):
     pid_file = repo / "run" / "spm.pids"
     pid_file.parent.mkdir(parents=True)
     pid_file.write_text(json.dumps({"engine": 111, "proxy": 222}), encoding="utf-8")
@@ -380,6 +421,24 @@ def test_stop_runs_cli_stop_after_services(repo, monkeypatch, capsys):
     assert [c[0] for c in fake.calls] == [["docker", "stop", "spm-postgres"]]
     assert not pid_file.exists()
     assert "SPM stopped." in capsys.readouterr().out
+
+
+def test_inherited_db_container_from_dotenv_never_reaches_the_cli(tmp_path, monkeypatch, capsys):
+    """Second review: with SPM_DB_CONTAINER in the process environment (a
+    developer's .env, loaded at collection) cmd_stop ran a real `docker stop`.
+    The suite-level fixtures clear it; prove the default `repo` isolation holds
+    even when the variable is set AFTER the fixtures ran, by a leaking test."""
+    monkeypatch.setenv("SPM_DB_CONTAINER", "spm-review-inherited-name")
+    monkeypatch.setattr(spm_run.shutil, "which", lambda c: "/fake/bin/docker")
+    fake = FakeRun()
+    monkeypatch.setattr(spm_run.subprocess, "run", fake)
+    pid_file = tmp_path / "run" / "spm.pids"
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text(json.dumps({"engine": None, "proxy": None}), encoding="utf-8")
+    monkeypatch.setattr(spm_run, "health_json", lambda url: None)
+    assert spm_run.cmd_stop(tmp_path, poll_s=0.01) == 0
+    # The call reached our fake, not a real CLI, with the inherited name.
+    assert [c[0] for c in fake.calls] == [["docker", "stop", "spm-review-inherited-name"]]
 
 
 def test_db_container_cli_failure_never_raises(monkeypatch, capsys):
@@ -473,7 +532,7 @@ def test_start_engine_already_up_spawns_only_the_proxy(repo, patch_popen, monkey
     assert json.loads(pid_file.read_text(encoding="utf-8")) == {"engine": 999, "proxy": 555}
 
 
-def test_start_failed_stops_container_it_started(repo, patch_popen, monkeypatch, capsys):
+def test_start_failed_stops_container_it_started(repo, patch_popen, fake_docker, monkeypatch, capsys):
     """This cmd_start call started the DB container; the engine then never gets
     healthy -> the container must be stopped again."""
     monkeypatch.setattr(spm_run, "health_json", _health_bodies(up_engine=False))
@@ -488,7 +547,7 @@ def test_start_failed_stops_container_it_started(repo, patch_popen, monkeypatch,
                                           ["docker", "stop", "spm-postgres"]]
 
 
-def test_start_failed_keeps_container_it_did_not_start(repo, patch_popen, monkeypatch):
+def test_start_failed_keeps_container_it_did_not_start(repo, patch_popen, fake_docker, monkeypatch):
     """The container was already running (docker start answered non-zero, e.g.
     already up -> our helper returns False): a failed start must NOT stop it."""
     monkeypatch.setattr(spm_run, "health_json", _health_bodies(up_engine=False))
@@ -517,23 +576,48 @@ def test_foreground_returns_crashed_child_return_code(repo, patch_popen, monkeyp
 
 
 def test_foreground_clean_run_returns_zero(repo, patch_popen, monkeypatch):
-    """No crash recorded: foreground returns 0 as before (Ctrl+C path)."""
+    """Ctrl+C path: no crash recorded -> foreground returns 0, stops the proxy
+    then the engine and removes the PID file. No real signal is sent (on
+    Windows os.kill(SIGINT) is TerminateProcess on pytest itself): the
+    launcher's own handler, captured from its signal.signal() call, is invoked
+    from the fake child's poll() after a few loop iterations."""
     monkeypatch.setattr(spm_run, "health_json", _health_bodies())
-    monkeypatch.setattr(spm_run, "_kill", lambda pid: None)
+    killed: list[int] = []
+    monkeypatch.setattr(spm_run, "_kill", lambda pid: killed.append(pid))
 
-    import threading
+    installed: dict[int, object] = {}
+    restored: dict[int, object] = {}
 
-    def interrupt():
-        import os
-        import signal as sg
-        os.kill(os.getpid(), sg.SIGINT)
-    t = threading.Timer(0.05, interrupt)
-    t.start()
-    try:
-        rc = spm_run.cmd_start(repo, foreground=True, poll_s=0.01)
-    finally:
-        t.cancel()
+    def fake_signal(signum, handler):
+        if signum not in installed:
+            installed[signum] = handler
+        else:
+            restored[signum] = handler
+        return signal.SIG_DFL  # what the launcher must restore afterwards
+    # cmd_start does `import signal as _signal` -> the same stdlib module object.
+    monkeypatch.setattr(signal, "signal", fake_signal)
+
+    polls: list[int] = []
+    real_poll = FakeProc.poll
+
+    def poll(self):
+        polls.append(self.pid)
+        if len(polls) >= 6:
+            # a "Ctrl+C" arrives: run the launcher's handler, not a real signal
+            installed[signal.SIGINT](signal.SIGINT, None)
+        return real_poll(self)
+    monkeypatch.setattr(FakeProc, "poll", poll)
+
+    rc = spm_run.cmd_start(repo, foreground=True, poll_s=0.01)
     assert rc == 0
+    assert signal.SIGINT in installed and signal.SIGTERM in installed
+    # the handler was restored to what signal() returned, for both signals
+    assert restored == {signal.SIGINT: signal.SIG_DFL, signal.SIGTERM: signal.SIG_DFL}
+    engine, proxy = patch_popen.instances
+    assert [p.cmd[-1] for p in (engine, proxy)] == ["evennia_world.app", "proxy.main"]
+    assert killed == [proxy.pid, engine.pid]  # proxy first, then the engine
+    assert not (repo / "run" / "spm.pids").exists()
+    assert len(polls) >= 6  # the loop really ran until the handler fired
 
 
 def test_child_env_forces_pythonutf8_and_no_reload(tmp_path, monkeypatch):

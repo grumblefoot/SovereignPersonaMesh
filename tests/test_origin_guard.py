@@ -178,7 +178,9 @@ def test_private_bundle_403_with_path_message(reports_dir):
     assert res.status_code == 403
     error = res.json()["error"]
     assert "Private reports are not served over the network." in error
-    assert f"{reports_dir}/{name}" in error
+    # Names the file inside the SPM folder; never the absolute path (second review, item 3).
+    assert f"reports/{name}" in error
+    assert str(reports_dir) not in error
     # A foreign browser could not read it either.
     res = remote.get(f"/admin/api/v1/report/{name}")
     assert res.status_code == 403
@@ -199,7 +201,10 @@ def test_chat_completions_foreign_origin_not_guarded():
                   json={"model": "m", "messages": [{"role": "user",
                                                     "content": "hi"}]},
                   headers={"Origin": EVIL_ORIGIN})
-    assert res.status_code != 403 or "cross-site request refused" not in res.text
+    # Under the suite's unreachable test backend the handler answers 200 with an
+    # in-band "backend unavailable" message; the guard never produced a 403.
+    assert res.status_code == 200
+    assert "cross-site request refused" not in res.text
 
 
 def test_dns_rebinding_host_is_refused_on_a_loopback_bind(monkeypatch):

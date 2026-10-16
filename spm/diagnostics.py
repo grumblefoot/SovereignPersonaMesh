@@ -41,6 +41,9 @@ _HEALTH_TIMEOUT_S = 2.0
 _SERVER_TIMEOUT_S = 5.0
 _GIT_TIMEOUT_S = 3.0
 _SYSINFO_TIMEOUT_S = 2.0
+# recent_errors reads only the last window of each log file (a tail, so a huge
+# log is never read whole, like report._tail_file).
+_SCAN_WINDOW_BYTES = 512 * 1024
 
 # Config keys removed entirely from the report (secrets never appear, not even
 # masked — plan "Changes after Hermes plan review" item 4 / privacy rules).
@@ -88,7 +91,10 @@ async def _connect(cfg: dict):
 
 
 def _subprocess_run(args, timeout: float):
-    """Run a read-only helper command (git / nvidia-smi / wmic ...) capturing output."""
+    """Run a read-only helper command (git / nvidia-smi / wmic ...) capturing output.
+
+    Blocking: checks call it through asyncio.to_thread so the per-check cap in
+    run_checks can pre-empt a hung command (FX-G 5b)."""
     import subprocess
     return subprocess.run(list(args), capture_output=True, text=True, timeout=timeout)
 
@@ -166,7 +172,8 @@ async def check_install(env: dict, ctx: _Ctx) -> Check:
 
     commit = None
     try:
-        res = _subprocess_run(
+        res = await asyncio.to_thread(
+            _subprocess_run,
             ["git", "-C", str(ctx.root), "rev-parse", "--short", "HEAD"],
             timeout=_GIT_TIMEOUT_S)
         if res.returncode == 0:
@@ -452,7 +459,7 @@ async def check_database(env: dict, ctx: _Ctx) -> Check:
         except Exception as err:
             ledger = []
             ledger_error = f"{type(err).__name__}: {err}"
-        files, manual_only = _migration_files(ctx)
+        files, manual_only = await asyncio.to_thread(_migration_files, ctx)
         pending = [f for f in files if f not in set(ledger) and f not in manual_only]
 
         counts: Dict[str, int] = {}
@@ -497,13 +504,24 @@ async def check_database(env: dict, ctx: _Ctx) -> Check:
     return Check("database", status, summary, details)
 
 
+def _tail_lines(path: Path, max_bytes: int = _SCAN_WINDOW_BYTES) -> List[str]:
+    """The lines in the last `max_bytes` of a file (a partial first line dropped)."""
+    size = path.stat().st_size
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        if size > max_bytes:
+            fh.seek(size - max_bytes)
+            fh.readline()
+        return fh.read().splitlines()
+
+
 def _scan_logs(root: Path, limit: int) -> List[str]:
-    """The last `limit` WARNING/ERROR/Traceback lines across logs/*.out|*.log."""
+    """The last `limit` WARNING/ERROR/Traceback lines across logs/*.out|*.log,
+    looking only at the last _SCAN_WINDOW_BYTES of each file."""
     matched: List[str] = []
     files = sorted(list(root.glob("logs/*.out")) + list(root.glob("logs/*.log")))
     for path in files:
         try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = _tail_lines(path)
         except OSError:
             continue
         matched.extend(line for line in lines
@@ -512,9 +530,10 @@ def _scan_logs(root: Path, limit: int) -> List[str]:
     return matched[-limit:]
 
 
-def _recent_errors(ctx: _Ctx, name: str, limit: int) -> Check:
-    raw = _scan_logs(ctx.root, limit)
-    kept = ctx.redactor.lines(raw)  # public mode: whitelist + full rule set
+async def _recent_errors(ctx: _Ctx, name: str, limit: int) -> Check:
+    # File scan and redaction off the event loop, so the per-check cap applies.
+    raw = await asyncio.to_thread(_scan_logs, ctx.root, limit)
+    kept = await asyncio.to_thread(ctx.redactor.lines, raw)  # public mode: whitelist + full rule set
     groups: Dict[str, Dict[str, Any]] = {}
     for line in kept:
         key = _DIGIT_RUN_RE.sub("N", _HEX_RUN_RE.sub("#", line))
@@ -534,11 +553,11 @@ def _recent_errors(ctx: _Ctx, name: str, limit: int) -> Check:
 
 
 async def check_recent_errors(env: dict, ctx: _Ctx) -> Check:
-    return _recent_errors(ctx, "recent_errors", 50)
+    return await _recent_errors(ctx, "recent_errors", 50)
 
 
 async def check_recent_errors_full(env: dict, ctx: _Ctx) -> Check:
-    return _recent_errors(ctx, "recent_errors_full", 300)
+    return await _recent_errors(ctx, "recent_errors_full", 300)
 
 
 async def check_scheduler(env: dict, ctx: _Ctx) -> Check:
@@ -571,10 +590,17 @@ async def check_scheduler(env: dict, ctx: _Ctx) -> Check:
                  {"snapshot": snapshot})
 
 
+# wmic is gone on Windows 11 24H2: PowerShell/CIM is the fallback.
+_WMIC_GPU_CMD = ["wmic", "path", "win32_VideoController", "get", "name"]
+_POWERSHELL_GPU_CMD = ["powershell", "-NoProfile", "-Command",
+                       "(Get-CimInstance Win32_VideoController).Name"]
+
+
 def _gpu_names() -> List[str]:
-    """GPU name lines only (no user fields); 2 s per probe."""
+    """GPU name lines only (no user fields); 2 s per probe. Blocking: called
+    through asyncio.to_thread."""
     if os.name == "nt":
-        cmds = [["wmic", "path", "win32_VideoController", "get", "name"]]
+        cmds = [_WMIC_GPU_CMD, _POWERSHELL_GPU_CMD]
     else:
         cmds = [["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
                 ["rocm-smi"]]
@@ -648,7 +674,7 @@ async def check_system(env: dict, ctx: _Ctx) -> Check:
     except OSError:
         details["disk_free_bytes"] = None
 
-    details["gpu"] = _gpu_names()
+    details["gpu"] = await asyncio.to_thread(_gpu_names)
     return Check("system", "ok", "system information collected", details)
 
 

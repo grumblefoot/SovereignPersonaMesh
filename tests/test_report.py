@@ -195,6 +195,46 @@ def test_cli_enhanced_runs_the_analysis(patched, monkeypatch, capsys):
         assert "## Enhanced analysis" in zf.read("report.md").decode("utf-8")
 
 
+def test_full_logs_enhanced_prompt_has_no_names(patched, monkeypatch):
+    """--full-logs --enhanced (FX-G 4): the description goes through user_text
+    with the name table in both modes, so the prompt and the private report.md
+    keep an 8+ word symptom readable, with the name tokenised and paths gone
+    (text() wiped the prose; the prompt was re-redacted without the names)."""
+    from spm.__main__ import main
+
+    class FakeClient:
+        base_url = "http://127.0.0.1:1/v1"
+
+        def __init__(self):
+            self.calls = []
+
+        async def generate_stream(self, **kw):
+            self.calls.append(kw)
+            yield json.dumps({"summary": "s", "likely_causes": [],
+                              "what_to_try": [], "severity": "low"})
+
+    monkeypatch.setenv("BACKEND_LLM_URL", "http://127.0.0.1:1/v1")
+
+    async def fake_window(*a, **k):
+        return None
+
+    monkeypatch.setattr(rp, "_window_tokens", fake_window)
+    client = FakeClient()
+    symptom = "loses the thread of the story after every second reply since the update"
+    rc = main(["report", "--yes", "--enhanced", "--full-logs", "--description",
+               f"{PLAYER_NAME} {symptom} in /home/someoneelse/x"],
+              repo_root=patched, enhanced_client=client)
+    assert rc == 0 and len(client.calls) == 1
+    sent = json.dumps(client.calls[0]["messages"])
+    assert PLAYER_NAME not in sent and "player#1" in sent
+    assert "/home/someoneelse" not in sent
+    assert symptom in sent  # the symptom itself is kept (no "<redacted N words>")
+    bundles = sorted((patched / "reports").glob("spm-report-PRIVATE-*.zip"))
+    with zipfile.ZipFile(bundles[-1]) as zf:
+        md = zf.read("report.md").decode("utf-8")
+    assert f"player#1 {symptom} in ~user/x" in md
+
+
 def test_reports_dir_is_gitignored():
     gitignore = Path(__file__).resolve().parent.parent / ".gitignore"
     entries = {line.strip() for line in gitignore.read_text(encoding="utf-8").splitlines()}

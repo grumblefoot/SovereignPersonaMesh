@@ -48,6 +48,9 @@
     .badge-direct { background: rgba(74, 222, 128, 0.2); color: var(--success); }
     .badge-muffled { background: rgba(251, 191, 36, 0.2); color: var(--warning); }
     .badge-blackout { background: rgba(248, 113, 113, 0.2); color: var(--danger); }
+    .cfg-prov { font-size: 0.7rem; font-weight: normal; text-transform: none; margin-left: 8px; }
+    .cfg-prov .badge { font-size: 0.6rem; padding: 1px 6px; }
+    .cfg-prov a { color: var(--accent); margin-left: 6px; cursor: pointer; text-decoration: underline; }
 
     .spatial-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; background: #090d16; padding: 12px; border-radius: 6px; border: 1px solid var(--border); }
     .spatial-room { background: #1e293b; padding: 10px; border-radius: 4px; border: 1px dashed var(--border); font-size: 0.8rem; }
@@ -319,7 +322,10 @@
       <p id="backend-window-status" style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px;">
         Context window: --
       </p>
-      <button class="btn" onclick="saveConfig()">Save Configuration</button>
+      <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+        <button class="btn" onclick="saveConfig()">Save Configuration</button>
+        <span id="cfg-save-status" style="font-size: 0.85rem; color: var(--text-muted);"></span>
+      </div>
     </div>
 
     <div class="card" style="max-width: 600px; margin: 24px 0;">
@@ -416,6 +422,7 @@
             <option value="conditional_trigger">Conditional trigger</option>
             <option value="game_over">Game over</option>
           </select>
+          <p id="rules-add-type-note" style="display: none; font-size: 0.75rem; color: var(--warning); margin-top: 6px;">Manual trigger rules have no embedding and will not be matched to the conversation; use type invariant for a rule that should always apply.</p>
         </div>
         <div class="form-group" style="grid-column: 1 / -1;">
           <label>Rule text</label>
@@ -445,18 +452,33 @@
 
     async function shutdownService() {
       if (!confirm("Are you sure you want to shut down the SPM Proxy and Game Services?")) return;
+      let res;
       try {
-        const res = await fetch('/admin/api/v1/shutdown', { method: 'POST' });
-        const data = await res.json();
-        alert(data.message || "Services are shutting down.");
-        // 'docker': SPM keeps running inside the bundle — keep the page, the
-        // message above says how to stop it. Only a real shutdown replaces it.
-        if (data.status === "success") {
-          document.body.innerHTML = "<h2 style='text-align:center;margin-top:20%;color:white;'>SPM Services Shutdown Complete. You may close this window.</h2>";
-        }
+        res = await fetch('/admin/api/v1/shutdown', { method: 'POST' });
       } catch (e) {
-        alert("Shutdown request sent.");
+        alert("No answer from the server: " + e.message);
+        return;
       }
+      let data = {};
+      try { data = await res.json(); } catch (e) {}
+      if (!res.ok) {
+        // 403 for non-loopback clients: the server says why in `detail`.
+        const detail = typeof data.detail === 'string' ? data.detail : (data.detail ? JSON.stringify(data.detail) : (data.message || res.statusText || 'no details'));
+        alert("Shutdown refused (" + res.status + "): " + detail);
+        return;
+      }
+      if (data.status === "docker") {
+        // SPM keeps running inside the bundle — keep the page, the message
+        // says how to stop it.
+        alert(data.message || "SPM runs in Docker: stop the container to shut it down.");
+        return;
+      }
+      if (data.status === "success") {
+        alert(data.message || "Services are shutting down.");
+        document.body.innerHTML = "<h2 style='text-align:center;margin-top:20%;color:white;'>SPM Services Shutdown Complete. You may close this window.</h2>";
+        return;
+      }
+      alert(data.message || ("Unexpected reply from the server: " + JSON.stringify(data)));
     }
 
     // Brief R4: "Report a problem" (see /admin/api/v1/report). All text from
@@ -492,7 +514,12 @@
           status.textContent = 'Cancelled — no report was created.';
           return;
         }
-        if (!res.ok) { status.textContent = 'Report failed: ' + (data.detail || res.status); return; }
+        if (!res.ok) {
+          // e.g. 403 in Docker for full logs: show the server's reason.
+          const detail = typeof data.detail === 'string' ? data.detail : (data.detail ? JSON.stringify(data.detail) : (data.message || res.statusText || 'no details'));
+          status.textContent = 'Report failed (' + res.status + '): ' + detail;
+          return;
+        }
       } catch (e) {
         status.textContent = 'Report request failed: ' + e;
         return;
@@ -632,13 +659,15 @@
           const gating = log.gating_level || log.gating || 'direct';
           const badgeClass = gating === 'blackout' ? 'badge-blackout' : (gating === 'muffled' ? 'badge-muffled' : 'badge-direct');
           const status = log.status_code || 200;
+          // Everything from the log goes through escapeHtml: the session id and
+          // gating come from the client request.
           return `<tr>
-            <td>${log.timestamp || ''}</td>
-            <td><code>${log.session_id || 'default'}</code></td>
-            <td><span class="badge ${badgeClass}">${gating}</span></td>
-            <td>${Math.round(log.latency_ms || 0)} ms</td>
-            <td>${log.rag_count || 0}</td>
-            <td><span style="color: ${status < 400 ? 'var(--success)' : 'var(--danger)'}">${status}</span></td>
+            <td>${escapeHtml(log.timestamp || '')}</td>
+            <td><code>${escapeHtml(log.session_id || 'default')}</code></td>
+            <td><span class="badge ${badgeClass}">${escapeHtml(gating)}</span></td>
+            <td>${escapeHtml(Math.round(Number(log.latency_ms) || 0))} ms</td>
+            <td>${escapeHtml(log.rag_count || 0)}</td>
+            <td><span style="color: ${Number(status) < 400 ? 'var(--success)' : 'var(--danger)'}">${escapeHtml(status)}</span></td>
           </tr>`;
         }).reverse().join('');
 
@@ -679,15 +708,15 @@
           ? mems.map(m => `
               <div style="border-top:1px solid var(--border); padding:6px 0;">
                 <div style="color:var(--text);">${escapeHtml(m.text)}${m.core ? ' <span class="badge badge-direct">core</span>' : ''}</div>
-                <div style="font-size:0.75rem; color:var(--text-muted);">cos distance <strong style="color:var(--text);">${m.cosine_distance ?? 'n/a (text search)'}</strong> · score <strong style="color:var(--accent);">${m.rag_score ?? '—'}</strong></div>
+                <div style="font-size:0.75rem; color:var(--text-muted);">cos distance <strong style="color:var(--text);">${escapeHtml(m.cosine_distance ?? 'n/a (text search)')}</strong> · score <strong style="color:var(--accent);">${escapeHtml(m.rag_score ?? '—')}</strong></div>
               </div>`).join('')
-          : `<p style="color: var(--text-muted);">No memories matched (threshold ${last.threshold}). New chats start with none.</p>`;
+          : `<p style="color: var(--text-muted);">No memories matched (threshold ${escapeHtml(last.threshold)}). New chats start with none.</p>`;
         box.innerHTML = `
           <div style="background:#090d16; padding:10px; border-radius:6px; border:1px solid var(--border);">
             <div style="font-weight:bold; color:var(--accent); margin-bottom:6px;">${escapeHtml(last.character)} · ${escapeHtml(last.turn_id || '')}</div>
             <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:6px;">
-              ${last.vector_search ? 'Vector search' : 'Full-text fallback'} · max distance ${last.threshold} ·
-              lore: ${last.lore_invariants} invariant(s), ${last.lore_triggers} trigger(s)
+              ${last.vector_search ? 'Vector search' : 'Full-text fallback'} · max distance ${escapeHtml(last.threshold)} ·
+              lore: ${escapeHtml(last.lore_invariants)} invariant(s), ${escapeHtml(last.lore_triggers)} trigger(s)
             </div>
             ${rows}
           </div>`;
@@ -712,11 +741,44 @@
     }
 
     let loadedConfig = {};          // the settings as loaded, to save only changes
+    let configLoaded = false;       // false until GET /config succeeded: never save blind
+    // Setting key -> form field id (provenance badges, reset links, empty-field restore).
+    const CONFIG_FIELD_IDS = {
+      BACKEND_LLM_URL: 'cfg-llm-url', BACKEND_API_KEY: 'cfg-api-key', SPM_PROXY_PORT: 'cfg-port',
+      backend_max_tokens: 'cfg-backend-max-tokens', periodic_review_cadence: 'cfg-cadence',
+      use_alternate_extraction_model: 'cfg-use-alt', alternate_extraction_model_name: 'cfg-alternate-model',
+      gm_actions_mode: 'cfg-gm-actions-mode', gm_actions_max_per_turn: 'cfg-gm-actions-max-per-turn',
+      gm_actions_max_rooms_per_session: 'cfg-gm-actions-max-rooms',
+      reasoning_mode: 'cfg-reasoning-mode', reasoning_effort: 'cfg-reasoning-effort',
+      reasoning_max_tokens: 'cfg-reasoning-max-tokens',
+      EMBEDDING_MODEL: 'cfg-embedding-model', EMBEDDING_MAX_COSINE_DISTANCE: 'cfg-embedding-max-cosine-distance',
+      EMBEDDING_PROVIDER: 'cfg-embedding-provider', EMBEDDING_URL: 'cfg-embedding-url',
+      public_output_default: 'cfg-public-output-default', context_window_override: 'cfg-context-window-override',
+    };
+
+    function setConfigStatus(msg, color) {
+      const s = document.getElementById('cfg-save-status');
+      if (!s) return;
+      s.textContent = msg || '';
+      s.style.color = color || 'var(--text-muted)';
+    }
+
+    // `detail` / `error` / `message` of a non-ok JSON response, as text.
+    async function errorDetail(res) {
+      let data = null;
+      try { data = await res.json(); } catch (e) {}
+      const d = data && (data.detail ?? data.error ?? data.message);
+      if (d === undefined || d === null || d === '') return res.statusText || 'no details';
+      return typeof d === 'string' ? d : JSON.stringify(d);
+    }
 
     async function fetchConfig() {
       try {
         const res = await fetch('/admin/api/v1/config');
-        if (!res.ok) return;
+        if (!res.ok) {
+          setConfigStatus('Could not load settings (' + res.status + '): ' + await errorDetail(res) + '. Saving is disabled until they load.', 'var(--danger)');
+          return;
+        }
         const data = await res.json();
         document.getElementById('cfg-llm-url').value = data.BACKEND_LLM_URL || '';
         document.getElementById('cfg-api-key').value = data.BACKEND_API_KEY || '';
@@ -740,7 +802,65 @@
         document.getElementById('cfg-context-window-override').value = data.context_window_override ?? 0;
         loadBackendWindowStatus();
         loadedConfig = readConfigForm();
+        configLoaded = true;
+        setConfigStatus('');
+        loadConfigProvenance();
+      } catch (e) {
+        setConfigStatus('Could not load settings: ' + e.message + '. Saving is disabled until they load.', 'var(--danger)');
+      }
+    }
+
+    // Which keys the settings file holds (saved from this page); every other field
+    // follows .env / the defaults. Built with DOM nodes, no HTML from the server.
+    async function loadConfigProvenance() {
+      let saved = [];
+      try {
+        const res = await fetch('/admin/api/v1/config/saved');
+        if (res.ok) saved = (await res.json()).saved_keys || [];
       } catch (e) {}
+      const savedSet = new Set(saved);
+      for (const [key, id] of Object.entries(CONFIG_FIELD_IDS)) {
+        const field = document.getElementById(id);
+        const group = field && field.closest('.form-group');
+        const label = group && group.querySelector('label');
+        if (!label) continue;
+        let prov = label.querySelector('.cfg-prov');
+        if (!prov) { prov = document.createElement('span'); prov.className = 'cfg-prov'; label.appendChild(prov); }
+        prov.textContent = '';
+        if (savedSet.has(key)) {
+          prov.style.opacity = '';
+          const badge = document.createElement('span');
+          badge.className = 'badge badge-direct';
+          badge.textContent = 'saved';
+          badge.title = 'Saved from the dashboard; overrides .env';
+          const reset = document.createElement('a');
+          reset.textContent = 'reset';
+          reset.title = 'Forget the saved value and follow .env / the default again';
+          reset.addEventListener('click', (ev) => { ev.preventDefault(); resetConfigKey(key); });
+          prov.append(badge, reset);
+        } else {
+          prov.style.opacity = '0.7';
+          prov.textContent = 'from .env / default';
+        }
+      }
+    }
+
+    // Un-save one key: POST {"<key>": null}, then reload the form (effective
+    // values and badges come from the server).
+    async function resetConfigKey(key) {
+      setConfigStatus('Resetting ' + key + '…');
+      try {
+        const res = await fetch('/admin/api/v1/config', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ [key]: null }),
+        });
+        if (!res.ok) { setConfigStatus('Reset failed (' + res.status + '): ' + await errorDetail(res), 'var(--danger)'); return; }
+        await fetchConfig();
+        if (configLoaded) setConfigStatus(key + ' now follows .env / the default.', 'var(--success)');
+      } catch (e) {
+        setConfigStatus('Reset failed: ' + e.message, 'var(--danger)');
+      }
     }
 
     function readConfigForm() {
@@ -768,28 +888,51 @@
     }
 
     async function saveConfig() {
+      if (!configLoaded) {
+        // With nothing loaded every field would count as "changed" and the save
+        // would pin all the .env values into the settings file. Reload instead.
+        setConfigStatus('Settings were never loaded, so nothing was saved. Reloading them…', 'var(--danger)');
+        await fetchConfig();
+        if (configLoaded) setConfigStatus('Settings reloaded; check them and save again.', 'var(--warning)');
+        return;
+      }
       const payload = readConfigForm();
       // Send only what changed since the page loaded: the settings file keeps just the
       // values you saved, and everything else keeps following .env (saving every field
       // froze all .env values into the file).
       const changed = {};
+      const skipped = [];   // empty number fields (NaN): "no change", restored below
       for (const [k, v] of Object.entries(payload)) {
+        if (typeof v === 'number' && Number.isNaN(v)) { skipped.push(k); continue; }
         const was = loadedConfig[k];
-        const same = (typeof v === 'number' && Number.isNaN(v)) ||
-                     String(v) === String(was === undefined || was === null ? '' : was);
-        if (!same) changed[k] = v;
+        if (String(v) !== String(was === undefined || was === null ? '' : was)) changed[k] = v;
       }
-      if (Object.keys(changed).length === 0) { alert('Nothing changed.'); return; }
-      const res = await fetch('/admin/api/v1/config', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(changed),
+      skipped.forEach(k => {
+        const field = document.getElementById(CONFIG_FIELD_IDS[k]);
+        if (field && loadedConfig[k] !== undefined && loadedConfig[k] !== null && !Number.isNaN(loadedConfig[k])) field.value = loadedConfig[k];
       });
-      if (res.ok) {
-        Object.assign(loadedConfig, changed);
-        alert('Settings saved.');
-        loadBackendWindowStatus();
+      const skippedNote = skipped.length ? ' Empty number fields left unchanged: ' + skipped.join(', ') + '.' : '';
+      if (Object.keys(changed).length === 0) { setConfigStatus('Nothing changed.' + skippedNote, 'var(--warning)'); return; }
+      setConfigStatus('Saving…');
+      let res;
+      try {
+        res = await fetch('/admin/api/v1/config', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(changed),
+        });
+      } catch (e) {
+        setConfigStatus('Save failed: ' + e.message, 'var(--danger)');
+        return;
       }
+      if (!res.ok) {
+        setConfigStatus('Save failed (' + res.status + '): ' + await errorDetail(res), 'var(--danger)');
+        return;
+      }
+      Object.assign(loadedConfig, changed);
+      setConfigStatus('Saved: ' + Object.keys(changed).join(', ') + '.' + skippedNote, 'var(--success)');
+      loadBackendWindowStatus();
+      loadConfigProvenance();
     }
 
     async function testAlternateModel() {
@@ -1016,24 +1159,31 @@
       }
     }
 
+    let rulesLoadSeq = 0;   // request token: an older, slower load must not overwrite a newer one
     async function loadChatRulesView(sid) {
       if (!sid) return;
+      const seq = ++rulesLoadSeq;
       const box = document.getElementById('rules-groups');
       box.innerHTML = '<p style="color: var(--text-muted); font-size: 0.9rem;">Loading rules...</p>';
       rulesError('');
       try {
         const res = await fetch('/admin/api/v1/chats/' + encodeURIComponent(sid) + '/rules');
+        if (seq !== rulesLoadSeq) return;
         if (!res.ok) {
           let msg = res.status + ' ' + res.statusText;
           try { const d = await res.json(); msg = d.error || msg; } catch (e) {}
+          if (seq !== rulesLoadSeq) return;
           box.innerHTML = '';
           box.appendChild(el('p', 'color: var(--danger); font-size: 0.9rem;', 'Could not load rules: ' + msg));
           return;
         }
-        rulesChatData = await res.json();
+        const data = await res.json();
+        if (seq !== rulesLoadSeq) return;
+        rulesChatData = data;
         renderChatRules(rulesChatData);
         refreshRulesAddSelects();
       } catch (e) {
+        if (seq !== rulesLoadSeq) return;
         box.innerHTML = '';
         box.appendChild(el('p', 'color: var(--danger); font-size: 0.9rem;', 'Could not load rules: ' + e.message));
       }
@@ -1096,6 +1246,7 @@
       const roomSel = document.getElementById('rules-add-room');
       roomSel.innerHTML = '';
       (data.locations || []).forEach(loc => {
+        if (loc.room_id === null || loc.room_id === undefined || loc.room_id === '') return;  // nothing to attach a rule to
         const opt = el('option', '', loc.name || String(loc.room_id));
         opt.value = loc.room_id;
         roomSel.appendChild(opt);
@@ -1151,6 +1302,14 @@
       });
       document.getElementById('rules-add-level').addEventListener('change', refreshRulesAddSelects);
       document.getElementById('rules-add-btn').addEventListener('click', addChatRule);
+      // Manual rule types carry no embedding, so they never match the conversation.
+      const typeSel = document.getElementById('rules-add-type');
+      const typeNote = document.getElementById('rules-add-type-note');
+      const updateTypeNote = () => {
+        typeNote.style.display = (typeSel.value === 'conditional_trigger' || typeSel.value === 'game_over') ? '' : 'none';
+      };
+      typeSel.addEventListener('change', updateTypeNote);
+      updateTypeNote();
     }
     initChatRulesUI();
 

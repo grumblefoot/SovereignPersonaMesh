@@ -102,10 +102,18 @@ Characters answer as if they never met you. Causes:
 
 - Start/stop/status/logs: the scripts in `scripts/docker/`
   (`start.cmd` / `start.sh`, `logs.cmd` / `logs.sh`, ...).
-- A container stuck or misbehaving: `docker compose -f config/docker-compose.yml
-  restart`, and read `... logs --tail 200 spm`.
+- A container stuck or misbehaving: `docker compose --env-file .env -f
+  config/docker-compose.yml restart`, and read `... logs --tail 200 spm`. Always pass
+  `--env-file .env` (or use the scripts): without it Compose does not read the repo's
+  `.env`, and a first `up` creates the database with the default password while SPM
+  uses yours.
 - **`down -v` DELETES ALL DATA** (memories, chats, settings live on the named
   volumes). Never use it to "just restart" — use `stop`.
+- The **Quit** button and the "include full logs" report option are not available in
+  Docker: stop the bundle with the scripts, and for a private full-log report run
+  `docker compose --env-file .env -f config/docker-compose.yml exec spm python -m spm report
+  --full-logs`, then copy the file out with `docker cp`.
+- The compose file needs Docker Compose 2.24 or newer (Docker Desktop 4.27+).
 - After an update: `git pull` then `update.cmd` / `update.sh` (rebuilds the
   image and runs pending migrations automatically).
 
@@ -138,7 +146,11 @@ it is filtered, but you decide what you post. Options:
 - `--full-logs` includes the raw recent logs including chat text. The bundle is
   then named `spm-report-PRIVATE-...` — send it only to the developers, never
   post it publicly;
-- `--yes` prints the issue link without opening a browser.
+- `--yes` prints the issue link without opening a browser and never prompts;
+- `--enhanced` asks your model server to analyse the results. If that server is
+  not on your machine or LAN, the redacted diagnostics would leave your machine:
+  the command asks first, and `--yes` alone is **not** consent — add
+  `--confirm-remote` to allow it, otherwise you get the Traditional report.
 
 Reports work even when SPM is completely down — that is exactly when you need
 one. Nothing is uploaded automatically.

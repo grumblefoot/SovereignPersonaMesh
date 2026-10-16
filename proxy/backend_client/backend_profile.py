@@ -141,7 +141,7 @@ async def _probes(http: httpx.AsyncClient, root: str, base: str, model: str) -> 
                 if n:
                     return WindowInfo(n, "lmstudio-loaded", f"{m['id']} loaded at {n}")
     # 2/3. Lemonade health (real server on :13305 — probe before the generic /models
-    # so --ctx-size is preferred; gufo/vLLM/OpenRouter-style have no health endpoint).
+    # so --ctx-size is preferred; llama-server-style/vLLM/OpenRouter-style servers have no such health endpoint).
     health = await _get_json(http, f"{root}/api/v1/health")
     if isinstance(health, dict):
         by_name = {}
@@ -155,7 +155,7 @@ async def _probes(http: httpx.AsyncClient, root: str, base: str, model: str) -> 
             n = _ctx_from_launch_command(by_name[pick].get("launch_command"))
             if n:
                 return WindowInfo(n, "lemonade-launch", f"{pick} ctx-size {n}")
-    # 4. OpenAI-style /models: gufo, vLLM, LM Studio (same data without state).
+    # 4. OpenAI-style /models: vLLM, llama-server-style servers, LM Studio (same data without state).
     models = await _get_json(http, f"{base}/models")
     if isinstance(models, dict):
         entries = {str(m["id"]): m for m in models.get("data") or [] if isinstance(m, dict) and m.get("id")}

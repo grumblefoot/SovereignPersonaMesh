@@ -1,5 +1,8 @@
 # Sovereign Persona Mesh — full stack (database + proxy/engine bundle).
-# Run: docker compose -f config/docker-compose.yml up -d --build
+# Run from the repo root: docker compose --env-file .env -f config/docker-compose.yml up -d --build
+# (--env-file: Compose interpolates ${POSTGRES_*} from config/.env by default, not the repo's
+#  .env; without it the database would be created with the default password while SPM uses
+#  yours. The scripts in scripts/docker/ pass it for you.)
 # Compose v2 format: no `version:` key.
 
 # Fixed project name: Docker Desktop shows one "spm" group and containers are
