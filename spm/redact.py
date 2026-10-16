@@ -7,6 +7,8 @@ Hermes plan review") for the policy this encodes:
 
 - message-content log lines are dropped entirely (public mode);
 - secrets (api keys, passwords, secrets, bearer tokens, sk-... keys) -> ***;
+  any "Authorization: <scheme> <credentials>" -> "Authorization: *** ***",
+  and "Basic <base64>" anywhere -> "Basic ***";
 - URL credentials (scheme://user:pass@host) -> scheme://***@host;
 - home paths -> ~, other users' home roots -> ~user, the OS user name -> user;
 - session ids -> stable short hashes (chat#a1b2);
@@ -18,13 +20,17 @@ Hermes plan review") for the policy this encodes:
   "<redacted N words>", keeping the "<timestamp> [LEVEL] <logger>: " prefix;
   URLs, file paths, key=value pairs, numbers and quoted spans are not counted
   (public mode only);
-- public IPv4 -> x.x.x.x, LAN IPs keep the first two octets, loopback stays.
+- public IPv4 -> x.x.x.x, LAN IPs keep the first two octets, loopback stays;
+  IPv6 -> x:x:x:x (link-local fe80::x, ::1 stays); LAN host names
+  (*.lan/.local/.home/.internal/.localdomain) -> <host>.<suffix>.
 """
 
 from __future__ import annotations
 
+import functools
 import getpass
 import hashlib
+import ipaddress
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,6 +75,12 @@ _SECRET_KV_RE = re.compile(
     """
 )
 _BEARER_RE = re.compile(r"(?i)\bBearer[ \t]+[A-Za-z0-9._~+/=-]{2,}")
+_BASIC_RE = re.compile(r"(?i)\bBasic[ \t]+[A-Za-z0-9+/=_~.-]{2,}")
+# "Authorization: <scheme> <credentials>" in one shot: the key=value secret
+# rule eats only the scheme word ("Basic"), leaving the base64 behind (FX-E 1).
+_AUTH_HEADER_RE = re.compile(
+    r"(?i)\bAuthorization[ \t]*:[ \t]*[A-Za-z][A-Za-z0-9._-]*[ \t]+[^\s,;}\"']+"
+)
 _SK_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{16,}")
 
 # scheme://user:pass@host -> scheme://***@host
@@ -80,6 +92,24 @@ _ST_CHAT_RE = re.compile(r"st_chat_[0-9A-Za-z_]+")
 _SESSION_KV_RE = re.compile(
     r"(?i)\b(session_id|session)[ \t]*=[ \t]*(?!chat#)([A-Za-z0-9][^\s,;}\]]*)"
 )
+
+# Legacy session ids "st_<persona>_<character>" (no "chat_"): when the database
+# is down there is no name table, so the ids themselves leak names (FX-E 3).
+# SPM's own st_ identifiers (a setting, a doc name) and config keys starting
+# with "st_" are not session ids and pass through.
+_LEGACY_SESSION_RE = re.compile(r"\bst_[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+\b")
+_ST_IDENTIFIERS = frozenset({"st_passthrough_shared_notes", "st_extension_setup"})
+
+
+@functools.lru_cache(maxsize=1)
+def _setting_names() -> frozenset:
+    """st_ names that are not session ids (config keys lazily imported)."""
+    try:
+        from config.manager import _DEFAULT_VALUES
+
+        return _ST_IDENTIFIERS | {k for k in _DEFAULT_VALUES if k.startswith("st_")}
+    except Exception:
+        return _ST_IDENTIFIERS
 
 # Quoted spans with escape handling; kept linear-time for long lines.
 _QUOTE_RE = re.compile(r'"[^"\\]*(?:\\.[^"\\]*)*"|\'[^\'\\]*(?:\\.[^\'\\]*)*\'')
@@ -107,6 +137,11 @@ _TECH_CHARS = frozenset("=/\\@#%$&*<>_+")
 # check (a leading apostrophe is not, so quoted spans never count as words).
 _WORD_EDGE_STRIP_RE = re.compile(r"[^\w'’\-]+$")
 _WORD_CORE_RE = re.compile(r"[^\W\d_]+(?:['’‘,\-][^\W\d_]+)*")
+# Tokenisation of the message part: any run of non-whitespace.
+_TOKEN_RE = re.compile(r"\S+")
+_HAS_WORD_CHAR_RE = re.compile(r"\w")
+# A plain number is neutral inside a word run: it neither counts nor breaks.
+_PLAIN_NUMBER_RE = re.compile(r"\d+[.,]?")
 
 # Other users' home roots: /home/<x>, /Users/<x>, C:\Users\<x> -> ~user
 # (drive-letter paths are unreliable in case, so matching is case-insensitive).
@@ -130,6 +165,33 @@ def _mask_ip(m: re.Match) -> str:
     if a == 10 or a == 192 or (a == 172 and 16 <= b <= 31):
         return f"{a}.{b}.x.x"
     return "x.x.x.x"
+
+
+# IPv6 candidates (validated with ipaddress, so times like 20:35:56 pass).
+_IPV6_RE = re.compile(
+    r"(?<![\w:.])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?:%[\w.-]+)?(?![\w:])"
+)
+
+
+def _mask_ipv6(m: re.Match) -> str:
+    text = m.group(0)
+    try:
+        ip = ipaddress.IPv6Address(text.split("%", 1)[0])
+    except ValueError:
+        return text
+    if ip.is_loopback or ip.is_unspecified:
+        return text
+    if ip.is_link_local:
+        return "fe80::x"
+    return "x:x:x:x"
+
+
+# LAN host names: brendas-pc.lan -> <host>.lan. The lookahead keeps file
+# names such as config.local.json out (the suffix must end the name).
+_LAN_HOST_RE = re.compile(
+    r"(?i)(?<![\w.-])[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9-]+)*"
+    r"\.(lan|local|home|internal|localdomain)(?![\w-]|\.\w)"
+)
 
 
 def _chat_token(value: str) -> str:
@@ -177,29 +239,49 @@ def _is_prose_word(tok: str) -> bool:
 def _redact_word_run_seq(seq: str) -> str:
     """Replace runs of >= _WORD_RUN_MIN consecutive prose words in `seq`.
 
-    Greedy maximal runs; the replacement is "<redacted N words>". Tokens
-    that are not prose words (numbers, key=value, URLs, paths, quoted
-    spans and their placeholders) break a run and pass through untouched.
+    Greedy maximal runs; the replacement is "<redacted N words>". Splitting
+    is on ANY whitespace (double spaces and tabs used to break runs, FX-E 2).
+    Plain numbers ("\\d+[.,]?") and punctuation-only tokens (not technical
+    characters such as & or =) are neutral: they
+    neither count nor break a run. A "label:" followed by a number is a
+    key/value pair ("Public chars: 2194") and breaks the run, like everything
+    else that is not a prose word (key=value, URLs, paths, [Tags], quoted
+    spans and their placeholders), which passes through untouched.
     """
-    parts = seq.split(" ")
+    toks = list(_TOKEN_RE.finditer(seq))
+    kinds: List[str] = []  # "word" | "neutral" | "break"
+    for k, m in enumerate(toks):
+        t = m.group(0)
+        if _PLAIN_NUMBER_RE.fullmatch(t) or not (_HAS_WORD_CHAR_RE.search(t) or _TECH_CHARS & set(t)):
+            kinds.append("neutral")
+        elif t.endswith(":") and k + 1 < len(toks) and _PLAIN_NUMBER_RE.fullmatch(toks[k + 1].group(0)):
+            kinds.append("break")
+        elif _is_prose_word(t):
+            kinds.append("word")
+        else:
+            kinds.append("break")
+
     out: List[str] = []
-    run: List[str] = []
-
-    def flush() -> None:
-        if len(run) >= _WORD_RUN_MIN:
-            out.append(f"<redacted {len(run)} words>")
-        else:
-            out.extend(run)
-        run.clear()
-
-    for tok in parts:
-        if _is_prose_word(tok):
-            run.append(tok)
-        else:
-            flush()
-            out.append(tok)
-    flush()
-    return " ".join(out)
+    pos = 0
+    i = 0
+    while i < len(toks):
+        if kinds[i] != "word":
+            i += 1
+            continue
+        j = last = i
+        n = 1
+        while j + 1 < len(toks) and kinds[j + 1] != "break":
+            j += 1
+            if kinds[j] == "word":
+                n += 1
+                last = j
+        if n >= _WORD_RUN_MIN:
+            out.append(seq[pos: toks[i].start()])
+            out.append(f"<redacted {n} words>")
+            pos = toks[last].end()
+        i = last + 1
+    out.append(seq[pos:])
+    return "".join(out)
 
 
 _RUN_PLACEHOLDER_RE = re.compile(r"<redacted \d+ words>")
@@ -360,8 +442,11 @@ class Redactor:
     def _apply(self, s: str, keep_content: bool) -> str:
         self._derive()
 
-        # Secrets (Bearer first so the header keeps its shape).
+        # Secrets (Authorization header first so the whole credential pair
+        # goes, then Bearer so the header keeps its shape).
+        s = _AUTH_HEADER_RE.sub("Authorization: *** ***", s)
         s = _BEARER_RE.sub("Bearer ***", s)
+        s = _BASIC_RE.sub("Basic ***", s)
         s = _SECRET_KV_RE.sub(_sub_secret, s)
         s = _SK_RE.sub("***", s)
 
@@ -378,6 +463,12 @@ class Redactor:
         # Session ids -> stable chat#xxxx tokens.
         s = _ST_CHAT_RE.sub(lambda m: _chat_token(m.group(0)), s)
         s = _SESSION_KV_RE.sub(lambda m: f"{m.group(1)}={_chat_token(m.group(2))}", s)
+        # Legacy "st_<persona>_<character>" ids, except exact setting names.
+        settings = _setting_names()
+        s = _LEGACY_SESSION_RE.sub(
+            lambda m: m.group(0) if m.group(0) in settings else _chat_token(m.group(0)),
+            s,
+        )
 
         if not keep_content:
             # Keyword-bag lists: [...] or (...) with 4+ quoted items first,
@@ -398,6 +489,8 @@ class Redactor:
             # longer count as words).
             s = _redact_message_prose(s)
 
-        # IP addresses.
+        # IP addresses and LAN host names.
         s = _IP_RE.sub(_mask_ip, s)
+        s = _IPV6_RE.sub(_mask_ipv6, s)
+        s = _LAN_HOST_RE.sub(lambda m: f"<host>.{m.group(1)}", s)
         return s
