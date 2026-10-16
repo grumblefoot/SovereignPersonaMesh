@@ -56,7 +56,7 @@ def patched(monkeypatch, tmp_path):
     async def fake_run_checks(env, **kwargs):
         return _fake_checks()
 
-    async def fake_name_table(env):
+    async def fake_name_table(env, *_):
         return {PLAYER_NAME: "player#1"}
 
     monkeypatch.setattr(rp, "run_checks", fake_run_checks)

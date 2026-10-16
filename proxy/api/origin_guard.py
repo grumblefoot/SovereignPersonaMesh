@@ -53,11 +53,9 @@ def request_origin(scope) -> str:
 
 
 def allowed_origins(request_origin: str) -> set:
-    """Same-origin plus the loopback aliases for the Host's port."""
+    """Same-origin plus the loopback aliases for the Host's port. No port-less
+    aliases: a web app on localhost:80/443 is another site (third review, 8)."""
     allowed = {request_origin}
-    for h in _LOOPBACK_HOSTS:
-        for scheme in ("http", "https"):
-            allowed.add(f"{scheme}://{h}")
     try:
         port = urlsplit(request_origin).port
     except ValueError:

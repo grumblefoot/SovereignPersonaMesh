@@ -50,8 +50,11 @@ volume) and restart to fall back to `.env`.
 SPM listens on `127.0.0.1` only, by design: the dashboard has no login. From
 the same machine, open `http://localhost:5050/admin`. To reach it from another
 device, set `SPM_HOST=0.0.0.0` in `.env` and restart — only on a network you
-trust. Inside Docker the container already binds `0.0.0.0`; make sure the port
-is published (`docker compose ps`).
+trust. Inside Docker the container already binds `0.0.0.0` but publishes port 5050
+on `127.0.0.1` only. For another device, change the port line in
+`config/docker-compose.yml` to `0.0.0.0:5050:5050` and set `SPM_LAN_ACCESS=1` in
+`.env`; without it the page loads but every dashboard action answers
+`cross-site request refused`. Check the published port with `docker compose ps`.
 
 ## "Model server unreachable"
 

@@ -197,13 +197,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Initialize default demo tables
-SELECT create_csa_lore_rules_table('rowan');
-SELECT create_csa_lore_rules_table('domino');
-SELECT create_csa_lore_rules_table('luna');
-SELECT create_csa_lore_rules_table('seamus');
-SELECT create_csa_lore_rules_table('arvenia');
-
 -- ======================================================================
 -- Brief A1: one rules table for all chats (replaces per-character
 -- csa_lore_rules_* for retrieval; keep create_csa_lore_rules_table for now).

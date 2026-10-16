@@ -41,6 +41,9 @@ DIRECT = [
      "Address the proxy binds to. Keep loopback unless you deliberately expose it.", "Server"),
     ("SPM_PORT", "5050",
      "Proxy port (SillyTavern connects here).", "Server"),
+    ("SPM_LAN_ACCESS", "0",
+     "Docker bundle only: 1 lets the dashboard answer requests from other devices "
+     "(publish 0.0.0.0:5050:5050 too). Only on a trusted network: no login.", "Server"),
     ("SPM_ENGINE_HOST", "127.0.0.1",
      "Address the world engine binds to. Keep loopback.", "Server"),
     ("SPM_ENGINE_PORT", "4005",
