@@ -102,7 +102,10 @@ _CTX_FLAG = re.compile(r"--ctx-size(?:\s+|=)(\d+)")
 
 
 def _ctx_from_launch_command(cmd: Any) -> Optional[int]:
-    """'lemonade-server serve --model X --ctx-size 262144' -> 262144."""
+    """'lemonade-server serve --model X --ctx-size 262144' -> 262144. Lemonade
+    2026.42+ reports the command as an argv list; both forms are read (QA 10-17)."""
+    if isinstance(cmd, (list, tuple)):
+        cmd = " ".join(str(part) for part in cmd)
     if not isinstance(cmd, str):
         return None
     m = _CTX_FLAG.search(cmd)

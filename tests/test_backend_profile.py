@@ -166,6 +166,22 @@ async def test_lemonade_health_ctx_size_checkpoint():
     assert (info.tokens, info.source) == (262144, "lemonade-launch")
 
 
+async def test_lemonade_health_launch_command_as_argv_list():
+    # Lemonade 2026.42+ reports launch_command as a list (QA 2026-10-17); a smaller
+    # --ctx-size than the model's maximum must win over the /models context_length.
+    info = await probe({
+        "/api/v1/health": json_response({"all_models_loaded": [
+            {"model_name": "Gemma-4-26B-A4B-it-GGUF",
+             "launch_command": ["llama-server", "-m", "gemma.gguf", "--ctx-size", "32768",
+                                "--port", "8001"]},
+        ]}),
+        "/v1/models": json_response({"data": [
+            {"id": "Gemma-4-26B-A4B-it-GGUF", "context_length": 262144},
+        ]}),
+    })
+    assert (info.tokens, info.source) == (32768, "lemonade-launch")
+
+
 async def test_llamacpp_props():
     for payload, expected in [
         ({"default_generation_settings": {"n_ctx": 32768}}, 32768),
