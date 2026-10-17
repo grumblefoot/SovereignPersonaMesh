@@ -1083,3 +1083,23 @@ def test_imported_chat_history_is_used_at_once_and_backfilled_when_idle(rig, mon
     second = rig.prompt_text(-1)
     assert "line 0" in second and second.count("reply 4") == 1     # from the store, once
     assert _aio.run(bf_rows()) == n                                    # not written twice
+
+
+def test_regenerate_does_not_show_the_reply_being_replaced(rig, monkeypatch):
+    """QA 2026-10-17 (Mei): a regenerate's prompt held the very reply the user rejected,
+    because that reply's rows are replaced only after the new reply. The next turn still
+    sees the turn's reply."""
+    import proxy.api.routes as routes
+
+    async def marked_stream(*args, **kwargs):
+        rig.prompts.append([dict(m) for m in kwargs.get("messages", [])])
+        yield "<think>plan</think>"
+        yield "zq_rejected_reply_marker walks in."
+
+    monkeypatch.setattr(routes.lemonade_client, "generate_stream", marked_stream)
+    msgs = sysmsgs() + [{"role": "user", "content": '"Hello there."'}]
+    rig.turn(msgs)
+    rig.turn(msgs, regenerate=True)
+    assert "zq_rejected_reply_marker" not in rig.prompt_text(-1)
+    rig.turn(sysmsgs() + [{"role": "user", "content": '"And now?"'}])
+    assert "zq_rejected_reply_marker" in rig.prompt_text(-1)
