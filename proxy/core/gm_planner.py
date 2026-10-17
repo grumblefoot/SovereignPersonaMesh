@@ -234,6 +234,22 @@ def drop_no_ops(actions: List[Dict[str, Any]], where: Dict[str, str]) -> List[Di
     return [a for a in out if a.get("type") != "CREATE_ROOM" or a.get("room_id") in used]
 
 
+# The generic world's placeholder rooms (evennia_world/res/strings.json, template
+# "generic_void"): a turn-0 starting point when no world template matches, not a story
+# place (owner, QA 2026-10-17).
+PLACEHOLDER_ROOMS = frozenset({"central_nexus", "node_alpha", "node_beta"})
+
+
+def story_rooms(rooms: List[Dict[str, str]], where: Dict[str, str]) -> List[Dict[str, str]]:
+    """The rooms the planner may reuse: placeholders only while someone stands in one.
+    Offered as 'known rooms', a placeholder was reused for a new story place (turn 10 of
+    the QA chat: cabin -> the sky became 'Central Nexus'); without it the model creates
+    the place."""
+    occupied = set(where.values())
+    return [r for r in rooms if r.get("room_id") not in PLACEHOLDER_ROOMS
+            or r.get("room_id") in occupied]
+
+
 def colocate_first_turn(actions: List[Dict[str, Any]], where: Dict[str, str]) -> List[Dict[str, Any]]:
     """First turn of a chat: the player and every character start in the same place
     (owner rule, QA 2026-10-17). The opening reply usually sets the scene with the
