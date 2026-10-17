@@ -26,7 +26,32 @@ distance and walls, and every character keeps its own private memories.
 - An OpenAI-compatible LLM server with:
   - a chat model; the default is `Gemma-4-26B-A4B-it-GGUF` (set `SPM_DEFAULT_MODEL` to change it);
   - an embedding model; the default is `Qwen3-Embedding-0.6B-GGUF-Q8_0`.
+
+  The server can be on this machine, on another machine in your network, or a hosted API (see
+  [Using a hosted model server](#using-a-hosted-model-server)).
 - SillyTavern 1.19 or newer.
+
+### Using a hosted model server
+
+No hardware for a local model? Point SPM at any hosted OpenAI-compatible API in `.env`:
+
+```
+BACKEND_LLM_URL=https://<provider>/v1
+BACKEND_API_KEY=<your key>
+SPM_DEFAULT_MODEL=<the provider's model id>
+```
+
+- The key is sent only to that server, and the dashboard never shows it.
+- **Embeddings** are requested from the same server unless you set `EMBEDDING_URL`. If your
+  provider has no embedding endpoint, run a small local one (the default embedding model runs on
+  a CPU, e.g. with Lemonade or `llama-server --embedding`) and set `EMBEDDING_URL`, or set
+  `EMBEDDING_PROVIDER=none` to recall memories by text search only.
+- **Privacy and cost:** every turn sends the prompt (chat, character card, recalled memories) to
+  the provider. Besides the reply, SPM makes a short GM call per turn and occasional background
+  calls (rule extraction, memory consolidation, imported-chat backfill), all billed by the
+  provider. Reasoning mode "auto" stays off for hosted servers (hidden thinking is billed too).
+- SPM cannot read a hosted model's context window; it assumes 32,768 tokens. Set the context
+  window override in the dashboard if your model's is smaller or larger.
 
 ## Setup
 

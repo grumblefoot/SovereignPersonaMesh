@@ -72,6 +72,9 @@ SPM cannot reach the chat model server. Check in order:
    unreachable — make it listen on the network (`--host 0.0.0.0` or the LM
    Studio setting).
 5. **Firewall** on the model server machine blocking the port.
+6. **"HTTP 401" or "the server refused the request"** (hosted APIs): the key is
+   missing or wrong. Set `BACKEND_API_KEY` in `.env` (or type it into the
+   Configuration page) and restart. The report shows only whether a key is set.
 
 ## Replies are empty or cut off
 
