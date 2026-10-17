@@ -790,10 +790,15 @@ def test_scenario_narrator_follows_player_when_gm_moves_them(rig, monkeypatch):
     assert "zq_narrator_word" in rig.prompt_text(-1)
 
 
+# One earlier exchange, so the move happens on turn 2 (the first turn co-locates everyone).
+_EARLIER = [{"role": "user", "content": "Hello."}, {"role": "assistant", "content": "Hello there."}]
+
+
 def test_ordinary_character_is_not_dragged_along(rig, monkeypatch):
     rig.seed(placements=[("user", "cellar"), ("mira", "cellar")])
     _move_player_stream(rig, monkeypatch, "tavern_upstairs")
-    rig.turn(sysmsgs("Mira") + [{"role": "user", "content": '"I am going upstairs."'}])
+    # Turn 2: on a chat's first turn everyone starts in one room (owner rule, QA 10-17).
+    rig.turn(sysmsgs("Mira") + _EARLIER + [{"role": "user", "content": '"I am going upstairs."'}])
     rig.client.get("/health"); time.sleep(0.3); rig.client.get("/health")
     assert _where(rig)["mira"] == "cellar"          # a person may stay behind
 
@@ -812,7 +817,7 @@ def test_narrator_override_off_disables_following(rig, monkeypatch):
     asyncio.run(set_off())
     rig.seed(placements=[("user", "cellar"), ("hero_rpg_world", "cellar")])
     _move_player_stream(rig, monkeypatch, "tavern_upstairs")
-    rig.turn(sysmsgs("Hero RPG World") + [{"role": "user", "content": '"Let us go."'}])
+    rig.turn(sysmsgs("Hero RPG World") + _EARLIER + [{"role": "user", "content": '"Let us go."'}])
     rig.client.get("/health"); time.sleep(0.3); rig.client.get("/health")
     assert _where(rig)["hero_rpg_world"] == "cellar"   # override wins over the name heuristic
 
