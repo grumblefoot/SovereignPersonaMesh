@@ -787,6 +787,12 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                     conn, session_id=session_id, recipient_id=target_char,
                     limit=int(settings.get("gated_history_max_rows", 400) or 400),
                     head=PINNED_OPENING_ROWS)
+                if gen_type != "continue":
+                    # The reply being regenerated must not be in its own prompt: its rows
+                    # are replaced only after the new reply, so a regenerate saw the very
+                    # reply the user rejected (QA 2026-10-17, Mei). Continue extends it.
+                    own_reply = f"{turn_id}#reply:{target_char}"
+                    percep_rows = [r for r in percep_rows if r.get("turn_id") != own_reply]
                 session_has_rows = bool(percep_rows) or bool(await conn.fetchval(
                     "SELECT 1 FROM spm_perception WHERE session_id = $1 LIMIT 1",
                     session_id))
