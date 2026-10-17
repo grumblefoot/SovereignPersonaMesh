@@ -8,7 +8,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +248,29 @@ def story_rooms(rooms: List[Dict[str, str]], where: Dict[str, str]) -> List[Dict
     occupied = set(where.values())
     return [r for r in rooms if r.get("room_id") not in PLACEHOLDER_ROOMS
             or r.get("room_id") in occupied]
+
+
+def linked_pairs(snapshot: Dict[str, Any]) -> set:
+    """Room pairs already connected in a world snapshot (exits or edges), unordered."""
+    pairs = set()
+    for r in (snapshot or {}).get("rooms", []) or []:
+        for x in r.get("exits") or []:
+            pairs.add(frozenset((r.get("room_id"), x)))
+    for e in (snapshot or {}).get("edges", []) or []:
+        pairs.add(frozenset((e.get("a"), e.get("b"))))
+    return pairs
+
+
+def new_link(came_from: Optional[str], went_to: Optional[str], linked: set) -> Optional[Tuple[str, str]]:
+    """The room pair a move should connect, or None: both rooms known story rooms
+    (not placeholders), different, and not linked yet."""
+    if not came_from or not went_to or came_from == went_to:
+        return None
+    if came_from in PLACEHOLDER_ROOMS or went_to in PLACEHOLDER_ROOMS:
+        return None
+    if frozenset((came_from, went_to)) in linked:
+        return None
+    return came_from, went_to
 
 
 def colocate_first_turn(actions: List[Dict[str, Any]], where: Dict[str, str]) -> List[Dict[str, Any]]:

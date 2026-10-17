@@ -279,3 +279,50 @@ def test_placeholder_rooms_are_offered_only_while_occupied():
     # Turn 1: everyone still in the starting room, which stays on the list.
     assert [r["room_id"] for r in story_rooms(rooms, {"user": "central_nexus"})] \
         == ["central_nexus", "derelict_hut"]
+
+
+# ── rooms join up as the story moves (owner, QA 2026-10-17) ──────────────────
+
+def test_new_link_rules():
+    from proxy.core.gm_planner import linked_pairs, new_link
+    snap = {"rooms": [{"room_id": "kitchen", "exits": ["gardens"]}, {"room_id": "gardens", "exits": ["kitchen"]},
+                      {"room_id": "derelict_hut", "exits": []}],
+            "edges": [{"a": "central_nexus", "b": "node_alpha"}]}
+    linked = linked_pairs(snap)
+    assert new_link("derelict_hut", "sky", linked) == ("derelict_hut", "sky")
+    assert new_link("kitchen", "gardens", linked) is None          # already linked
+    assert new_link("gardens", "kitchen", linked) is None          # either direction
+    assert new_link("central_nexus", "sky", linked) is None        # placeholder: not a story place
+    assert new_link(None, "sky", linked) is None                   # not placed yet
+    assert new_link("sky", "sky", linked) is None
+
+
+async def test_gm_move_links_the_two_rooms_with_a_closed_door(monkeypatch):
+    import proxy.api.routes as routes
+    monkeypatch.setattr(routes, "resolve_gm_actions_mode", lambda s: "full")
+    doors = []
+
+    async def snap(*a, **k):
+        return {"rooms": [{"room_id": "derelict_hut", "exits": []}, {"room_id": "central_nexus", "exits": []}],
+                "edges": [],
+                "occupants": [{"entity_id": "user", "room_id": "derelict_hut"},
+                              {"entity_id": "alba", "room_id": "derelict_hut"},
+                              {"entity_id": "mei", "room_id": "central_nexus"}]}
+
+    async def ok(*a, **k):
+        return {}
+
+    async def barrier(a, b, **k):
+        doors.append((a, b, k.get("barrier"), k.get("state")))
+
+    acts = [{"type": "CREATE_ROOM", "room_id": "sky", "name": "Sky"},
+            {"type": "MOVE", "entity": "user", "room_id": "sky"},
+            {"type": "MOVE", "entity": "alba", "room_id": "sky"}]
+    with patch.object(evennia_client, "get_snapshot", side_effect=snap), \
+         patch.object(evennia_client, "move_character", side_effect=ok), \
+         patch.object(evennia_client, "create_room", side_effect=ok), \
+         patch.object(evennia_client, "set_barrier", side_effect=barrier):
+        await _dispatch_gm_actions(MonologueStreamParser(), session_id="s", target_char="alba",
+                                   turn_index=5, actions=acts, story_text="Alba rises into the sky")
+    # One door for the hut -> sky path (two movers, one link), closed.
+    assert doors == [("derelict_hut", "sky", "closed_door", "closed")]
