@@ -234,6 +234,29 @@ def drop_no_ops(actions: List[Dict[str, Any]], where: Dict[str, str]) -> List[Di
     return [a for a in out if a.get("type") != "CREATE_ROOM" or a.get("room_id") in used]
 
 
+def colocate_first_turn(actions: List[Dict[str, Any]], where: Dict[str, str]) -> List[Dict[str, Any]]:
+    """First turn of a chat: the player and every character start in the same place
+    (owner rule, QA 2026-10-17). The opening reply usually sets the scene with the
+    character already there ("the air in the derelict hut curdles"), which is not a move,
+    so only the player was moved and the character was left in the starting room: the
+    next turn was a blackout. Any MOVE on the first turn therefore moves everyone into
+    one room: the player's destination when the player moves, else the last MOVE's room.
+    Without a MOVE, everyone joins the player's room. Later turns keep the normal rules."""
+    moves = [a for a in actions if a.get("type") == "MOVE" and a.get("room_id")]
+    user_moves = [a for a in moves if a.get("entity") == "user"]
+    target = (user_moves or moves)[-1]["room_id"] if moves else where.get("user")
+    if not target:
+        return actions
+    # Rooms first (a new target room must exist before anyone moves in); a room nobody
+    # ends up in is dropped, as drop_no_ops does.
+    out = [a for a in actions if a.get("type") not in ("MOVE", "CREATE_ROOM")]
+    out = [a for a in actions if a.get("type") == "CREATE_ROOM" and a.get("room_id") == target] + out
+    for entity in sorted(set(where) | {"user"}):
+        if where.get(entity) != target:
+            out.append({"type": "MOVE", "entity": entity, "room_id": target})
+    return out
+
+
 def parse(text: str) -> List[Dict[str, Any]]:
     """The actions from the model's answer; [] when nothing usable comes back."""
     m = re.search(r"\{.*\}", text or "", re.DOTALL)

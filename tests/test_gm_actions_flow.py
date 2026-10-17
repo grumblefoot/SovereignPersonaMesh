@@ -201,3 +201,68 @@ async def test_q10_offscene_move_needs_the_story_to_mention_the_character(monkey
     await routes._dispatch_gm_actions(parser(), "s", "lian", turn_index=2, persona="Vardus",
                                       story_text="Behind them, Mei slipped out of the kitchen to listen.")
     assert sorted(moved) == ["lian", "mei", "user"]   # motivated: the reply names her
+
+
+# ── first turn: everyone in one room (owner rule, QA 2026-10-17) ─────────────
+
+def test_colocate_first_turn_rules():
+    from proxy.core.gm_planner import colocate_first_turn as co
+
+    seed = {"user": "central_nexus", "alba": "central_nexus"}
+    # The QA case: the reply sets the scene in a new hut, only the player was moved.
+    acts = [{"type": "CREATE_ROOM", "room_id": "derelict_hut", "name": "Derelict Hut"},
+            {"type": "MOVE", "entity": "user", "room_id": "derelict_hut"}]
+    assert co(acts, seed) == [
+        {"type": "CREATE_ROOM", "room_id": "derelict_hut", "name": "Derelict Hut"},
+        {"type": "MOVE", "entity": "alba", "room_id": "derelict_hut"},
+        {"type": "MOVE", "entity": "user", "room_id": "derelict_hut"}]
+    # Only a character moved: the player follows (OPEN-023).
+    assert co([{"type": "MOVE", "entity": "alba", "room_id": "garden"}], seed) == [
+        {"type": "MOVE", "entity": "alba", "room_id": "garden"},
+        {"type": "MOVE", "entity": "user", "room_id": "garden"}]
+    # The player and a character move to different rooms: the player's room wins, and a
+    # room nobody ends up in is not created.
+    acts = [{"type": "CREATE_ROOM", "room_id": "cellar", "name": "Cellar"},
+            {"type": "MOVE", "entity": "alba", "room_id": "cellar"},
+            {"type": "MOVE", "entity": "user", "room_id": "node_alpha"}]
+    assert co(acts, seed) == [
+        {"type": "MOVE", "entity": "alba", "room_id": "node_alpha"},
+        {"type": "MOVE", "entity": "user", "room_id": "node_alpha"}]
+    # No move, already together: nothing to do.
+    assert co([], seed) == []
+    # No move but a split start (group chat): everyone joins the player.
+    assert co([], {"user": "hall", "alba": "hall", "mei": "garden"}) == [
+        {"type": "MOVE", "entity": "mei", "room_id": "hall"}]
+
+
+async def test_first_turn_dispatch_moves_the_character_with_the_player(monkeypatch):
+    """Replay of the QA turn 1: the planner created the hut and moved only the player.
+    On turn 1 the character is moved too; on turn 2 the same actions move only the player."""
+    import proxy.api.routes as routes
+    monkeypatch.setattr(routes, "resolve_gm_actions_mode", lambda s: "full")
+    acts = [{"type": "CREATE_ROOM", "room_id": "derelict_hut", "name": "Derelict Hut"},
+            {"type": "MOVE", "entity": "user", "room_id": "derelict_hut"}]
+
+    async def run(turn_index):
+        moved = []
+
+        async def snap(*a, **k):
+            return {"rooms": [{"room_id": "central_nexus"}],
+                    "occupants": [{"entity_id": "user", "room_id": "central_nexus"},
+                                  {"entity_id": "alba", "room_id": "central_nexus"}]}
+
+        async def move(*a, **k):
+            moved.append((k.get("character_id"), k.get("room_id") or k.get("target_room_id")))
+
+        async def create(*a, **k):
+            return None
+
+        with patch.object(evennia_client, "get_snapshot", side_effect=snap), \
+             patch.object(evennia_client, "move_character", side_effect=move), \
+             patch.object(evennia_client, "create_room", side_effect=create):
+            await _dispatch_gm_actions(MonologueStreamParser(), session_id="s", target_char="alba",
+                                       turn_index=turn_index, actions=[dict(a) for a in acts])
+        return sorted(c for c, _ in moved)
+
+    assert await run(1) == ["alba", "user"]
+    assert await run(2) == ["user"]

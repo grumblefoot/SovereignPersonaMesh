@@ -2047,7 +2047,8 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
     snapshot, CREATE-then-MOVE ordering, caps, reason-coded rejections."""
     if actions is None:
         actions = parser.extract_gm_actions()
-    if not actions:
+    first_turn = turn_index == 1
+    if not actions and not first_turn:
         return
 
     settings = get_settings_manager().get_settings()
@@ -2067,6 +2068,18 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
         logger.error(f"[GMAction] world snapshot unavailable; dropping {len(actions)} action(s): {e}")
         return
 
+    max_per_turn = int(settings.get("gm_actions_max_per_turn", 4))
+    if first_turn:
+        # Owner rule (QA 2026-10-17): the first turn puts the player and every character
+        # in one room (gm_planner.colocate_first_turn), however many characters there are.
+        colocated = gm_planner.colocate_first_turn(actions, where)
+        if colocated != actions:
+            logger.info(f"[GMAction] first turn: everyone into one room: {colocated}")
+        actions = colocated
+        max_per_turn = max(max_per_turn, len(actions))
+        if not actions:
+            return
+
     batch = gm_validation.validate_batch(
         actions,
         mode=mode,
@@ -2076,7 +2089,7 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
         # The persona name and the player's in-story name from their sheet ("Amanda"
         # plays "Amy": QA N4) both mean the player.
         user_aliases=frozenset(a for a in (persona, player_name) if a),
-        max_per_turn=int(settings.get("gm_actions_max_per_turn", 4)),
+        max_per_turn=max_per_turn,
         rooms_in_session=room_count,
         max_rooms_per_session=int(settings.get("gm_actions_max_rooms_per_session", 40)),
     )
