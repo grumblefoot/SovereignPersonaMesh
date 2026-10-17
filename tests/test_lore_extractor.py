@@ -365,6 +365,22 @@ class TestPlaceRule:
             assert self._place({"level": "character_external", "character": name},
                                player_ids=("changi", "user"), from_cards=True) is None
 
+    def test_world_rule_about_the_player_is_not_world_knowledge(self):
+        # QA 2026-10-17: "Changi can shatter magic circles" was filed as world, so
+        # everyone would know what only Alba saw.
+        rule = {"level": "world", "rule_text": "Changi can effortlessly shatter magical circles."}
+        assert self._place(rule, player_ids=("changi",), from_cards=False) == \
+            ("character_internal", "turn_char", None)
+        assert self._place(rule, player_ids=("changi",), from_cards=True) is None
+        assert self._place({"level": "world", "rule_text": "The user's wings are black."},
+                           player_ids=("changi",), from_cards=True) is None
+        # Only mentioning the player keeps a world rule a world rule.
+        assert self._place({"level": "world",
+                            "rule_text": "The witchfinders hunt anyone who helps Changi."},
+                           player_ids=("changi",)) == ("world", None, None)
+        assert self._place({"level": "world", "rule_text": "Changi's arrival shook the hut."},
+                           player_ids=("changi",), from_cards=False)[0] == "character_internal"
+
     def test_player_rules_from_the_story_become_the_turn_characters_knowledge(self):
         assert self._place({"level": "character_external", "character": "Gu Changi"},
                            player_ids=("changi",), from_cards=False) == \
