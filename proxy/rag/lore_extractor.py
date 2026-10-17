@@ -27,8 +27,19 @@ CHARACTER_LEVELS = ("character_internal", "character_external")
 
 
 def _place_rule(rule: Dict[str, Any], *, character_id: str,
-                characters, rooms, default_level: str) -> Tuple[str, Optional[str], Optional[str]]:
-    """Decide where one extracted rule belongs: (level, character_id, room_id).
+                characters, rooms, default_level: str,
+                player_ids=(), from_cards: bool = False) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
+    """Decide where one extracted rule belongs: (level, character_id, room_id), or
+    None to drop it.
+
+    A character never reads another's card (owner rule, QA 2026-10-17):
+    - a character-level rule about the player (`player_ids`: persona name, player
+      name, "user") is dropped when it comes from the cards (`from_cards`, the
+      first-turn pass); from the story (periodic review) it becomes what the turn
+      character knows about the player, i.e. that character's internal rule;
+    - a name that is not a known character (an NPC who has not appeared yet) keeps
+      its own id and stays inactive until such a character joins the chat; it is
+      never handed to the turn character.
 
     Pure and unit-testable; the engine is deliberately not an argument — a
     `location` rule whose room cannot be matched (unknown name, no rooms, no
@@ -40,12 +51,18 @@ def _place_rule(rule: Dict[str, Any], *, character_id: str,
         level = default_level
 
     if level in CHARACTER_LEVELS:
-        target = safe_char_id(str(rule.get("character") or ""))
-        known = {safe_char_id(str(c)) for c in (characters or ())}
-        if target and (target in known or target == character_id):
-            return level, target, None
-        # A name we do not recognise: the character whose turn it was.
-        return level, character_id, None
+        name = str(rule.get("character") or "").strip()
+        if not name:
+            # No name given: the character whose turn it was.
+            return level, character_id, None
+        target = safe_char_id(name)
+        players = {safe_char_id(str(p)) for p in (player_ids or ()) if str(p).strip()} | {"user"}
+        last = safe_char_id(name.split()[-1])          # "Gu Changi" -> changi
+        if target in players or last in players:
+            if from_cards:
+                return None
+            return "character_internal", character_id, None
+        return level, target, None
 
     if level == "location":
         from proxy.core import gm_planner
@@ -101,7 +118,8 @@ class LoreExtractionWorker:
 
     async def _execute_extraction(self, prompt: str, session_id: str, character_id: str, model: str,
                                   characters=(), rooms=None, engine=None,
-                                  default_level: str = "world"):
+                                  default_level: str = "world",
+                                  player_ids=(), from_cards: bool = False):
         self.logger.info(f"Executing extraction for session={session_id}, character={character_id} using model={model}")
         
         # Stream=False generates a full response via process_token_stream conceptually,
@@ -175,9 +193,14 @@ class LoreExtractionWorker:
             if rule_type == "trigger":
                 rule_type = "conditional_trigger"
 
-            level, rule_char, room_id = _place_rule(
+            placed = _place_rule(
                 rule, character_id=character_id, characters=characters,
-                rooms=rooms, default_level=default_level)
+                rooms=rooms, default_level=default_level,
+                player_ids=player_ids, from_cards=from_cards)
+            if placed is None:
+                self.logger.info(f"Dropped a rule about the player from the cards: {rule_text[:80]}")
+                continue
+            level, rule_char, room_id = placed
 
             if level == "location" and engine is None:
                 # Spec 3: without an engine there is no room to attach to; the
@@ -224,26 +247,35 @@ class LoreExtractionWorker:
 
     async def extract_initial_rules(self, session_id: str, character_id: str, context_text: str,
                                     model: str = DEFAULT_CHAT_MODEL,
-                                    characters=(), rooms=None, engine=None):
+                                    characters=(), rooms=None, engine=None, player_ids=()):
         prompt = strings.get("rag.lore_extractor.initial_rules_prompt",
                              context_text=context_text,
                              characters=_name_list(characters),
-                             rooms=_room_list(rooms))
+                             rooms=_room_list(rooms),
+                             player=_player_label(player_ids))
         await self._execute_extraction(prompt, session_id, character_id, model,
                                        characters=characters, rooms=rooms, engine=engine,
-                                       default_level="world")
+                                       default_level="world",
+                                       player_ids=player_ids, from_cards=True)
 
     async def periodic_review_rules(self, session_id: str, character_id: str, recent_messages: List[Dict],
                                     model: str = DEFAULT_CHAT_MODEL,
-                                    characters=(), rooms=None, engine=None):
+                                    characters=(), rooms=None, engine=None, player_ids=()):
         messages_str = "\n".join([f"{m.get('role', 'user')}: {m.get('content', '')}" for m in recent_messages])
         prompt = strings.get("rag.lore_extractor.periodic_rules_prompt",
                              recent_messages=messages_str,
                              characters=_name_list(characters),
-                             rooms=_room_list(rooms))
+                             rooms=_room_list(rooms),
+                             player=_player_label(player_ids))
         await self._execute_extraction(prompt, session_id, character_id, model,
                                        characters=characters, rooms=rooms, engine=engine,
-                                       default_level="character_internal")
+                                       default_level="character_internal",
+                                       player_ids=player_ids, from_cards=False)
+
+
+def _player_label(player_ids) -> str:
+    names = [str(p).strip() for p in (player_ids or ()) if str(p).strip() and str(p).lower() != "user"]
+    return ", ".join(dict.fromkeys(names)) or "the user"
 
 
 def _name_list(characters) -> str:

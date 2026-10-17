@@ -1362,7 +1362,16 @@ def _strip_user_persona(messages: List[ChatCompletionMessage], target_char: str)
     if not user_name:
         return messages
     opener = re.compile(r"^\s*\[?\s*" + re.escape(user_name) + r"(?:'s)?\b", re.IGNORECASE)
-    return [m for m in messages if not (m.role == "system" and m.content and opener.match(m.content))]
+    # A persona written as a sheet: its first line is a Name field naming the user
+    # ("Name: Gu Changi", QA 2026-10-17). Only the first line counts, so a character
+    # card that mentions the user further down is kept.
+    sheet = re.compile(r"^\s*\[?\s*(?:name|persona|user)\s*:[^\n]*\b" + re.escape(user_name) + r"\b",
+                       re.IGNORECASE)
+
+    def is_persona(m) -> bool:
+        return m.role == "system" and bool(m.content) and bool(
+            opener.match(m.content) or sheet.match(m.content.split("\n", 1)[0]))
+    return [m for m in messages if not is_persona(m)]
 
 
 def _header_user_turns(req) -> Optional[int]:
@@ -1386,6 +1395,7 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
     ext_model = alt_model if (use_alt and alt_model) else request.model
     
     extractor = LoreExtractionWorker(_db_pool)
+    persona = _extract_persona_name(request.messages)
     actual_messages = [m for m in request.messages if m.content and m.content.strip() not in ("<think>", "</think>")]
     actual_messages = _strip_user_persona(actual_messages, target_char)
     user_messages = [m for m in actual_messages if getattr(m, 'role', '') == 'user']
@@ -1421,17 +1431,23 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
                 characters = tuple(seen)
         except Exception as e:
             logger.warning(f"[lore] snapshot failed for {session_id}: {e}; extracting with turn character only")
+        # Who the player is: no rule may come from the player's persona text (owner rule,
+        # QA 2026-10-17); the extractor drops or re-files rules about these names.
+        _sheet, sheet_name = await _chat_player(session_id)
+        player_ids = tuple(n for n in (persona, sheet_name, "user") if n)
         if first_turn:
             await extractor.extract_initial_rules(
                 session_id, target_char,
                 "\n".join(f"{m['role']}: {m.get('content', '')}" for m in full_turn_history),
-                model=ext_model, characters=characters, rooms=rooms, engine=evennia_client)
+                model=ext_model, characters=characters, rooms=rooms, engine=evennia_client,
+                player_ids=player_ids)
             await _mark_initial_lore_done(session_id)   # not reached if cancelled: re-runs next turn
         else:
             recent = full_turn_history[-(cadence * 2):]
             await extractor.periodic_review_rules(
                 session_id, target_char, recent, model=ext_model,
-                characters=characters, rooms=rooms, engine=evennia_client)
+                characters=characters, rooms=rooms, engine=evennia_client,
+                player_ids=player_ids)
 
     if first_turn:
         task = asyncio.create_task(_run_extraction())

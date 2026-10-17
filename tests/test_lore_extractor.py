@@ -354,8 +354,20 @@ class TestPlaceRule:
                            characters=("turn_char", cid)) == \
             ("character_internal", cid, None)
 
-    def test_unknown_character_falls_back_to_turn_character(self):
+    def test_unknown_character_keeps_its_own_id(self):
+        # An NPC not in the chat yet: inactive until a character with that id joins;
+        # never handed to the turn character (QA 2026-10-17).
         assert self._place({"level": "character_internal", "character": "Nobody"}) == \
+            ("character_internal", "nobody", None)
+
+    def test_player_rules_from_the_cards_are_dropped(self):
+        for name in ("Changi", "Gu Changi", "user"):
+            assert self._place({"level": "character_external", "character": name},
+                               player_ids=("changi", "user"), from_cards=True) is None
+
+    def test_player_rules_from_the_story_become_the_turn_characters_knowledge(self):
+        assert self._place({"level": "character_external", "character": "Gu Changi"},
+                           player_ids=("changi",), from_cards=False) == \
             ("character_internal", "turn_char", None)
 
     def test_missing_level_uses_default_world(self):
@@ -476,7 +488,9 @@ async def test_extraction_stores_each_level_in_its_place():
         assert (ci["level"], ci["character_id"]) == ("character_internal", "mira_vale")
         ce = by_text["He limps when it rains."]
         # 'Bramwell' is not in the chat -> the character whose turn it was.
-        assert (ce["level"], ce["character_id"]) == ("character_external", "turn_char")
+        # Bramwell is not in the chat yet: his rule keeps his id (QA 2026-10-17), never
+        # the turn character's.
+        assert (ce["level"], ce["character_id"]) == ("character_external", "bramwell")
 
         assert len(engine.calls) == 1
         room_id, rule_text, session_id, kw = engine.calls[0]
