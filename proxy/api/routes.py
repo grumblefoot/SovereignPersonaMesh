@@ -2142,15 +2142,31 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
         accepted.append(action)
 
     turn_anchor = str(turn_index)
+    linked = gm_planner.linked_pairs(snap)
     for action in accepted:                # CREATE first, then MOVE (validator order)
         key = gm_validation.idempotency_key(session_id, turn_anchor, action)
         logger.info(f"[GMAction] Dispatching validated GM Action: {action.model_dump()}")
         try:
             if isinstance(action, gm_validation.MoveAction):
+                came_from = where.get(action.entity)
                 await evennia_client.move_character(
                     character_id=action.entity, room_id=action.room_id,
                     session_id=session_id, idempotency_key=key, origin="gm",
                     template_key="")       # "" = the session's live world
+                pair = gm_planner.new_link(came_from, action.room_id, linked)
+                if pair:
+                    # Rooms join up as the story moves between them (owner, QA
+                    # 2026-10-17): a closed door, so a path exists but no sound
+                    # crosses; a skip ("the house next door") must not leak speech.
+                    linked.add(frozenset(pair))
+                    try:
+                        await evennia_client.set_barrier(
+                            pair[0], pair[1], barrier="closed_door", state="closed",
+                            session_id=session_id, template_key="", origin="gm",
+                            idempotency_key=f"{key}:link")
+                        logger.info(f"[GMAction] linked {pair[0]} <-> {pair[1]} (closed door)")
+                    except Exception as e:
+                        logger.warning(f"[GMAction] could not link {pair}: {e}")
             else:
                 await evennia_client.create_room(
                     room_id=action.room_id, name=action.name or "New Room",
