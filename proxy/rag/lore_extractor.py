@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import asyncpg
@@ -50,13 +51,19 @@ def _place_rule(rule: Dict[str, Any], *, character_id: str,
     if level not in RULE_LEVELS:
         level = default_level
 
+    players = {safe_char_id(str(p)) for p in (player_ids or ()) if str(p).strip()} | {"user"}
+    if level not in CHARACTER_LEVELS and _about_player(str(rule.get("rule_text") or ""), players):
+        # A world or location rule whose subject is the player ("Changi can shatter
+        # magic circles", QA 2026-10-17) would tell everyone what only the people
+        # present saw: same handling as a character-level rule about the player.
+        return None if from_cards else ("character_internal", character_id, None)
+
     if level in CHARACTER_LEVELS:
         name = str(rule.get("character") or "").strip()
         if not name:
             # No name given: the character whose turn it was.
             return level, character_id, None
         target = safe_char_id(name)
-        players = {safe_char_id(str(p)) for p in (player_ids or ()) if str(p).strip()} | {"user"}
         last = safe_char_id(name.split()[-1])          # "Gu Changi" -> changi
         if target in players or last in players:
             if from_cards:
@@ -81,6 +88,17 @@ def _place_rule(rule: Dict[str, Any], *, character_id: str,
         return "world", None, None
 
     return "world", None, None
+
+
+def _about_player(rule_text: str, players) -> bool:
+    """True when the rule's subject is the player: one of their names among its first
+    three words ("Changi can ...", "Gu Changi's wings ..."). A rule that only mentions
+    the player later ("The witchfinders hunt anyone who helps Changi") is not."""
+    for word in rule_text.split()[:3]:
+        w = re.sub(r"(?:'s|’s)$", "", word.strip(".,;:!?\"'()[]"), flags=re.IGNORECASE)
+        if w and w[0].isalpha() and safe_char_id(w) in players:
+            return True
+    return False
 
 
 class LoreExtractionWorker:
