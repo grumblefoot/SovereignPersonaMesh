@@ -266,3 +266,16 @@ async def test_first_turn_dispatch_moves_the_character_with_the_player(monkeypat
 
     assert await run(1) == ["alba", "user"]
     assert await run(2) == ["user"]
+
+
+def test_placeholder_rooms_are_offered_only_while_occupied():
+    # QA 2026-10-17 turn 10: cabin -> sky was mapped onto the placeholder Central Nexus.
+    from proxy.core.gm_planner import story_rooms
+    rooms = [{"room_id": "central_nexus", "name": "Central Nexus"},
+             {"room_id": "node_alpha", "name": "Node Alpha"},
+             {"room_id": "derelict_hut", "name": "Derelict Hut"}]
+    assert [r["room_id"] for r in story_rooms(rooms, {"user": "derelict_hut", "alba": "derelict_hut"})] \
+        == ["derelict_hut"]
+    # Turn 1: everyone still in the starting room, which stays on the list.
+    assert [r["room_id"] for r in story_rooms(rooms, {"user": "central_nexus"})] \
+        == ["central_nexus", "derelict_hut"]

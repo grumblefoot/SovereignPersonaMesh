@@ -1484,6 +1484,8 @@ async def _known_rooms_block(session_id: str, target_char: str, gm_mode: str = "
     own = next((r for r, who in where.items() if target_char in [w.lower() for w in who]), None)
     lines = []
     for r in rooms:
+        if r["room_id"] in gm_planner.PLACEHOLDER_ROOMS and r["room_id"] not in where:
+            continue          # a turn-0 placeholder, not a story place (QA 2026-10-17)
         label = f"- {r['room_id']} ({r.get('name') or r['room_id']})"
         if r["room_id"] == own:
             present = [w for w in where.get(own, []) if w.lower() != target_char]
@@ -2043,6 +2045,7 @@ async def _plan_gm_actions(session_id: str, model: str, player: str, player_text
         return []
     rooms = [{"room_id": r["room_id"], "name": r.get("name") or r["room_id"]} for r in snap.get("rooms", [])]
     where = {o["entity_id"]: o.get("room_id") for o in snap.get("occupants", [])}
+    rooms = gm_planner.story_rooms(rooms, where)   # placeholders are not story places
     msgs = gm_planner.messages_for(rooms, where, player, player_text, speaker, reply, allow_create)
     acts = await gm_planner.plan(lemonade_client, model, msgs,
                                  local=reasoning._is_local(lemonade_client.base_url),
