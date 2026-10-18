@@ -31,6 +31,10 @@ Limitations you may run into with the current release. Reports and fixes are wel
 - **Group chats:** you can't yet direct a scene to a room you are not in; narration is always
   your action at your location; a character joining a group is placed with you rather than where
   the story puts them.
+- **A character who joins a group chat mid-scene** is placed where you are, even when the story
+  has them elsewhere (in the kitchen while you are in the garden). Their first reply may then
+  describe your scene instead of their own. Until SPM asks the story where a newcomer is, move
+  them from the dashboard's world map or mention their place in your next message.
 - **Scenario cards** (one card voicing a whole world): the narrator follows you, but characters
   inside the scenario (NPCs) are not tracked by SPM yet, so they all share the narrator's
   knowledge.
