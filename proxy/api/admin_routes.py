@@ -839,7 +839,9 @@ async def edit_chat_rule(session_id: str, rule_id: str, body: dict,
                 "error": f"nothing to update; expected any of {list(_ROOM_RULE_FIELDS)}"})
         from proxy.api.routes import evennia_client
         try:
-            await evennia_client.update_room_rule(room_id, rule_id, session_id, **fields)
+            # The dashboard's edit of a pending room rule confirms it too (QA Q8).
+            await evennia_client.update_room_rule(room_id, rule_id, session_id,
+                                                  confirm_edit=True, **fields)
         except Exception as e:
             return _engine_error_response(e, "room rule not found")
         return JSONResponse(content={"status": "success", "id": rule_id,
@@ -854,7 +856,8 @@ async def edit_chat_rule(session_id: str, rule_id: str, body: dict,
             "error": f"nothing to update; expected any of {list(_DB_RULE_FIELDS)}"})
     try:
         async with pool.acquire() as conn:
-            ok = await chat_rules.update_rule(conn, session_id, rule_id, **fields)
+            # The dashboard's edit of a pending rule confirms it (QA Q8).
+            ok = await chat_rules.update_rule(conn, session_id, rule_id, confirm_edit=True, **fields)
     except ValueError as e:
         return JSONResponse(status_code=422, content={"error": str(e)})
     except Exception as e:

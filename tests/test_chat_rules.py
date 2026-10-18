@@ -217,6 +217,33 @@ async def test_update_rule_fields_and_session_scope():
         assert await chat_rules.update_rule(conn, "S", str(uuid.uuid4())) is False
 
 
+async def test_dashboard_edit_of_a_pending_rule_confirms_it():
+    """Owner decision 2026-10-18 (QA Q8): editing a rule is reviewing it. Only an
+    edit that passes confirm_edit (the dashboard) activates a pending rule; an
+    explicit status wins; programmatic updates never auto-confirm."""
+    async with conn_ctx() as conn:
+        async def status_of(rid):
+            return await conn.fetchval("SELECT status FROM spm_chat_rules WHERE id = $1", rid)
+
+        rid = await chat_rules.add_rule(
+            conn, session_id="S", level="world", character_id=None,
+            rule_text="Draft world rule.", rule_type="invariant")
+        assert await status_of(rid) == "pending"
+        # A programmatic edit leaves it pending.
+        assert await chat_rules.update_rule(conn, "S", rid, rule_text="Draft, reworded.")
+        assert await status_of(rid) == "pending"
+        # The dashboard's edit confirms it.
+        assert await chat_rules.update_rule(conn, "S", rid, confirm_edit=True, rule_text="Final wording.")
+        assert await status_of(rid) == "active"
+        # An explicit status in the same edit wins over the confirm.
+        rid2 = await chat_rules.add_rule(
+            conn, session_id="S", level="world", character_id=None,
+            rule_text="Another draft.", rule_type="invariant")
+        assert await chat_rules.update_rule(conn, "S", rid2, confirm_edit=True,
+                                            rule_text="Still a draft.", status="pending")
+        assert await status_of(rid2) == "pending"
+
+
 async def test_update_rule_validation():
     async with conn_ctx() as conn:
         rid = await chat_rules.add_rule(

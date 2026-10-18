@@ -181,11 +181,15 @@ async def list_rules(
     return [_rule_dict(r, full=True) for r in rows]
 
 
-async def update_rule(conn, session_id: str, rule_id: str, **fields) -> bool:
+async def update_rule(conn, session_id: str, rule_id: str, confirm_edit: bool = False,
+                      **fields) -> bool:
     """Update allowed fields of one rule, scoped by chat. Returns False when no
     rule with that id exists in this session (another chat's id included).
 
     Accepts only: rule_text, rule_type, level, character_id, status.
+    ``confirm_edit``: an edit of a pending rule that does not set status itself
+    confirms it (owner decision 2026-10-18, QA Q8: editing a rule is reviewing it).
+    Only the dashboard's edit passes this; programmatic callers never auto-confirm.
     """
     unknown = set(fields) - set(_UPDATABLE_FIELDS)
     if unknown:
@@ -199,10 +203,13 @@ async def update_rule(conn, session_id: str, rule_id: str, **fields) -> bool:
         return False
 
     row = await conn.fetchrow(
-        "SELECT level, character_id FROM spm_chat_rules WHERE id = $1 AND session_id = $2",
+        "SELECT level, character_id, status FROM spm_chat_rules WHERE id = $1 AND session_id = $2",
         rule_uuid, session_id)
     if row is None:
         return False
+    if (confirm_edit and "status" not in fields and row["status"] == "pending"
+            and any(k in fields for k in ("rule_text", "rule_type", "level", "character_id"))):
+        fields = dict(fields, status="active")
 
     if "level" in fields:
         _validate_level(fields["level"])

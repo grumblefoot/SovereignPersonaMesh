@@ -1117,12 +1117,49 @@ The text after </think> must ONLY be narrative and dialogue.
                 "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}]
             }) + "\n\n"
 
+        def _thinking_chunk(text):
+            return "data: " + json.dumps({
+                "id": "chatcmpl-spm-turn",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": request.model,
+                "choices": [{"index": 0, "delta": {"reasoning_content": text}, "finish_reason": None}]
+            }) + "\n\n"
+
+        # The backend stream is consumed by a helper task into a queue, so the generator
+        # can send a heartbeat while nothing has arrived yet. Waiting on the parser's own
+        # iterator with a timeout would cancel it and abort the backend call.
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def pump():
+            try:
+                async for public_chunk in parser.process_token_stream(raw_stream):
+                    await queue.put(("chunk", public_chunk))
+                await queue.put(("end", None))
+            except asyncio.CancelledError:
+                raise                      # the generator is gone (client disconnect)
+            except BaseException as exc:   # re-raised in the generator, below
+                await queue.put(("error", exc))
+
+        pump_task = asyncio.create_task(pump())
         streamed = 0
         try:
-            async for public_chunk in parser.process_token_stream(raw_stream):
-                streamed += len(public_chunk)
-                yield _chunk(public_chunk)
+            yield _thinking_chunk(THINKING_NOTICE)
+            while True:
+                try:
+                    kind, value = await asyncio.wait_for(queue.get(), THINKING_HEARTBEAT_S)
+                except asyncio.TimeoutError:
+                    if streamed == 0:
+                        yield _thinking_chunk(" .")   # still working, nothing to show yet
+                    continue
+                if kind == "end":
+                    break
+                if kind == "error":
+                    raise value
+                streamed += len(value)
+                yield _chunk(value)
         except (asyncio.CancelledError, GeneratorExit):
+            pump_task.cancel()
             # The client (ST) went away mid-turn. Nothing below runs: no reply, memory, GM
             # or lore. Say so, with timing, so aborts are diagnosable (QA N2, 2026-10-12).
             logger.warning(f"[SPMProxy] Client disconnected from turn {turn_id} after "
@@ -1329,7 +1366,19 @@ async def memory_stats(
     return JSONResponse(content=result)
 
 # Sessions whose periodic lore review was cancelled (preempted); re-run on the next turn.
+# A visible "working" signal for SillyTavern during the silent seconds before the first
+# reply token (prompt processing can take 5-10 s on a long chat; testers pressed Stop,
+# QA 2026-10-17 T6/T7). ST renders delta.reasoning_content as a collapsible "Thinking"
+# block while its "Show model thoughts" setting is on (the default), and collapses it
+# once reply text arrives, so the status never becomes part of the reply.
+THINKING_NOTICE = "Reading the scene and the characters' memories, then writing the reply"
+THINKING_HEARTBEAT_S = 3.0
+
 _lore_review_pending: set = set()
+# Last user turn whose periodic review completed, per chat: a swipe or regenerate of
+# that turn does not run the review again (QA 2026-10-17 T8: three reviews of one turn,
+# each a billed call on a hosted API; the dedupe caught the repeats anyway).
+_lore_reviewed_turn: dict = {}
 
 
 def _log_task_done(task):
@@ -1462,6 +1511,11 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
         task.add_done_callback(_log_task_done)
     elif user_msg_count > 1 and ((user_msg_count - 1) % cadence == 0
                                  or session_id in _lore_review_pending):
+        if (_lore_reviewed_turn.get(session_id) == user_msg_count
+                and session_id not in _lore_review_pending):
+            logger.info(f"[LoreExtraction] turn {user_msg_count} already reviewed for {session_id}; "
+                        f"not re-running the review for a regenerate.")
+            return
         _lore_review_pending.discard(session_id)
         task = asyncio.create_task(_run_extraction())
         _background_tasks.add(task)
@@ -1470,6 +1524,10 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
         # A review preempted by the next chat turn used to be lost until the next cadence
         # turn; now it re-runs on the very next turn (QA N12, 2026-10-12).
         task.add_done_callback(lambda t: t.cancelled() and _lore_review_pending.add(session_id))
+        # Only a review that finished counts as done; a cancelled one re-runs via the pending set.
+        task.add_done_callback(
+            lambda t: (not t.cancelled() and t.exception() is None)
+            and _lore_reviewed_turn.__setitem__(session_id, user_msg_count))
 
 async def _known_rooms_block(session_id: str, target_char: str, gm_mode: str = "full") -> str:
     """Existing rooms for the GM, so it reuses ids instead of inventing duplicates
