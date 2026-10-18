@@ -554,6 +554,9 @@ class RoomRuleUpdatePayload(BaseModel):
     rule_type: Optional[str] = None
     status: Optional[str] = None
     origin: str = "system"
+    # The dashboard's edit of a pending rule confirms it (owner decision 2026-10-18,
+    # QA Q8); programmatic updates leave the status alone unless they set it.
+    confirm_edit: bool = False
 
 
 def _validate_rule_fields(rule_type: Optional[str] = None, status: Optional[str] = None) -> None:
@@ -636,6 +639,9 @@ async def update_room_rule(room_id: str, rule_id: str, payload: RoomRuleUpdatePa
         rule.rule_type = payload.rule_type
     if payload.status is not None:
         rule.status = payload.status
+    elif (payload.confirm_edit and rule.status == "pending"
+          and (payload.rule_text is not None or payload.rule_type is not None)):
+        rule.status = "active"
 
     _log_mutation(payload.session_id, "ROOM_RULE_UPDATE", payload.origin,
                   {"room_id": room_id, "rule_id": rule_id})

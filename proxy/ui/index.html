@@ -1102,7 +1102,9 @@
         if (t === rule.rule_type) o.selected = true;
         typeSelect.appendChild(o);
       });
-      const save = el('button', 'padding: 4px 8px; font-size: 0.8rem;', 'Save');
+      // Saving an edit of a pending rule also confirms it (an edit is a review, QA Q8).
+      const save = el('button', 'padding: 4px 8px; font-size: 0.8rem;',
+                      rule.status === 'pending' ? 'Save & confirm' : 'Save');
       save.className = 'btn';
       const cancel = el('button', 'padding: 4px 8px; font-size: 0.8rem;', 'Cancel');
       cancel.className = 'btn';

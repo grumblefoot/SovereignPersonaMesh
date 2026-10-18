@@ -141,6 +141,32 @@ def test_update_rule_text_and_status(engine):
     assert rule["status"] == "active"
 
 
+def test_dashboard_edit_confirms_a_pending_room_rule(engine):
+    """Owner decision 2026-10-18 (QA Q8): the dashboard's edit (confirm_edit) of a
+    pending rule activates it; a plain edit or an explicit status does not."""
+    s = new_session()
+    make_room(engine, "castle", s)
+    rid = add_rule(engine, "castle", s, "Draft.").json()["rule_id"]
+
+    r = engine.put(f"/api/v1/world/rooms/castle/rules/{rid}",
+                   json={"session_id": s, "rule_text": "Reworded draft."})
+    assert r.status_code == 200, r.text
+    assert snapshot_rooms(engine, s)["castle"]["rules"][0]["status"] == "pending"
+
+    r = engine.put(f"/api/v1/world/rooms/castle/rules/{rid}",
+                   json={"session_id": s, "rule_text": "Final.", "confirm_edit": True})
+    assert r.status_code == 200, r.text
+    rule = snapshot_rooms(engine, s)["castle"]["rules"][0]
+    assert (rule["rule_text"], rule["status"]) == ("Final.", "active")
+
+    rid2 = add_rule(engine, "castle", s, "Second draft.").json()["rule_id"]
+    r = engine.put(f"/api/v1/world/rooms/castle/rules/{rid2}",
+                   json={"session_id": s, "rule_text": "Still draft.", "status": "pending",
+                         "confirm_edit": True})
+    assert r.status_code == 200, r.text
+    assert {x["id"]: x["status"] for x in snapshot_rooms(engine, s)["castle"]["rules"]}[rid2] == "pending"
+
+
 def test_delete_rule(engine):
     s = new_session()
     make_room(engine, "castle", s)

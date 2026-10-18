@@ -220,6 +220,39 @@ class TestDispatchPeriodicExtraction:
                 assert not mock_extractor.extract_initial_rules.called
 
     @pytest.mark.asyncio
+    async def test_regenerate_of_a_reviewed_turn_does_not_review_again(self, mock_db_pool):
+        """QA 2026-10-17 T8: three regenerates of one review turn ran the review three
+        times (each a billed call on a hosted API). A finished review marks the turn;
+        the same turn number again is a swipe/regenerate and is skipped; the next
+        cadence turn reviews as usual."""
+        import proxy.api.routes as routes
+        set_db_pool(mock_db_pool)
+        reset_settings_manager()
+        routes._lore_reviewed_turn.clear()
+
+        def req(n):
+            return _make_request([ChatCompletionMessage(role="system", content="System prompt")] +
+                                 [ChatCompletionMessage(role="user", content=f"Msg {i}") for i in range(1, n + 1)])
+
+        with patch('proxy.api.routes.get_settings_manager') as mock_sm:
+            mock_sm.return_value.get_settings.return_value = {"periodic_review_cadence": 3}
+            with patch('proxy.api.routes.LoreExtractionWorker') as mock_worker_cls:
+                mock_extractor = AsyncMock()
+                mock_worker_cls.return_value = mock_extractor
+
+                _dispatch_lore_extraction(req(4), "s1", "char", "t", "r")   # turn 4: reviewed
+                await _drain_background()
+                await asyncio.sleep(0)                                       # done callbacks
+                _dispatch_lore_extraction(req(4), "s1", "char", "t", "r")   # regenerate: skipped
+                await _drain_background()
+                assert mock_extractor.periodic_review_rules.call_count == 1
+
+                _dispatch_lore_extraction(req(7), "s1", "char", "t", "r")   # next cadence turn
+                await _drain_background()
+                assert mock_extractor.periodic_review_rules.call_count == 2
+        routes._lore_reviewed_turn.clear()
+
+    @pytest.mark.asyncio
     async def test_off_cadence_does_not_extract(self, mock_db_pool):
         """FAIL: (user_msg_count - 1) % cadence != 0 -> no extraction."""
         set_db_pool(mock_db_pool)

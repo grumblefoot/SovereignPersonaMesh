@@ -76,6 +76,14 @@ SPM cannot reach the chat model server. Check in order:
    missing or wrong. Set `BACKEND_API_KEY` in `.env` (or type it into the
    Configuration page) and restart. The report shows only whether a key is set.
 
+## No "Thinking" block while SPM works
+
+SPM sends a short status as model reasoning until the first words of the reply arrive, and
+SillyTavern shows it as a collapsible *Thinking* block. If you see nothing for several
+seconds and then the reply, check **API Connections -> Show model thoughts** (on by default):
+with it off, SillyTavern discards the status. Pressing Stop during those seconds cancels the
+turn; nothing is saved and a retry works.
+
 ## Replies are empty or cut off
 
 Almost always the context window. SPM builds a large prompt (memories, lore,

@@ -1103,3 +1103,47 @@ def test_regenerate_does_not_show_the_reply_being_replaced(rig, monkeypatch):
     assert "zq_rejected_reply_marker" not in rig.prompt_text(-1)
     rig.turn(sysmsgs() + [{"role": "user", "content": '"And now?"'}])
     assert "zq_rejected_reply_marker" in rig.prompt_text(-1)
+
+
+# ── a "thinking" signal while the model is still silent (owner, 2026-10-18) ──
+
+def _sse_deltas(body):
+    out = []
+    for line in body.splitlines():
+        if line.startswith("data: ") and line != "data: [DONE]":
+            out.append(json.loads(line[6:])["choices"][0]["delta"])
+    return out
+
+
+def test_turn_starts_with_a_thinking_notice_then_reply_text(rig):
+    import proxy.api.routes as routes
+    r = rig.turn(sysmsgs() + [{"role": "user", "content": '"Hello."'}])
+    deltas = _sse_deltas(r.text)
+    assert deltas[0] == {"reasoning_content": routes.THINKING_NOTICE}
+    assert "".join(d.get("content", "") for d in deltas) == "A measured reply."
+    # No status text leaks into the reply, and no reasoning follows the first reply text.
+    first_text = next(i for i, d in enumerate(deltas) if d.get("content"))
+    assert all("reasoning_content" not in d for d in deltas[first_text:] if d)
+
+
+def test_heartbeat_while_the_model_is_silent_stops_once_text_arrives(rig, monkeypatch):
+    import asyncio
+    import proxy.api.routes as routes
+
+    async def slow_stream(*args, **kwargs):
+        rig.prompts.append([dict(m) for m in kwargs.get("messages", [])])
+        await asyncio.sleep(0.35)             # "prompt processing": nothing to show yet
+        yield "<think>plan</think>"
+        yield "A measured reply."
+        await asyncio.sleep(0.35)             # silence after text: no more heartbeats
+        yield " More."
+
+    monkeypatch.setattr(routes.lemonade_client, "generate_stream", slow_stream)
+    monkeypatch.setattr(routes, "THINKING_HEARTBEAT_S", 0.1)
+    r = rig.turn(sysmsgs() + [{"role": "user", "content": '"Hello again."'}])
+    deltas = _sse_deltas(r.text)
+    first_text = next(i for i, d in enumerate(deltas) if d.get("content"))
+    beats = [d for d in deltas[:first_text] if d.get("reasoning_content") == " ."]
+    assert len(beats) >= 2, deltas[:first_text]
+    assert all("reasoning_content" not in d for d in deltas[first_text:] if d)
+    assert "".join(d.get("content", "") for d in deltas) == "A measured reply. More."

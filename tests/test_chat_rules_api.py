@@ -308,7 +308,8 @@ async def test_update_location_rule_calls_engine():
         args, kwargs = fake.await_args
         assert args[0] == "castle"
         assert args[2] == sid
-        assert kwargs == {"status": "active", "rule_text": "New."}
+        # The dashboard's edit carries confirm_edit (an edit of a pending rule confirms it, QA Q8).
+        assert kwargs == {"status": "active", "rule_text": "New.", "confirm_edit": True}
 
         # Engine 404 maps to 404.
         request = httpx.Request("PUT", "http://x")
