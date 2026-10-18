@@ -127,9 +127,10 @@ def test_delete_session():
             pass
             
     mock_pool.acquire.return_value = PoolMock()
-    # One fetch: memory tables. Session delete also clears the chat's rules from
-    # spm_chat_rules with a fixed DELETE (brief C1b), so the statement set is:
-    # 3 tracking DELETEs + 1 spm_chat_rules DELETE + 1 DELETE per memory table.
+    # One fetch: memory tables. Session delete clears the chat's rows from every
+    # session-keyed table with counted DELETEs (spm_chat_rules, spm_perception,
+    # spm_chat_settings, spm_turn_ticks, objective_world_log: QA 2026-10-18 T9) plus
+    # 1 DELETE per memory table; the 3 tracking DELETEs are not counted.
     mock_conn.fetch.return_value = [{"table_name": "csa_memory_char1"}]
     mock_conn.execute.return_value = "DELETE 5"
     
@@ -137,8 +138,8 @@ def test_delete_session():
     with patch('proxy.api.admin_routes.get_telemetry_collector') as mock_tel:
         response = client.delete("/admin/api/v1/sessions/s1")
         assert response.status_code == 200
-        # 5 rows from spm_chat_rules + 5 rows from csa_memory_char1.
-        assert response.json()["deleted_records"] == 10
+        # 5 rows from each of the 5 session-keyed tables + 5 from csa_memory_char1.
+        assert response.json()["deleted_records"] == 30
         mock_tel.return_value.dismiss_session.assert_called_with("s1")
 
 def test_delete_session_no_db():

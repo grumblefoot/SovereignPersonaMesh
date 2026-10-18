@@ -258,13 +258,18 @@ async def delete_session(session_id: str):
             await conn.execute(strings.get("sql.delete_session_world_state"), session_id)
 
             # Chat rules now live in spm_chat_rules (brief C1b): a deleted chat
-            # leaves no chat-scoped rules behind (OPEN-007).
-            res = await conn.execute(
-                "DELETE FROM spm_chat_rules WHERE session_id = $1;", session_id)
-            try:
-                deleted_count += int(res.split()[-1])
-            except (ValueError, IndexError):
-                pass
+            # leaves no chat-scoped rules behind (OPEN-007). Everything else keyed by
+            # session_id goes too (QA 2026-10-18 T9): a deleted chat used to keep its
+            # perception rows, chat settings and ticks, so re-opening it in SillyTavern
+            # skipped the backfill and the card pass and fed the stale history back.
+            for table in ("spm_chat_rules", "spm_perception", "spm_chat_settings",
+                          "spm_turn_ticks", "objective_world_log"):
+                res = await conn.execute(
+                    f"DELETE FROM {table} WHERE session_id = $1;", session_id)
+                try:
+                    deleted_count += int(res.split()[-1])
+                except (ValueError, IndexError):
+                    pass
 
             tables = list(await conn.fetch(strings.get("sql.list_memory_tables")))
             for t in tables:
