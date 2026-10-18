@@ -29,7 +29,8 @@ CHARACTER_LEVELS = ("character_internal", "character_external")
 
 def _place_rule(rule: Dict[str, Any], *, character_id: str,
                 characters, rooms, default_level: str,
-                player_ids=(), from_cards: bool = False) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
+                player_ids=(), from_cards: bool = False,
+                narrator: bool = False) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
     """Decide where one extracted rule belongs: (level, character_id, room_id), or
     None to drop it.
 
@@ -69,6 +70,12 @@ def _place_rule(rule: Dict[str, Any], *, character_id: str,
             if from_cards:
                 return None
             return "character_internal", character_id, None
+        known = {safe_char_id(str(c)) for c in (characters or ())} | {character_id}
+        if narrator and target not in known:
+            # A narrator voices every NPC (OPEN-016): the NPCs never join as characters,
+            # so a rule filed under an NPC's own id would never reach a prompt (QA
+            # 2026-10-17 T3). It is the narrator's knowledge of that NPC.
+            return level, character_id, None
         return level, target, None
 
     if level == "location":
@@ -137,7 +144,8 @@ class LoreExtractionWorker:
     async def _execute_extraction(self, prompt: str, session_id: str, character_id: str, model: str,
                                   characters=(), rooms=None, engine=None,
                                   default_level: str = "world",
-                                  player_ids=(), from_cards: bool = False):
+                                  player_ids=(), from_cards: bool = False,
+                                  narrator: bool = False):
         self.logger.info(f"Executing extraction for session={session_id}, character={character_id} using model={model}")
         
         # Stream=False generates a full response via process_token_stream conceptually,
@@ -214,7 +222,7 @@ class LoreExtractionWorker:
             placed = _place_rule(
                 rule, character_id=character_id, characters=characters,
                 rooms=rooms, default_level=default_level,
-                player_ids=player_ids, from_cards=from_cards)
+                player_ids=player_ids, from_cards=from_cards, narrator=narrator)
             if placed is None:
                 self.logger.info(f"Dropped a rule about the player from the cards: {rule_text[:80]}")
                 continue
@@ -265,7 +273,8 @@ class LoreExtractionWorker:
 
     async def extract_initial_rules(self, session_id: str, character_id: str, context_text: str,
                                     model: str = DEFAULT_CHAT_MODEL,
-                                    characters=(), rooms=None, engine=None, player_ids=()):
+                                    characters=(), rooms=None, engine=None, player_ids=(),
+                                    narrator: bool = False):
         prompt = strings.get("rag.lore_extractor.initial_rules_prompt",
                              context_text=context_text,
                              characters=_name_list(characters),
@@ -274,11 +283,13 @@ class LoreExtractionWorker:
         await self._execute_extraction(prompt, session_id, character_id, model,
                                        characters=characters, rooms=rooms, engine=engine,
                                        default_level="world",
-                                       player_ids=player_ids, from_cards=True)
+                                       player_ids=player_ids, from_cards=True,
+                                       narrator=narrator)
 
     async def periodic_review_rules(self, session_id: str, character_id: str, recent_messages: List[Dict],
                                     model: str = DEFAULT_CHAT_MODEL,
-                                    characters=(), rooms=None, engine=None, player_ids=()):
+                                    characters=(), rooms=None, engine=None, player_ids=(),
+                                    narrator: bool = False):
         messages_str = "\n".join([f"{m.get('role', 'user')}: {m.get('content', '')}" for m in recent_messages])
         prompt = strings.get("rag.lore_extractor.periodic_rules_prompt",
                              recent_messages=messages_str,
@@ -288,7 +299,8 @@ class LoreExtractionWorker:
         await self._execute_extraction(prompt, session_id, character_id, model,
                                        characters=characters, rooms=rooms, engine=engine,
                                        default_level="character_internal",
-                                       player_ids=player_ids, from_cards=False)
+                                       player_ids=player_ids, from_cards=False,
+                                       narrator=narrator)
 
 
 def _player_label(player_ids) -> str:

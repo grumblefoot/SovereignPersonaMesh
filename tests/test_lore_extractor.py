@@ -360,6 +360,18 @@ class TestPlaceRule:
         assert self._place({"level": "character_internal", "character": "Nobody"}) == \
             ("character_internal", "nobody", None)
 
+    def test_narrator_turn_files_unknown_names_under_the_narrator(self):
+        # A narrator voices the NPCs (QA 2026-10-17 T3): their rules are the
+        # narrator's knowledge, or they would never reach a prompt.
+        assert self._place({"level": "character_external", "character": "Katsuki Bakugo"},
+                           narrator=True) == ("character_external", "turn_char", None)
+        # A character who is in the chat keeps their own rules even on a narrator turn.
+        assert self._place({"level": "character_internal", "character": "Mira Vale"},
+                           narrator=True) == ("character_internal", "mira_vale", None)
+        # The player is still never a source of card rules.
+        assert self._place({"level": "character_external", "character": "Brenda"},
+                           player_ids=("brenda",), from_cards=True, narrator=True) is None
+
     def test_player_rules_from_the_cards_are_dropped(self):
         for name in ("Changi", "Gu Changi", "user"):
             assert self._place({"level": "character_external", "character": name},

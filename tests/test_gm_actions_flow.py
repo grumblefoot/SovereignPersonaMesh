@@ -230,6 +230,12 @@ def test_colocate_first_turn_rules():
         {"type": "MOVE", "entity": "user", "room_id": "node_alpha"}]
     # No move, already together: nothing to do.
     assert co([], seed) == []
+    # A room established without anyone "moving" (a resumed chat's first live turn,
+    # QA T2): that room is the scene.
+    assert co([{"type": "CREATE_ROOM", "room_id": "classroom", "name": "Classroom"}], seed) == [
+        {"type": "CREATE_ROOM", "room_id": "classroom", "name": "Classroom"},
+        {"type": "MOVE", "entity": "alba", "room_id": "classroom"},
+        {"type": "MOVE", "entity": "user", "room_id": "classroom"}]
     # No move but a split start (group chat): everyone joins the player.
     assert co([], {"user": "hall", "alba": "hall", "mei": "garden"}) == [
         {"type": "MOVE", "entity": "mei", "room_id": "hall"}]
@@ -237,19 +243,20 @@ def test_colocate_first_turn_rules():
 
 async def test_first_turn_dispatch_moves_the_character_with_the_player(monkeypatch):
     """Replay of the QA turn 1: the planner created the hut and moved only the player.
-    On turn 1 the character is moved too; on turn 2 the same actions move only the player."""
+    On turn 1 the character is moved too; on turn 2, once the scene is settled in a real
+    room, the same actions move only the player (a placeholder start would still settle)."""
     import proxy.api.routes as routes
     monkeypatch.setattr(routes, "resolve_gm_actions_mode", lambda s: "full")
     acts = [{"type": "CREATE_ROOM", "room_id": "derelict_hut", "name": "Derelict Hut"},
             {"type": "MOVE", "entity": "user", "room_id": "derelict_hut"}]
 
-    async def run(turn_index):
+    async def run(turn_index, start_room):
         moved = []
 
         async def snap(*a, **k):
-            return {"rooms": [{"room_id": "central_nexus"}],
-                    "occupants": [{"entity_id": "user", "room_id": "central_nexus"},
-                                  {"entity_id": "alba", "room_id": "central_nexus"}]}
+            return {"rooms": [{"room_id": start_room}],
+                    "occupants": [{"entity_id": "user", "room_id": start_room},
+                                  {"entity_id": "alba", "room_id": start_room}]}
 
         async def move(*a, **k):
             moved.append((k.get("character_id"), k.get("room_id") or k.get("target_room_id")))
@@ -264,8 +271,9 @@ async def test_first_turn_dispatch_moves_the_character_with_the_player(monkeypat
                                        turn_index=turn_index, actions=[dict(a) for a in acts])
         return sorted(c for c, _ in moved)
 
-    assert await run(1) == ["alba", "user"]
-    assert await run(2) == ["user"]
+    assert await run(1, "central_nexus") == ["alba", "user"]
+    assert await run(2, "cellar") == ["user"]
+    assert await run(2, "central_nexus") == ["alba", "user"]   # unsettled scene (QA T2)
 
 
 def test_placeholder_rooms_are_offered_only_while_occupied():
@@ -326,3 +334,54 @@ async def test_gm_move_links_the_two_rooms_with_a_closed_door(monkeypatch):
                                    turn_index=5, actions=acts, story_text="Alba rises into the sky")
     # One door for the hut -> sky path (two movers, one link), closed.
     assert doors == [("derelict_hut", "sky", "closed_door", "closed")]
+
+
+# ── resumed chats: an established room settles an unsettled scene (QA T2) ────
+
+def test_scene_unsettled():
+    from proxy.core.gm_planner import scene_unsettled
+    assert scene_unsettled({"user": "central_nexus", "narrator": "central_nexus"}) is True
+    assert scene_unsettled({"user": "central_nexus", "mei": "node_alpha"}) is True
+    assert scene_unsettled({"user": "classroom", "narrator": "central_nexus"}) is False
+    assert scene_unsettled({}) is False
+
+
+async def test_unsettled_scene_is_settled_by_an_established_room(monkeypatch):
+    """Replay of the tester's first live turn on a resumed narrator chat: the planner
+    grounded CREATE_ROOM classroom ("flying across the classroom") but the narrator's
+    MOVE was dropped (a narrator is never named), so reuse_rooms pruned the room nobody
+    moved into and the chat stayed in the placeholder. Unsettled scene: everyone goes to the classroom.
+    Once settled (turn 5 in a real room), the same raw actions yield nothing."""
+    import proxy.api.routes as routes
+    from proxy.core import gm_planner
+
+    reply = ("The impact lands squarely, sending him flying across the classroom. Desks "
+             "scatter as he hits the far wall, and the room falls silent.")
+    raw = [{"type": "CREATE_ROOM", "room_id": "classroom", "name": "Classroom", "desc": "",
+            "evidence": "sending him flying across the classroom"},
+           {"type": "MOVE", "entity": "my_hero_academia_rpg_world", "room_id": "classroom",
+            "evidence": "sending him flying across the classroom"}]
+
+    async def fake_plan(*a, **k):
+        return [dict(x) for x in raw]
+
+    monkeypatch.setattr(gm_planner, "plan", fake_plan)
+
+    async def run(where, rooms):
+        async def snap(*a, **k):
+            return {"rooms": [{"room_id": r, "name": r} for r in rooms],
+                    "occupants": [{"entity_id": e, "room_id": r} for e, r in where.items()]}
+        with patch.object(evennia_client, "get_snapshot", side_effect=snap):
+            acts = await routes._plan_gm_actions("s", "m", "Brenda", "I throw a punch.",
+                                                 "my_hero_academia_rpg_world", reply,
+                                                 allow_create=True, first_turn=False)
+        return [(a["type"], a.get("entity"), a.get("room_id")) for a in acts]
+
+    placeholders = ["central_nexus", "node_alpha", "node_beta"]
+    assert await run({"user": "central_nexus", "my_hero_academia_rpg_world": "central_nexus"},
+                     placeholders) == [
+        ("CREATE_ROOM", None, "classroom"),
+        ("MOVE", "my_hero_academia_rpg_world", "classroom"),
+        ("MOVE", "user", "classroom")]
+    assert await run({"user": "hall", "my_hero_academia_rpg_world": "hall"},
+                     placeholders + ["hall"]) == []

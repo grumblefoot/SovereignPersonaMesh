@@ -273,6 +273,13 @@ def new_link(came_from: Optional[str], went_to: Optional[str], linked: set) -> O
     return came_from, went_to
 
 
+def scene_unsettled(where: Dict[str, str]) -> bool:
+    """True while everyone placed is still in a placeholder room: the story has not
+    established a place yet (a chat's first turn, or the first live turn of a chat
+    resumed from before SPM saw it, QA 2026-10-17 T2)."""
+    return bool(where) and all(r in PLACEHOLDER_ROOMS for r in where.values())
+
+
 def colocate_first_turn(actions: List[Dict[str, Any]], where: Dict[str, str]) -> List[Dict[str, Any]]:
     """First turn of a chat: the player and every character start in the same place
     (owner rule, QA 2026-10-17). The opening reply usually sets the scene with the
@@ -283,7 +290,16 @@ def colocate_first_turn(actions: List[Dict[str, Any]], where: Dict[str, str]) ->
     Without a MOVE, everyone joins the player's room. Later turns keep the normal rules."""
     moves = [a for a in actions if a.get("type") == "MOVE" and a.get("room_id")]
     user_moves = [a for a in moves if a.get("entity") == "user"]
-    target = (user_moves or moves)[-1]["room_id"] if moves else where.get("user")
+    created = [a for a in actions if a.get("type") == "CREATE_ROOM" and a.get("room_id")]
+    if moves:
+        target = (user_moves or moves)[-1]["room_id"]
+    elif created:
+        # The narration established a place without anyone "moving" into it (a
+        # resumed chat's first live turn: "flying across the classroom"): that
+        # place is the scene (QA 2026-10-17 T2).
+        target = created[-1]["room_id"]
+    else:
+        target = where.get("user")
     if not target:
         return actions
     # Rooms first (a new target room must exist before anyone moves in); a room nobody
