@@ -131,6 +131,52 @@ async def test_session_delete_removes_chat_rules():
 
 
 @pytest.mark.asyncio
+async def test_session_delete_removes_every_session_keyed_row():
+    """QA 2026-10-18 T9: deleting a chat used to leave its perception rows, chat
+    settings, ticks and world log behind, so re-opening it in SillyTavern skipped the
+    backfill and the card pass and used the stale history. Another chat is untouched."""
+    import proxy.api.admin_routes as admin
+    from proxy.gating.perception import record_turn_perceptions
+
+    tables = ("spm_perception", "spm_chat_settings", "spm_turn_ticks", "objective_world_log")
+
+    async def counts(conn, sid):
+        return [int(await conn.fetchval(f"SELECT count(*) FROM {t} WHERE session_id = $1;", sid))
+                for t in tables]
+
+    async def seed(conn, sid):
+        await record_turn_perceptions(
+            conn, session_id=sid, tick=1, turn_id=f"{sid}:1", actor_id="user",
+            action_type="speak",
+            consequences=[{"recipient_id": "mira", "sensory_feed": "Hello.", "gating_level": "direct"}])
+        await conn.execute("INSERT INTO spm_chat_settings (session_id, narrator_mode) VALUES ($1, 'off') "
+                           "ON CONFLICT (session_id) DO NOTHING;", sid)
+        await conn.execute("INSERT INTO spm_turn_ticks (session_id, turn_id, tick) VALUES ($1, $2, 1) "
+                           "ON CONFLICT DO NOTHING;", sid, f"{sid}:1")
+        await conn.execute("INSERT INTO objective_world_log (session_id, action_tick, actor_id, location_id, "
+                           "action_type, raw_event) VALUES ($1, 1, 'user', 'cellar', 'speak', 'Hello.');", sid)
+
+    async with scoped_pool() as pool:
+        try:
+            async with pool.acquire() as conn:
+                await seed(conn, "st_chat_DEL")
+                await seed(conn, "st_chat_A")
+                assert all(n >= 1 for n in await counts(conn, "st_chat_DEL"))
+            admin.set_admin_db_pool(pool)
+            resp = await admin.delete_session("st_chat_DEL")
+            assert resp.status_code == 200, resp.body
+            async with pool.acquire() as conn:
+                assert await counts(conn, "st_chat_DEL") == [0, 0, 0, 0]
+                assert all(n >= 1 for n in await counts(conn, "st_chat_A"))
+        finally:
+            admin.set_admin_db_pool(None)
+            async with pool.acquire() as conn:
+                for t in tables:
+                    await conn.execute(f"DELETE FROM {t} WHERE session_id = ANY($1::text[]);",
+                                       ["st_chat_DEL", "st_chat_A"])
+
+
+@pytest.mark.asyncio
 async def test_same_rule_text_allowed_in_two_chats_but_deduped_within_one():
     """The extractor's dedupe check is per (chat ∪ canon), not global (B.4)."""
     from proxy.rag.lore_extractor import strings as lore_strings

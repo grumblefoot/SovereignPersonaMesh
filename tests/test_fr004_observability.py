@@ -97,8 +97,9 @@ class TestFR004Observability:
         from proxy.api.admin_routes import AdminState
 
         mock_conn = AsyncMock()
-        # Session delete: one fetch (memory tables; the chat's rules go via a
-        # fixed DELETE FROM spm_chat_rules, brief C1b). Factory reset: one fetch
+        # Session delete: one fetch (memory tables); the chat's rows in the five
+        # session-keyed tables (rules, perception, settings, ticks, world log: QA
+        # 2026-10-18 T9) go via fixed, counted DELETEs. Factory reset: one fetch
         # (list_tables_info, now csa_memory_% only) — spm_chat_rules is truncated
         # with a fixed statement, not via the table list.
         mock_conn.fetch.side_effect = [[{"table_name": "csa_memory_seraphina"}],
@@ -118,8 +119,8 @@ class TestFR004Observability:
                 # Test session deletion
                 resp_del = client.delete("/admin/api/v1/sessions/test_sess_99")
                 assert resp_del.status_code == 200
-                # 5 rows from spm_chat_rules + 5 rows from csa_memory_seraphina.
-                assert resp_del.json()["deleted_records"] == 10
+                # 5 rows from each of the 5 session-keyed tables + 5 from csa_memory_seraphina.
+                assert resp_del.json()["deleted_records"] == 30
 
                 # Test factory reset
                 resp_reset = client.delete("/admin/api/v1/factory_reset")
