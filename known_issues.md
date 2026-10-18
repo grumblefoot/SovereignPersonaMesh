@@ -16,6 +16,10 @@ Limitations you may run into with the current release. Reports and fixes are wel
 - **Occasional cut-off turns.** Now and then a turn ends a few seconds in with no reply, and
   regenerating works. SPM logs these as `Client disconnected from turn …`; the cause is still
   being investigated.
+- **The "Thinking" block stays after the reply.** SPM shows a short status as model
+  reasoning while it works; SillyTavern keeps it as a collapsed "Thought for N s" line at the
+  top of the message. It is harmless and not part of the reply; hiding it after the reply is
+  planned for a later version.
 - **Withheld replies.** When the model writes only its planning notes, SPM withholds the reply
   and shows `[SPM: the model returned only planning notes…]`. That notice stays in the
   SillyTavern chat as a message; delete it or regenerate.
