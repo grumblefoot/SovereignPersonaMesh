@@ -120,7 +120,7 @@ class OpenAICompatProvider:
         if self._client is not None and not self._client.is_closed:
             await self._client.aclose()
 
-    async def embed(self, texts: List[str]) -> List[List[float]]:
+    async def embed(self, texts: List[str], timeout_s: Optional[float] = None) -> List[List[float]]:
         # Guard rail: the suite must never reach a live embedding endpoint.
         # Contract tests inject an httpx.MockTransport, which is exempt.
         if (
@@ -141,6 +141,7 @@ class OpenAICompatProvider:
                 self.endpoint,
                 json={"model": self.model, "input": texts},
                 headers=headers,
+                timeout=timeout_s if timeout_s is not None else httpx.USE_CLIENT_DEFAULT,
             )
         except httpx.HTTPError as e:
             raise EmbedderUnavailable(f"embeddings endpoint unreachable: {e}") from e
@@ -189,7 +190,7 @@ class FakeEmbeddingProvider:
             vec[bucket] += sign
         return vec
 
-    async def embed(self, texts: List[str]) -> List[List[float]]:
+    async def embed(self, texts: List[str], timeout_s: Optional[float] = None) -> List[List[float]]:
         return [self._embed_one(t) for t in texts]
 
 
@@ -316,8 +317,11 @@ class EmbeddingService:
         return result[0]
 
     async def batch_generate_embeddings(
-        self, texts: List[str]
+        self, texts: List[str], timeout_s: Optional[float] = None
     ) -> List[Optional[List[float]]]:
+        """``timeout_s`` overrides the provider's live-query timeout for one call: bulk
+        work (imports, re-embeds) embeds many texts per request and may wait behind
+        a chat turn on the same GPU (QA 2026-10-17 T1)."""
         out: List[Optional[List[float]]] = [None] * len(texts)
         if self._provider is None or not texts:
             return out
@@ -341,7 +345,9 @@ class EmbeddingService:
         for start in range(0, len(pending), batch_size):
             chunk = pending[start:start + batch_size]
             try:
-                vectors = await self._provider.embed([texts[i] for i in chunk])
+                vectors = await self._provider.embed(
+                    [texts[i] for i in chunk],
+                    **({"timeout_s": timeout_s} if timeout_s is not None else {}))
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # outage => None, never an exception upward
@@ -552,8 +558,8 @@ class DeterministicEmbedder:
     async def generate_embedding(self, text: str) -> Optional[List[float]]:
         return await self._service.generate_embedding(text)
 
-    async def batch_generate_embeddings(self, texts: List[str]):
-        return await self._service.batch_generate_embeddings(texts)
+    async def batch_generate_embeddings(self, texts: List[str], timeout_s: Optional[float] = None):
+        return await self._service.batch_generate_embeddings(texts, timeout_s=timeout_s)
 
     async def ensure_space(self, conn: Any) -> Optional[int]:
         return await self._service.ensure_space(conn)

@@ -336,7 +336,7 @@ def test_s15_lore_extractor_never_sees_private_thoughts(rig, monkeypatch):
     captured = {}
 
     async def fake_extract(self, session_id, character_id, context_text, model="",
-                           characters=(), rooms=None, engine=None, player_ids=()):
+                           characters=(), rooms=None, engine=None, player_ids=(), narrator=False):
         captured["text"] = context_text
 
     monkeypatch.setattr(LoreExtractionWorker, "extract_initial_rules", fake_extract)

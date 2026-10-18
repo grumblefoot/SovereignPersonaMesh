@@ -48,10 +48,11 @@ class CPUEmbeddingEngine:
             logger.warning("[CPUEmbeddingEngine] embedding failed: %s", e)
             return None
 
-    async def batch_generate_embeddings(self, texts: List[str]):
-        """Batch form of generate_embedding; failed entries are None."""
+    async def batch_generate_embeddings(self, texts: List[str], timeout_s=None):
+        """Batch form of generate_embedding; failed entries are None. ``timeout_s``:
+        a longer limit for bulk work (imports) than the live-query default."""
         try:
-            return await get_embedding_service().batch_generate_embeddings(texts)
+            return await get_embedding_service().batch_generate_embeddings(texts, timeout_s=timeout_s)
         except Exception as e:
             logger.warning("[CPUEmbeddingEngine] batch embedding failed: %s", e)
             return [None] * len(texts)

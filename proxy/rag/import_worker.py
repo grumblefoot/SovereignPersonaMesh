@@ -36,6 +36,12 @@ BULK_IMPORT_THRESHOLD = 10
 SOVEREIGN_MIN_MEMTOTAL_GIB = 120
 
 
+# Bulk embedding (QA 2026-10-17 T1): many texts per call, scheduled behind chat turns.
+IMPORT_EMBED_TIMEOUT_S = 60.0
+IMPORT_BATCH_RETRIES = 3
+IMPORT_RETRY_WAIT_S = 2.0
+
+
 def _detect_hardware_tier() -> HardwareTierEnum:
     """Auto-detect hardware tier from /proc on Linux."""
     try:
@@ -224,7 +230,7 @@ class BulkImportWorker:
                         f"{m.get('role', 'user')}: {m.get('content', '')}"
                         for m in batch
                     ]
-                    embeddings = await self.embedder.batch_generate_embeddings(texts)
+                    embeddings = await self._embed_batch(texts, session_id)
 
                     # Insert into character memory table
                     async with self.db_pool.acquire() as conn:
@@ -293,6 +299,16 @@ class BulkImportWorker:
                     )
                     # Continue processing remaining batches
 
+            # Step 3b: rows still without a vector (a timeout, a preempted batch) are
+            # embedded again now that the chat turn is over; what is still missing is
+            # reported instead of passing as "completed" (QA 2026-10-17 T1).
+            if getattr(self.embedder, "available", False) is True:
+                missing = await self._repair_missing_vectors(session_id, character_id, batch_size)
+                if missing:
+                    error_parts.append(
+                        f"{missing} memories stored without embeddings (found by text search "
+                        f"only); run `python -m scripts.reembed` to embed them")
+
             # Step 4: Finalize
             if error_parts:
                 final_status = "completed_with_errors"
@@ -325,6 +341,69 @@ class BulkImportWorker:
             else:
                 # Couldn't register; write to error log directly
                 logger.error(f"[ImportWorker] Could not register import for {session_id}")
+
+    async def _embed_batch(self, texts: List[str], session_id: str):
+        """Embed one import batch as the lowest-priority scheduler job (P3): a chat turn
+        goes first and preempts it, so the bulk call never competes with a reply for the
+        GPU (QA 2026-10-17 T1: a 32-text batch under a 16k-token prefill overran the 3 s
+        live timeout and 30 memories were stored without vectors). Bulk calls get their
+        own, longer timeout; a preempted batch is retried; a real cancellation (shutdown)
+        propagates."""
+        from proxy.core.llm_scheduler import get_scheduler
+        sched = get_scheduler()
+        for attempt in range(1, IMPORT_BATCH_RETRIES + 1):
+            job = None
+            try:
+                async with sched.slot("batch", session_id=session_id) as job:
+                    return await self.embedder.batch_generate_embeddings(
+                        texts, timeout_s=IMPORT_EMBED_TIMEOUT_S)
+            except asyncio.CancelledError:
+                if job is None or not getattr(job, "evicted", False):
+                    raise
+                logger.info(f"[ImportWorker] batch preempted by a chat turn; "
+                            f"retry {attempt}/{IMPORT_BATCH_RETRIES} after {IMPORT_RETRY_WAIT_S}s")
+                await asyncio.sleep(IMPORT_RETRY_WAIT_S)
+        return [None] * len(texts)
+
+    async def _repair_missing_vectors(self, session_id: str, character_id: str,
+                                      batch_size: int) -> int:
+        """Embed this import's rows that have no vector yet, in batches, and return how
+        many are still missing. Embeds the same text scripts/reembed.py would, so a
+        repaired row matches a re-embedded one."""
+        table = f"csa_memory_{safe_char_id(character_id)}"
+        text_sql = "trim(coalesce(sensory_input, '') || ' ' || coalesce(public_response, ''))"
+        for _ in range(IMPORT_BATCH_RETRIES):
+            async with self.db_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    f"SELECT id, {text_sql} AS text FROM {table} "
+                    f"WHERE session_id = $1 AND episodic_embedding IS NULL ORDER BY id;",
+                    session_id)
+            if not rows:
+                return 0
+            repaired = 0
+            for start in range(0, len(rows), max(1, batch_size)):
+                chunk = rows[start:start + max(1, batch_size)]
+                vectors = await self._embed_batch([r["text"] for r in chunk], session_id)
+                async with self.db_pool.acquire() as conn:
+                    space_id = (await space_id_for(self.embedder, conn)
+                                if any(v is not None for v in vectors) else None)
+                    for row, vec in zip(chunk, vectors):
+                        if vec is None:
+                            continue
+                        await conn.execute(
+                            f"UPDATE {table} SET episodic_embedding = $1::vector, "
+                            f"embedding_space_id = $2 WHERE id = $3;",
+                            "[" + ",".join(map(str, vec)) + "]", space_id, row["id"])
+                        repaired += 1
+            if repaired:
+                logger.info(f"[ImportWorker] {repaired} imported memories embedded on retry "
+                            f"for session={session_id}")
+            if repaired == 0:
+                break
+        async with self.db_pool.acquire() as conn:
+            return int(await conn.fetchval(
+                f"SELECT count(*) FROM {table} WHERE session_id = $1 AND episodic_embedding IS NULL;",
+                session_id) or 0)
 
     async def check_import_status(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Query the current status of an import job for a session."""

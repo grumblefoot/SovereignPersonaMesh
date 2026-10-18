@@ -1049,7 +1049,7 @@ The text after </think> must ONLY be narrative and dialogue.
                 _initial_done = await _initial_lore_done(session_id)
                 _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp,
                                       is_new_session=(not _initial_done) if _initial_done is not None
-                                      else is_new_session)
+                                      else is_new_session, narrator=narrator)
 
         if inner_monologue:
             telemetry.push_thought_event(session_id, {
@@ -1182,7 +1182,7 @@ The text after </think> must ONLY be narrative and dialogue.
                 _initial_done = await _initial_lore_done(session_id)
                 _dispatch_lore_extraction(request, session_id, target_char, inner_monologue, public_resp,
                                       is_new_session=(not _initial_done) if _initial_done is not None
-                                      else is_new_session)
+                                      else is_new_session, narrator=narrator)
 
         # Push inner monologue to Thought Monitor SSE stream
         if inner_monologue:
@@ -1391,7 +1391,7 @@ def _header_user_turns(req) -> Optional[int]:
 
 
 def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_monologue: str, public_resp: str,
-                              is_new_session: Optional[bool] = None):
+                              is_new_session: Optional[bool] = None, narrator: bool = False):
     if not _db_pool:
         return
     settings = get_settings_manager().get_settings()
@@ -1446,14 +1446,14 @@ def _dispatch_lore_extraction(request, session_id: str, target_char: str, inner_
                 session_id, target_char,
                 "\n".join(f"{m['role']}: {m.get('content', '')}" for m in full_turn_history),
                 model=ext_model, characters=characters, rooms=rooms, engine=evennia_client,
-                player_ids=player_ids)
+                player_ids=player_ids, narrator=narrator)
             await _mark_initial_lore_done(session_id)   # not reached if cancelled: re-runs next turn
         else:
             recent = full_turn_history[-(cadence * 2):]
             await extractor.periodic_review_rules(
                 session_id, target_char, recent, model=ext_model,
                 characters=characters, rooms=rooms, engine=evennia_client,
-                player_ids=player_ids)
+                player_ids=player_ids, narrator=narrator)
 
     if first_turn:
         task = asyncio.create_task(_run_extraction())
@@ -2024,7 +2024,8 @@ async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_
             if gm_channel == "separate" and gm_mode != "off":
                 actions = await _plan_gm_actions(session_id, model, persona or "the player",
                                                  user_text, speaker or target_char, public_resp,
-                                                 allow_create=(gm_mode == "full"))
+                                                 allow_create=(gm_mode == "full"),
+                                                 first_turn=(turn_index == 1))
             await _dispatch_gm_actions(parser, session_id, target_char,
                                        turn_index=turn_index, persona=persona,
                                        player_name=player_name,
@@ -2039,7 +2040,8 @@ async def _gm_then_reply(parser: MonologueStreamParser, session_id: str, target_
 
 
 async def _plan_gm_actions(session_id: str, model: str, player: str, player_text: str,
-                           speaker: str, reply: str, allow_create: bool) -> List[Dict[str, Any]]:
+                           speaker: str, reply: str, allow_create: bool,
+                           first_turn: bool = False) -> List[Dict[str, Any]]:
     """Separate GM channel: read location changes from the finished exchange (spike
     2026-10-13). The player's text is the observable part only (no private thoughts)."""
     if not reply.strip():
@@ -2056,8 +2058,14 @@ async def _plan_gm_actions(session_id: str, model: str, player: str, player_text
     acts = await gm_planner.plan(lemonade_client, model, msgs,
                                  local=reasoning._is_local(lemonade_client.base_url),
                                  job_kind="gm", session_id=session_id)
-    acts = gm_planner.drop_no_ops(
-        gm_planner.reuse_rooms(gm_planner.grounded(acts, player_text, reply), rooms), where)
+    acts = gm_planner.grounded(acts, player_text, reply)
+    if first_turn or gm_planner.scene_unsettled(where):
+        # Before reuse_rooms / drop_no_ops, which prune a room nobody moves into: a room
+        # the narration establishes without a kept MOVE (the narrator is never named, so
+        # its MOVE was ungrounded) is the scene while the scene is unsettled, and everyone
+        # goes there (QA 2026-10-17 T2). reuse_rooms may still map it onto an existing room.
+        acts = gm_planner.colocate_first_turn(acts, where)
+    acts = gm_planner.drop_no_ops(gm_planner.reuse_rooms(acts, rooms), where)
     logger.info(f"[GMPlanner] {len(acts)} proposed action(s) for {session_id}: {acts}")
     return acts
 
@@ -2094,12 +2102,14 @@ async def _dispatch_gm_actions(parser: MonologueStreamParser, session_id: str, t
         return
 
     max_per_turn = int(settings.get("gm_actions_max_per_turn", 4))
-    if first_turn:
+    settle = first_turn or gm_planner.scene_unsettled(where)
+    if settle:
         # Owner rule (QA 2026-10-17): the first turn puts the player and every character
-        # in one room (gm_planner.colocate_first_turn), however many characters there are.
+        # in one room (gm_planner.colocate_first_turn), however many characters there are;
+        # likewise while nobody has left the placeholder rooms yet (a resumed chat, T2).
         colocated = gm_planner.colocate_first_turn(actions, where)
         if colocated != actions:
-            logger.info(f"[GMAction] first turn: everyone into one room: {colocated}")
+            logger.info(f"[GMAction] unsettled scene: everyone into one room: {colocated}")
         actions = colocated
         max_per_turn = max(max_per_turn, len(actions))
         if not actions:
